@@ -1,17 +1,14 @@
 # agentic_remote
 
-A new Flutter project.
+Flutter client for agenticRemote.
 
-## Getting Started
+## Android
 
-This project is a starting point for a Flutter application.
+From `client/`:
 
-A few resources to get you started if this is your first Flutter project:
+1. List emulators: `flutter emulators`
+2. Launch one: `flutter emulators --launch byobudash-api35-arm64`
+3. Run the app: `flutter run -d <emulator-id>`
+4. Build a debug APK: `flutter build apk --debug`
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+APK output: `build/app/outputs/flutter-apk/app-debug.apk`
