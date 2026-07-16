@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	ListenAddr            string   `json:"listenAddr"`
+	ListenScheme          string   `json:"listenScheme"`
 	PublicEndpoint        string   `json:"publicEndpoint"`
 	StateDir              string   `json:"stateDir"`
 	WorkspaceRoot         string   `json:"workspaceRoot"`
@@ -29,6 +30,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		ListenAddr:            "127.0.0.1:8765",
+		ListenScheme:          "https",
 		PublicEndpoint:        "https://127.0.0.1:8765",
 		StateDir:              ".agenticremote",
 		WorkspaceRoot:         ".",
@@ -62,12 +64,15 @@ func Validate(cfg Config) error {
 	if cfg.MaxConnections <= 0 || cfg.MaxSessions <= 0 || cfg.ChannelBufferSize <= 0 || cfg.MaxScrollbackBytes <= 0 {
 		return errors.New("limits must be positive")
 	}
+	if cfg.ListenScheme != "http" && cfg.ListenScheme != "https" {
+		return errors.New("listenScheme must be http or https")
+	}
 	u, err := url.Parse(cfg.PublicEndpoint)
 	if err != nil {
 		return fmt.Errorf("invalid publicEndpoint: %w", err)
 	}
-	if u.Scheme != "https" {
-		return errors.New("publicEndpoint must use https")
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("publicEndpoint must use http or https")
 	}
 	if u.Host == "" {
 		return errors.New("publicEndpoint must include host")
@@ -78,6 +83,7 @@ func Validate(cfg Config) error {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("publicEndpoint must not include query or fragment")
 	}
+
 	for _, cidr := range cfg.AllowedCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("invalid allowedCidrs entry %q: %w", cidr, err)

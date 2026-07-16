@@ -121,7 +121,8 @@ func serve(configPath string) error {
 		return err
 	}
 	go rotatePairing(pairings, cfg, tlsMaterial.Fingerprint, qrRefresh, pairingReady)
-	httpServer := &http.Server{Addr: cfg.ListenAddr, Handler: srv.Handler(), TLSConfig: srv.TLSConfig()}
+	httpServer := server.ServerTimeouts(srv.Handler(), cfg.ListenAddr)
+	httpServer.TLSConfig = srv.TLSConfig()
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
@@ -137,13 +138,22 @@ func serve(configPath string) error {
 			_ = httpServer.Shutdown(ctx)
 		}()
 	}
-	if err := httpServer.ServeTLS(listener, tlsMaterial.CertPath, tlsMaterial.KeyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serveListener(httpServer, listener, cfg, tlsMaterial); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	if os.Getenv("AGENTICREMOTE_TEST_ONESHOT") == "1" || cfg.ListenAddr == "127.0.0.1:0" {
 		return errors.New("daemon exited")
 	}
 	return nil
+}
+
+func serveListener(httpServer *http.Server, listener net.Listener, cfg config.Config, tlsMaterial *security.TLSMaterial) error {
+	if cfg.ListenScheme == "http" {
+		log.Printf("serving HTTP on %s", listener.Addr())
+		return httpServer.Serve(listener)
+	}
+	log.Printf("serving HTTPS on %s", listener.Addr())
+	return httpServer.ServeTLS(listener, tlsMaterial.CertPath, tlsMaterial.KeyPath)
 }
 
 func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint string, refresh <-chan struct{}, ready chan<- struct{}) {
