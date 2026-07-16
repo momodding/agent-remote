@@ -14,11 +14,12 @@ import 'agentic_remote_transport.dart';
 @visibleForTesting
 Uri agenticEndpointUri(String endpoint, String path, {String? scheme}) {
   final base = Uri.parse(endpoint);
-  return base.replace(
+  return Uri(
     scheme: scheme ?? base.scheme,
+    userInfo: base.userInfo,
+    host: base.host,
+    port: base.hasPort && base.port != 0 ? base.port : null,
     path: path,
-    query: null,
-    fragment: null,
   );
 }
 
@@ -72,7 +73,7 @@ class AgenticRemoteApi {
   }
 
   Future<void> _validateEndpointTrust({required bool webTrustConfirmed}) async {
-    final uri = Uri.parse(pairing!.endpoint);
+    final uri = agenticEndpointUri(pairing!.endpoint, '');
     _trustedFingerprint = null;
     if (uri.scheme == 'http') {
       client = createHttpClient(
