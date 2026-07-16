@@ -24,6 +24,21 @@ void main() {
     );
   });
 
+  test('agenticEndpointUri drops explicit zero port', () {
+    expect(
+      agenticEndpointUri(
+        'https://host.example:0',
+        '/v1/ws/sessions/bootstrap',
+        scheme: 'wss',
+      ).toString(),
+      'wss://host.example/v1/ws/sessions/bootstrap',
+    );
+    expect(
+      agenticEndpointUri('https://host.example:0', '/v1/sessions').toString(),
+      'https://host.example/v1/sessions',
+    );
+  });
+
   test('agenticWebSocketScheme maps http and https', () {
     expect(agenticWebSocketScheme('https://host.example'), 'wss');
     expect(agenticWebSocketScheme('http://host.example'), 'ws');
