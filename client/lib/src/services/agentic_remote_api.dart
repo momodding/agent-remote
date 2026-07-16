@@ -37,16 +37,23 @@ class AgenticRemoteApi {
   http.Client client = http.Client();
   String? bearerToken;
   String? _trustedFingerprint;
+  bool _allowBadCertificates = false;
 
   Future<void> connectFromPayload(
     String raw, {
     required String clientName,
     required bool webTrustConfirmed,
+    bool allowBadCertificates = false,
   }) async {
     pairing = PairingPayload.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     diagnostics.add('Resolving endpoint...');
     diagnostics.add('Initiating TLS Handshake...');
-    diagnostics.add('Validating Certificate Fingerprint...');
+    _allowBadCertificates = allowBadCertificates;
+    diagnostics.add(
+      allowBadCertificates
+          ? 'Skipping TLS certificate verification for internal connection...'
+          : 'Validating Certificate Fingerprint...',
+    );
     await _validateEndpointTrust(webTrustConfirmed: webTrustConfirmed);
     diagnostics.add('Executing Auth-v2 Challenge...');
     await _authenticate(clientName.trim());
@@ -56,6 +63,20 @@ class AgenticRemoteApi {
   Future<void> _validateEndpointTrust({required bool webTrustConfirmed}) async {
     final uri = Uri.parse(pairing!.endpoint);
     _trustedFingerprint = null;
+    if (_allowBadCertificates) {
+      if (kIsWeb) {
+        diagnostics.add(
+          'Failed: Browser cannot disable TLS certificate verification',
+        );
+        throw StateError('Browser cannot disable TLS certificate verification');
+      }
+      client = createHttpClient(
+        trustedFingerprint: null,
+        formatFingerprint: _formatFingerprint,
+        allowBadCertificates: true,
+      );
+      return;
+    }
     if (kIsWeb) {
       diagnostics.add(
         'Browser TLS fingerprint access unavailable; relying on HTTPS origin trust for web',
@@ -67,6 +88,7 @@ class AgenticRemoteApi {
       client = createHttpClient(
         trustedFingerprint: null,
         formatFingerprint: _formatFingerprint,
+        allowBadCertificates: false,
       );
       return;
     }
@@ -74,6 +96,7 @@ class AgenticRemoteApi {
       client = createHttpClient(
         trustedFingerprint: null,
         formatFingerprint: _formatFingerprint,
+        allowBadCertificates: false,
       );
       return;
     }
@@ -90,6 +113,7 @@ class AgenticRemoteApi {
     client = createHttpClient(
       trustedFingerprint: _trustedFingerprint,
       formatFingerprint: _formatFingerprint,
+      allowBadCertificates: _allowBadCertificates,
     );
   }
 
@@ -103,6 +127,7 @@ class AgenticRemoteApi {
       endpoint,
       trustedFingerprint: _trustedFingerprint,
       formatFingerprint: _formatFingerprint,
+      allowBadCertificates: _allowBadCertificates,
     );
     final clientNonce = base64UrlEncode(
       List<int>.generate(32, (index) => index + 1),

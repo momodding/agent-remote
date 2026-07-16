@@ -19,12 +19,14 @@ class AppState extends ChangeNotifier {
     String payload, {
     required String clientName,
     required bool webTrustConfirmed,
+    bool allowBadCertificates = false,
   }) async {
     final name = validateClientName(clientName);
     await api.connectFromPayload(
       payload,
       clientName: name,
       webTrustConfirmed: webTrustConfirmed,
+      allowBadCertificates: allowBadCertificates,
     );
   }
 

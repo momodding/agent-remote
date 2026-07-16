@@ -32,7 +32,11 @@ Future<Uint8List?> peerCertificateDer(Uri uri) async {
 http.Client createHttpClient({
   String? trustedFingerprint,
   required String Function(Uint8List) formatFingerprint,
+  bool allowBadCertificates = false,
 }) {
+  if (allowBadCertificates) {
+    return IOClient(_insecureHttpClient());
+  }
   if (trustedFingerprint == null) {
     return http.Client();
   }
@@ -43,7 +47,11 @@ WebSocketChannel connectWebSocket(
   Uri uri, {
   String? trustedFingerprint,
   required String Function(Uint8List) formatFingerprint,
+  bool allowBadCertificates = false,
 }) {
+  if (allowBadCertificates) {
+    return IOWebSocketChannel.connect(uri, customClient: _insecureHttpClient());
+  }
   if (trustedFingerprint == null) {
     return WebSocketChannel.connect(uri);
   }
@@ -51,6 +59,13 @@ WebSocketChannel connectWebSocket(
     uri,
     customClient: _pinnedHttpClient(trustedFingerprint, formatFingerprint),
   );
+}
+
+HttpClient _insecureHttpClient() {
+  final client = HttpClient();
+  // ponytail: internal-only escape hatch; replace with managed CA trust before external use.
+  client.badCertificateCallback = (cert, host, port) => true;
+  return client;
 }
 
 HttpClient _pinnedHttpClient(
