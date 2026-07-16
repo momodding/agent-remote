@@ -85,7 +85,7 @@ func serve(configPath string) error {
 	configDir := filepath.Dir(configPath)
 	stateDir := filepath.Join(configDir, cfg.StateDir)
 	workspaceRoot := filepath.Join(configDir, cfg.WorkspaceRoot)
-	tlsMaterial, err := security.EnsureTLS(stateDir, cfg.ListenAddr)
+	tlsMaterial, err := security.EnsureTLS(stateDir, cfg.ListenAddr, cfg.PublicEndpoint)
 	if err != nil {
 		return err
 	}
@@ -103,6 +103,7 @@ func serve(configPath string) error {
 	}
 	auth := security.NewAuthService(pairings, sessions)
 	qrRefresh := make(chan struct{}, 1)
+	pairingReady := make(chan struct{}, 1)
 	auth.SetPairedHook(func() {
 		select {
 		case qrRefresh <- struct{}{}:
@@ -119,7 +120,7 @@ func serve(configPath string) error {
 	if err != nil {
 		return err
 	}
-	go rotatePairing(pairings, cfg, tlsMaterial.Fingerprint, qrRefresh)
+	go rotatePairing(pairings, cfg, tlsMaterial.Fingerprint, qrRefresh, pairingReady)
 	httpServer := &http.Server{Addr: cfg.ListenAddr, Handler: srv.Handler(), TLSConfig: srv.TLSConfig()}
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -127,7 +128,10 @@ func serve(configPath string) error {
 	}
 	if os.Getenv("AGENTICREMOTE_TEST_ONESHOT") == "1" || cfg.ListenAddr == "127.0.0.1:0" {
 		go func() {
-			<-time.After(200 * time.Millisecond)
+			select {
+			case <-pairingReady:
+			case <-time.After(time.Second):
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			_ = httpServer.Shutdown(ctx)
@@ -142,7 +146,7 @@ func serve(configPath string) error {
 	return nil
 }
 
-func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint string, refresh <-chan struct{}) {
+func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint string, refresh <-chan struct{}, ready chan<- struct{}) {
 	for {
 		now := time.Now().UTC()
 		if err := store.Cleanup(now); err != nil {
@@ -153,6 +157,13 @@ func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint 
 			log.Printf("pairing create failed: %v", err)
 		} else {
 			printPairing(payload)
+			if ready != nil {
+				select {
+				case ready <- struct{}{}:
+				default:
+				}
+				ready = nil
+			}
 		}
 		select {
 		case <-time.After(45 * time.Second):

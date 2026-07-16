@@ -94,7 +94,7 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(dir, ".agenticremote")
 	cfg.WorkspaceRoot = dir
-	tlsMaterial, err := security.EnsureTLS(cfg.StateDir, "127.0.0.1:8765")
+	tlsMaterial, err := security.EnsureTLS(cfg.StateDir, "127.0.0.1:8765", cfg.PublicEndpoint)
 	if err != nil {
 		t.Fatal(err)
 	}

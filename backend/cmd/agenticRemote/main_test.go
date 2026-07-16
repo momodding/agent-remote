@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agenticremote/agenticremote/backend/internal/security"
 )
 
 func TestRunRejectsPairCommand(t *testing.T) {
@@ -22,20 +25,37 @@ func TestRunServeRequiresConfig(t *testing.T) {
 
 func TestRunServeStartsDaemon(t *testing.T) {
 	configPath := writeConfig(t)
-	stdout, restoreStdout := captureOutput(t, os.Stdout)
-	stderr, restoreStderr := captureOutput(t, os.Stderr)
-	defer restoreStdout()
-	defer restoreStderr()
+	stdout, readStdout := captureOutput(t, os.Stdout)
+	defer stdout.Close()
+	_, readStderr := captureOutput(t, os.Stderr)
+	defer readStderr().Close()
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"agenticRemote", "serve", "--config", configPath}
 	if err := run([]string{"serve", "--config", configPath}); err == nil || !strings.Contains(err.Error(), "daemon exited") {
 		t.Fatalf("expected daemon exit sentinel, got %v", err)
 	}
-	_ = stdout.Close()
-	_ = stderr.Close()
-	if data, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), ".agenticremote", "auth", "pairings.json")); err != nil || len(data) == 0 {
-		t.Fatalf("expected pairings store written, err=%v len=%d", err, len(data))
+	stdoutData, _ := io.ReadAll(readStdout())
+	if len(stdoutData) == 0 {
+		t.Fatal("expected pairing output on stdout")
+	}
+	lines := strings.Split(strings.TrimSpace(string(stdoutData)), "\n")
+	jsonLine := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "{") {
+			jsonLine = lines[i]
+			break
+		}
+	}
+	if jsonLine == "" {
+		t.Fatalf("expected pairing json line in output: %q", string(stdoutData))
+	}
+	var payload security.PairingPayload
+	if err := json.Unmarshal([]byte(jsonLine), &payload); err != nil {
+		t.Fatalf("expected pairing json line, got %q: %v", jsonLine, err)
+	}
+	if payload.Endpoint != "https://127.0.0.1:8765" {
+		t.Fatalf("unexpected pairing endpoint: %s", payload.Endpoint)
 	}
 }
 
@@ -63,7 +83,7 @@ func writeConfig(t *testing.T) string {
 	return path
 }
 
-func captureOutput(t *testing.T, target *os.File) (*os.File, func()) {
+func captureOutput(t *testing.T, target *os.File) (*os.File, func() *os.File) {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -72,17 +92,17 @@ func captureOutput(t *testing.T, target *os.File) (*os.File, func()) {
 	if target == os.Stdout {
 		old := os.Stdout
 		os.Stdout = w
-		return r, func() {
+		return r, func() *os.File {
 			_ = w.Close()
-			_, _ = io.ReadAll(r)
 			os.Stdout = old
+			return r
 		}
 	}
 	old := os.Stderr
 	os.Stderr = w
-	return r, func() {
+	return r, func() *os.File {
 		_ = w.Close()
-		_, _ = io.ReadAll(r)
 		os.Stderr = old
+		return r
 	}
 }

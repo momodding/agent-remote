@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,22 @@ func Load(path string) (Config, error) {
 func Validate(cfg Config) error {
 	if cfg.MaxConnections <= 0 || cfg.MaxSessions <= 0 || cfg.ChannelBufferSize <= 0 || cfg.MaxScrollbackBytes <= 0 {
 		return errors.New("limits must be positive")
+	}
+	u, err := url.Parse(cfg.PublicEndpoint)
+	if err != nil {
+		return fmt.Errorf("invalid publicEndpoint: %w", err)
+	}
+	if u.Scheme != "https" {
+		return errors.New("publicEndpoint must use https")
+	}
+	if u.Host == "" {
+		return errors.New("publicEndpoint must include host")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return errors.New("publicEndpoint must not include path")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("publicEndpoint must not include query or fragment")
 	}
 	for _, cidr := range cfg.AllowedCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:cryptography/cryptography.dart' hide Hmac;
@@ -9,6 +9,18 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
+import 'agentic_remote_transport.dart';
+
+@visibleForTesting
+Uri agenticEndpointUri(String endpoint, String path, {String? scheme}) {
+  final base = Uri.parse(endpoint);
+  return base.replace(
+    scheme: scheme ?? base.scheme,
+    path: path,
+    query: null,
+    fragment: null,
+  );
+}
 
 class AgenticRemoteApi {
   final StreamController<String> diagnostics =
@@ -24,6 +36,7 @@ class AgenticRemoteApi {
   WebSocketChannel? _channel;
   http.Client client = http.Client();
   String? bearerToken;
+  String? _trustedFingerprint;
 
   Future<void> connectFromPayload(
     String raw, {
@@ -34,6 +47,15 @@ class AgenticRemoteApi {
     diagnostics.add('Resolving endpoint...');
     diagnostics.add('Initiating TLS Handshake...');
     diagnostics.add('Validating Certificate Fingerprint...');
+    await _validateEndpointTrust(webTrustConfirmed: webTrustConfirmed);
+    diagnostics.add('Executing Auth-v2 Challenge...');
+    await _authenticate(clientName.trim());
+    diagnostics.add('Session Established');
+  }
+
+  Future<void> _validateEndpointTrust({required bool webTrustConfirmed}) async {
+    final uri = Uri.parse(pairing!.endpoint);
+    _trustedFingerprint = null;
     if (kIsWeb) {
       diagnostics.add(
         'Browser TLS fingerprint access unavailable; relying on HTTPS origin trust for web',
@@ -42,38 +64,46 @@ class AgenticRemoteApi {
         diagnostics.add('Failed: Manual endpoint confirmation required');
         throw StateError('Manual endpoint confirmation required');
       }
-    } else {
-      await _validateFingerprint();
+      client = createHttpClient(
+        trustedFingerprint: null,
+        formatFingerprint: _formatFingerprint,
+      );
+      return;
     }
-    diagnostics.add('Executing Auth-v2 Challenge...');
-    await _authenticate(clientName.trim());
-    diagnostics.add('Session Established');
-  }
-
-  Future<void> _validateFingerprint() async {
-    final uri = Uri.parse(pairing!.endpoint);
-    final socket = await SecureSocket.connect(
-      uri.host,
-      uri.port,
-      onBadCertificate: (_) => true,
-    );
-    final certificate = socket.peerCertificate;
-    socket.destroy();
-    if (certificate == null) {
+    if (await platformTrustsEndpoint(uri)) {
+      client = createHttpClient(
+        trustedFingerprint: null,
+        formatFingerprint: _formatFingerprint,
+      );
+      return;
+    }
+    final der = await peerCertificateDer(uri);
+    if (der == null) {
       throw StateError('No certificate presented');
     }
-    final fingerprint = _formatFingerprint(certificate.der);
+    final fingerprint = _formatFingerprint(der);
     if (fingerprint != pairing!.fingerprint) {
       diagnostics.add('Failed: Certificate fingerprint mismatch');
       throw StateError('Certificate fingerprint mismatch');
     }
+    _trustedFingerprint = pairing!.fingerprint;
+    client = createHttpClient(
+      trustedFingerprint: _trustedFingerprint,
+      formatFingerprint: _formatFingerprint,
+    );
   }
 
   Future<void> _authenticate(String clientName) async {
-    final endpoint = Uri.parse(
-      pairing!.endpoint.replaceFirst('https://', 'wss://'),
-    ).replace(path: '/v1/ws/sessions/bootstrap');
-    _channel = WebSocketChannel.connect(endpoint);
+    final endpoint = agenticEndpointUri(
+      pairing!.endpoint,
+      '/v1/ws/sessions/bootstrap',
+      scheme: 'wss',
+    );
+    _channel = connectWebSocket(
+      endpoint,
+      trustedFingerprint: _trustedFingerprint,
+      formatFingerprint: _formatFingerprint,
+    );
     final clientNonce = base64UrlEncode(
       List<int>.generate(32, (index) => index + 1),
     ).replaceAll('=', '');
@@ -139,7 +169,7 @@ class AgenticRemoteApi {
 
   Future<List<SessionSummary>> fetchSessions() async {
     final response = await client.get(
-      Uri.parse('${pairing!.endpoint}/v1/sessions'),
+      agenticEndpointUri(pairing!.endpoint, '/v1/sessions'),
       headers: {'Authorization': 'Bearer $bearerToken'},
     );
     final decoded = jsonDecode(response.body) as List<dynamic>;
