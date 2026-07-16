@@ -3,6 +3,8 @@
 ## Rolling QR pairing and Auth-v2
 
 1. `agenticRemote serve --config ...` prints a QR payload containing `v`, `endpoint`, `fingerprint`, `pairingId`, `token`, and `expiresAt`, plus the same raw JSON line for paste/debug.
+
+`endpoint` is one HTTPS root base URL for this daemon run; it may be loopback, VPN/Tailscale, or a plain Cloudflare Tunnel/public-CA hostname. Native clients first accept platform-trusted TLS, otherwise they require the QR `fingerprint` to match the presented daemon certificate. Web clients cannot pin certificates and require the browser to trust the endpoint.
 2. The visible QR rolls every 45 seconds. Each token expires 2 minutes after creation, so a scan just before rotation can still complete.
 3. Pairing tokens are single-use. The server persists only `pairingId`, `salt`, `verifier`, and `expiresAt`; never the raw `token`. A successful proof consumes the pairing and immediately triggers the daemon to print the next QR.
 4. Client opens `/v1/ws/sessions/bootstrap` without a bearer token and sends `auth.hello` with `pairingId`, a base64url 32-byte `clientNonce`, and `clientName`.

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ type TLSMaterial struct {
 	Certificate tls.Certificate
 }
 
-func EnsureTLS(stateDir, listenAddr string) (*TLSMaterial, error) {
+func EnsureTLS(stateDir, listenAddr, publicEndpoint string) (*TLSMaterial, error) {
 	tlsDir := filepath.Join(stateDir, "tls")
 	certPath := filepath.Join(tlsDir, "cert.pem")
 	keyPath := filepath.Join(tlsDir, "key.pem")
@@ -37,6 +38,7 @@ func EnsureTLS(stateDir, listenAddr string) (*TLSMaterial, error) {
 		if _, err := os.Stat(keyPath); err != nil {
 			return nil, err
 		}
+		// ponytail: persisted certs are reused; delete tls/cert.pem and tls/key.pem after changing publicEndpoint if browsers need new hostname SANs.
 		return loadTLS(certPath, keyPath)
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -50,6 +52,7 @@ func EnsureTLS(stateDir, listenAddr string) (*TLSMaterial, error) {
 		return nil, err
 	}
 	now := time.Now().UTC()
+	ips, dnsNames := certificateHosts(listenAddr, publicEndpoint)
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "agenticRemote"},
@@ -60,7 +63,8 @@ func EnsureTLS(stateDir, listenAddr string) (*TLSMaterial, error) {
 			x509.ExtKeyUsageServerAuth,
 		},
 		BasicConstraintsValid: true,
-		IPAddresses:           certificateIPs(listenAddr),
+		IPAddresses:           ips,
+		DNSNames:              dnsNames,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
 	if err != nil {
@@ -107,26 +111,44 @@ func Fingerprint(der []byte) string {
 	return strings.Join(parts, ":")
 }
 
-func certificateIPs(listenAddr string) []net.IP {
+func certificateHosts(listenAddr, publicEndpoint string) ([]net.IP, []string) {
 	ips := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+	dnsNames := []string{}
 	host, _, err := net.SplitHostPort(listenAddr)
 	if err == nil {
-		if ip := net.ParseIP(host); ip != nil {
+		if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() {
 			ips = append(ips, ip)
 		}
 	}
-	seen := map[string]bool{}
-	out := make([]net.IP, 0, len(ips))
+	if u, err := url.Parse(publicEndpoint); err == nil {
+		host := u.Hostname()
+		if ip := net.ParseIP(host); ip != nil {
+			ips = append(ips, ip)
+		} else if host != "" {
+			dnsNames = append(dnsNames, strings.ToLower(host))
+		}
+	}
+	seenIPs := map[string]bool{}
+	uniqueIPs := make([]net.IP, 0, len(ips))
 	for _, ip := range ips {
 		if ip == nil {
 			continue
 		}
 		key := ip.String()
-		if seen[key] {
+		if seenIPs[key] {
 			continue
 		}
-		seen[key] = true
-		out = append(out, ip)
+		seenIPs[key] = true
+		uniqueIPs = append(uniqueIPs, ip)
 	}
-	return out
+	seenDNS := map[string]bool{}
+	uniqueDNS := make([]string, 0, len(dnsNames))
+	for _, name := range dnsNames {
+		if seenDNS[name] {
+			continue
+		}
+		seenDNS[name] = true
+		uniqueDNS = append(uniqueDNS, name)
+	}
+	return uniqueIPs, uniqueDNS
 }

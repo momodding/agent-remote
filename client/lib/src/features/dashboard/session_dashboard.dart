@@ -23,6 +23,7 @@ class _SessionDashboardState extends State<SessionDashboard> {
   String query = '';
   String connectionError = '';
   bool scanning = false;
+  bool allowBadCertificates = false;
 
   @override
   Widget build(BuildContext context) {
@@ -40,10 +41,14 @@ class _SessionDashboardState extends State<SessionDashboard> {
                 nameController: nameController,
                 scanning: scanning,
                 error: connectionError,
+                allowBadCertificates: allowBadCertificates,
                 onScanToggle: () => setState(() => scanning = !scanning),
                 onPayloadScanned: (value) {
                   payloadController.text = value;
                   setState(() => scanning = false);
+                },
+                onAllowBadCertificatesChanged: (value) {
+                  setState(() => allowBadCertificates = value);
                 },
                 onConnect: () async {
                   try {
@@ -52,6 +57,7 @@ class _SessionDashboardState extends State<SessionDashboard> {
                       payloadController.text,
                       clientName: nameController.text,
                       webTrustConfirmed: true,
+                      allowBadCertificates: allowBadCertificates,
                     );
                   } catch (error) {
                     setState(() => connectionError = error.toString());
@@ -118,18 +124,22 @@ class _PairingPanel extends StatelessWidget {
     required this.payloadController,
     required this.nameController,
     required this.scanning,
+    required this.allowBadCertificates,
     required this.error,
     required this.onScanToggle,
     required this.onPayloadScanned,
+    required this.onAllowBadCertificatesChanged,
     required this.onConnect,
   });
 
   final TextEditingController payloadController;
   final TextEditingController nameController;
   final bool scanning;
+  final bool allowBadCertificates;
   final String error;
   final VoidCallback onScanToggle;
   final ValueChanged<String> onPayloadScanned;
+  final ValueChanged<bool> onAllowBadCertificatesChanged;
   final Future<void> Function() onConnect;
 
   @override
@@ -150,6 +160,15 @@ class _PairingPanel extends StatelessWidget {
             placeholder: const Text('Paste QR payload JSON'),
             maxLines: 3,
           ),
+          if (!kIsWeb) ...[
+            const SizedBox(height: 8),
+            ShadCheckbox(
+              value: allowBadCertificates,
+              onChanged: onAllowBadCertificatesChanged,
+              label: const Text('Skip TLS certificate verification'),
+              sublabel: const Text('Internal Tailscale/VPN only'),
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             children: [
