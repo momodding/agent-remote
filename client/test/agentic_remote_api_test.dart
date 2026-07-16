@@ -13,6 +13,22 @@ void main() {
     );
   });
 
+  test('agenticEndpointUri builds plaintext bootstrap websocket path', () {
+    expect(
+      agenticEndpointUri(
+        'http://host.example',
+        '/v1/ws/sessions/bootstrap',
+        scheme: agenticWebSocketScheme('http://host.example'),
+      ).toString(),
+      'ws://host.example/v1/ws/sessions/bootstrap',
+    );
+  });
+
+  test('agenticWebSocketScheme maps http and https', () {
+    expect(agenticWebSocketScheme('https://host.example'), 'wss');
+    expect(agenticWebSocketScheme('http://host.example'), 'ws');
+  });
+
   test('agenticEndpointUri builds sessions path', () {
     expect(
       agenticEndpointUri('https://host.example', '/v1/sessions').toString(),

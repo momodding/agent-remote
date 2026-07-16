@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/agenticremote/agenticremote/backend/internal/config"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
+	"github.com/agenticremote/agenticremote/backend/internal/server"
 )
 
 func TestRunRejectsPairCommand(t *testing.T) {
@@ -59,24 +65,55 @@ func TestRunServeStartsDaemon(t *testing.T) {
 	}
 }
 
+func TestServeListenerHTTPModeAcceptsPlainHealth(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ListenScheme = "http"
+	httpServer := server.ServerTimeouts(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), listener.Addr().String())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveListener(httpServer, listener, cfg, nil)
+	}()
+	resp, err := http.Get("http://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if err := httpServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("unexpected serveListener error: %v", err)
+	}
+}
+
 func writeConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	content := `{
-  "listenAddr": "127.0.0.1:0",
-  "publicEndpoint": "https://127.0.0.1:8765",
-  "stateDir": ".agenticremote",
-  "workspaceRoot": ".",
-  "uploadDir": "uploads",
-  "allowedCidrs": ["127.0.0.0/8", "::1/128"],
-  "maxConnections": 8,
-  "maxSessions": 16,
-  "channelBufferSize": 256,
-  "maxScrollbackBytes": 10485760,
-  "allowDestructiveFiles": false,
-  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
-}`
+	  "listenAddr": "127.0.0.1:0",
+	  "listenScheme": "https",
+	  "publicEndpoint": "https://127.0.0.1:8765",
+	  "stateDir": ".agenticremote",
+	  "workspaceRoot": ".",
+	  "uploadDir": "uploads",
+	  "allowedCidrs": ["127.0.0.0/8", "::1/128"],
+	  "maxConnections": 8,
+	  "maxSessions": 16,
+	  "channelBufferSize": 256,
+	  "maxScrollbackBytes": 10485760,
+	  "allowDestructiveFiles": false,
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

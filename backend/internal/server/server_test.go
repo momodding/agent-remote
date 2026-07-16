@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +31,19 @@ func TestProtectedSessionsRequireBearer(t *testing.T) {
 	srv.Handler().ServeHTTP(resp, req)
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+}
+
+func TestHandlerLogsRequestAttempt(t *testing.T) {
+	srv := newTestServer(t)
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	output := buf.String()
+	if !strings.Contains(output, "request start") || !strings.Contains(output, "method=GET") || !strings.Contains(output, "path=/healthz") {
+		t.Fatalf("expected request log, got %q", output)
 	}
 }
 

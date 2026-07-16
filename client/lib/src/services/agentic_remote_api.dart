@@ -22,6 +22,10 @@ Uri agenticEndpointUri(String endpoint, String path, {String? scheme}) {
   );
 }
 
+@visibleForTesting
+String agenticWebSocketScheme(String endpoint) =>
+    Uri.parse(endpoint).scheme == 'http' ? 'ws' : 'wss';
+
 class AgenticRemoteApi {
   final StreamController<String> diagnostics =
       StreamController<String>.broadcast();
@@ -46,14 +50,21 @@ class AgenticRemoteApi {
     bool allowBadCertificates = false,
   }) async {
     pairing = PairingPayload.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    final endpointScheme = Uri.parse(pairing!.endpoint).scheme;
     diagnostics.add('Resolving endpoint...');
-    diagnostics.add('Initiating TLS Handshake...');
+    if (endpointScheme == 'http') {
+      diagnostics.add('Using plaintext HTTP endpoint...');
+    } else {
+      diagnostics.add('Initiating TLS Handshake...');
+    }
     _allowBadCertificates = allowBadCertificates;
-    diagnostics.add(
-      allowBadCertificates
-          ? 'Skipping TLS certificate verification for internal connection...'
-          : 'Validating Certificate Fingerprint...',
-    );
+    if (endpointScheme != 'http') {
+      diagnostics.add(
+        allowBadCertificates
+            ? 'Skipping TLS certificate verification for internal connection...'
+            : 'Validating Certificate Fingerprint...',
+      );
+    }
     await _validateEndpointTrust(webTrustConfirmed: webTrustConfirmed);
     diagnostics.add('Executing Auth-v2 Challenge...');
     await _authenticate(clientName.trim());
@@ -63,6 +74,14 @@ class AgenticRemoteApi {
   Future<void> _validateEndpointTrust({required bool webTrustConfirmed}) async {
     final uri = Uri.parse(pairing!.endpoint);
     _trustedFingerprint = null;
+    if (uri.scheme == 'http') {
+      client = createHttpClient(
+        trustedFingerprint: null,
+        formatFingerprint: _formatFingerprint,
+        allowBadCertificates: false,
+      );
+      return;
+    }
     if (_allowBadCertificates) {
       if (kIsWeb) {
         diagnostics.add(
@@ -121,7 +140,7 @@ class AgenticRemoteApi {
     final endpoint = agenticEndpointUri(
       pairing!.endpoint,
       '/v1/ws/sessions/bootstrap',
-      scheme: 'wss',
+      scheme: agenticWebSocketScheme(pairing!.endpoint),
     );
     _channel = connectWebSocket(
       endpoint,
