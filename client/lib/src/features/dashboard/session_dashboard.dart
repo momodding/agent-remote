@@ -193,6 +193,17 @@ class _PairingPanel extends StatelessWidget {
                     onPayloadScanned(value);
                   }
                 },
+                errorBuilder: (context, error) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Camera error: ${error.errorDetails?.message ?? error.errorCode.message}',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ],

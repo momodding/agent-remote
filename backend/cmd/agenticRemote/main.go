@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,7 +23,78 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-const version = "agenticRemote dev"
+const (
+	version       = "agenticRemote dev"
+	sniffDeadline = 5 * time.Second
+)
+
+type sniffListener struct {
+	net.Listener
+	tlsConfig *tls.Config
+}
+
+type prependConn struct {
+	net.Conn
+	buf  byte
+	done bool
+}
+
+func (c *prependConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if !c.done {
+		c.done = true
+		p[0] = c.buf
+		if len(p) == 1 {
+			return 1, nil
+		}
+		n, err := c.Conn.Read(p[1:])
+		return n + 1, err
+	}
+	return c.Conn.Read(p)
+}
+
+func (l *sniffListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(sniffDeadline)); err != nil {
+		_ = conn.Close()
+		return nil, &tempError{err: err}
+	}
+	var buf [1]byte
+	if _, err := io.ReadFull(conn, buf[:]); err != nil {
+		_ = conn.Close()
+		return nil, &tempError{err: err}
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, &tempError{err: err}
+	}
+	wrapped := &prependConn{Conn: conn, buf: buf[0]}
+	if buf[0] == 0x16 && l.tlsConfig != nil {
+		return tls.Server(wrapped, l.tlsConfig), nil
+	}
+	return wrapped, nil
+}
+
+type tempError struct{ err error }
+
+func (e *tempError) Error() string { return e.err.Error() }
+
+func (e *tempError) Temporary() bool { return true }
+
+func (e *tempError) Timeout() bool {
+	var netErr net.Error
+	if errors.As(e.err, &netErr) {
+		return netErr.Timeout()
+	}
+	return false
+}
+
+func (e *tempError) Unwrap() error { return e.err }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -122,11 +195,15 @@ func serve(configPath string) error {
 	}
 	go rotatePairing(pairings, cfg, tlsMaterial.Fingerprint, qrRefresh, pairingReady)
 	httpServer := server.ServerTimeouts(srv.Handler(), cfg.ListenAddr)
-	httpServer.TLSConfig = srv.TLSConfig()
-	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	tlsConfig := srv.TLSConfig()
+	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+	httpServer.TLSConfig = tlsConfig
+	rawListener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
+	listener := &sniffListener{Listener: rawListener, tlsConfig: tlsConfig}
+	log.Printf("serving on %s (accepting HTTP and HTTPS)", listener.Addr())
 	if os.Getenv("AGENTICREMOTE_TEST_ONESHOT") == "1" || cfg.ListenAddr == "127.0.0.1:0" {
 		go func() {
 			select {
@@ -138,22 +215,13 @@ func serve(configPath string) error {
 			_ = httpServer.Shutdown(ctx)
 		}()
 	}
-	if err := serveListener(httpServer, listener, cfg, tlsMaterial); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	if os.Getenv("AGENTICREMOTE_TEST_ONESHOT") == "1" || cfg.ListenAddr == "127.0.0.1:0" {
 		return errors.New("daemon exited")
 	}
 	return nil
-}
-
-func serveListener(httpServer *http.Server, listener net.Listener, cfg config.Config, tlsMaterial *security.TLSMaterial) error {
-	if cfg.ListenScheme == "http" {
-		log.Printf("serving HTTP on %s", listener.Addr())
-		return httpServer.Serve(listener)
-	}
-	log.Printf("serving HTTPS on %s", listener.Addr())
-	return httpServer.ServeTLS(listener, tlsMaterial.CertPath, tlsMaterial.KeyPath)
 }
 
 func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint string, refresh <-chan struct{}, ready chan<- struct{}) {
