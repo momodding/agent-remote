@@ -28,6 +28,7 @@ class AppState extends ChangeNotifier {
       webTrustConfirmed: webTrustConfirmed,
       allowBadCertificates: allowBadCertificates,
     );
+    sessions.value = await api.fetchSessions();
   }
 
   static String validateClientName(String name) {
