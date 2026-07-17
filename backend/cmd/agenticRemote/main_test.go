@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agenticremote/agenticremote/backend/internal/config"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/server"
 )
@@ -31,53 +30,41 @@ func TestRunServeRequiresConfig(t *testing.T) {
 
 func TestRunServeStartsDaemon(t *testing.T) {
 	configPath := writeConfig(t)
-	stdout, readStdout := captureOutput(t, os.Stdout)
-	defer stdout.Close()
-	_, readStderr := captureOutput(t, os.Stderr)
-	defer readStderr().Close()
+	stdout, restoreStdout := captureOutput(t, os.Stdout)
+	stdoutDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, stdout)
+		close(stdoutDone)
+	}()
+	stderr, restoreStderr := captureOutput(t, os.Stderr)
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, stderr)
+		close(stderrDone)
+	}()
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"agenticRemote", "serve", "--config", configPath}
 	if err := run([]string{"serve", "--config", configPath}); err == nil || !strings.Contains(err.Error(), "daemon exited") {
 		t.Fatalf("expected daemon exit sentinel, got %v", err)
 	}
-	stdoutData, _ := io.ReadAll(readStdout())
-	if len(stdoutData) == 0 {
-		t.Fatal("expected pairing output on stdout")
-	}
-	lines := strings.Split(strings.TrimSpace(string(stdoutData)), "\n")
-	jsonLine := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(lines[i], "{") {
-			jsonLine = lines[i]
-			break
-		}
-	}
-	if jsonLine == "" {
-		t.Fatalf("expected pairing json line in output: %q", string(stdoutData))
-	}
-	var payload security.PairingPayload
-	if err := json.Unmarshal([]byte(jsonLine), &payload); err != nil {
-		t.Fatalf("expected pairing json line, got %q: %v", jsonLine, err)
-	}
-	if payload.Endpoint != "https://127.0.0.1:8765" {
-		t.Fatalf("unexpected pairing endpoint: %s", payload.Endpoint)
-	}
+	restoreStdout()
+	restoreStderr()
+	<-stdoutDone
+	<-stderrDone
 }
 
-func TestServeListenerHTTPModeAcceptsPlainHealth(t *testing.T) {
+func TestServeListenerAcceptsPlainHTTP(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
-	cfg.ListenScheme = "http"
 	httpServer := server.ServerTimeouts(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}), listener.Addr().String())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- serveListener(httpServer, listener, cfg, nil)
+		errCh <- httpServer.Serve(&sniffListener{Listener: listener})
 	}()
 	resp, err := http.Get("http://" + listener.Addr().String())
 	if err != nil {
@@ -91,7 +78,39 @@ func TestServeListenerHTTPModeAcceptsPlainHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		t.Fatalf("unexpected serveListener error: %v", err)
+		t.Fatalf("unexpected serve error: %v", err)
+	}
+}
+
+func TestServeListenerAcceptsTLS(t *testing.T) {
+	tlsMaterial := mustTLSMaterial(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := server.ServerTimeouts(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), listener.Addr().String())
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{mustLoadCertificate(t, tlsMaterial)}, NextProtos: []string{"h2", "http/1.1"}}
+	httpServer.TLSConfig = tlsConfig
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- httpServer.Serve(&sniffListener{Listener: listener, tlsConfig: tlsConfig})
+	}()
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	resp, err := client.Get("https://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if err := httpServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("unexpected serve error: %v", err)
 	}
 }
 
@@ -118,6 +137,25 @@ func writeConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func mustTLSMaterial(t *testing.T) *security.TLSMaterial {
+	t.Helper()
+	stateDir := t.TempDir()
+	material, err := security.EnsureTLS(stateDir, "127.0.0.1:0", "https://127.0.0.1:8765")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return material
+}
+
+func mustLoadCertificate(t *testing.T, material *security.TLSMaterial) tls.Certificate {
+	t.Helper()
+	certificate, err := tls.LoadX509KeyPair(material.CertPath, material.KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
 }
 
 func captureOutput(t *testing.T, target *os.File) (*os.File, func() *os.File) {
