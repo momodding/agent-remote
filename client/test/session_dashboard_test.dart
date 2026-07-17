@@ -33,6 +33,7 @@ void main() {
     ];
 
     await tester.pumpWidget(SessionDashboard(state: state));
+    expect(find.text('New session'), findsOneWidget);
     expect(find.text('hello world'), findsOneWidget);
     await tester.enterText(
       find.widgetWithText(ShadInput, 'Search sessions'),

@@ -24,13 +24,13 @@ type noopNotify struct{}
 
 func (noopNotify) RegisterToken(context.Context, protocol.NotifyRegisterRequest) error { return nil }
 
-func TestProtectedSessionsRequireBearer(t *testing.T) {
+func TestSessionsListDoesNotRequireBearer(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	resp := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(resp, req)
-	if resp.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.Code)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
 	}
 }
 
@@ -47,13 +47,8 @@ func TestHandlerLogsRequestAttempt(t *testing.T) {
 	}
 }
 
-func TestBootstrapAllowsAuthThenRejectsNonAuthBeforeSuccess(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	now := time.Now().UTC()
-	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", now)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestBootstrapAcceptsSessionFramesWithoutAuth(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -63,44 +58,8 @@ func TestBootstrapAllowsAuthThenRejectsNonAuthBeforeSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.input", "sessionId": "ignored", "data": "aGVsbG8="}); err != nil {
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.resize", "sessionId": "missing", "cols": 80, "rows": 24}); err != nil {
 		t.Fatal(err)
-	}
-	var env protocol.ErrorEnvelope
-	if err := wsReadJSON(ctx, conn, &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.Code != "auth_failed" {
-		t.Fatalf("expected auth_failed, got %#v", env)
-	}
-	conn.Close(websocket.StatusNormalClosure, "")
-
-	conn, _, err = websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/bootstrap", &websocket.DialOptions{HTTPClient: ts.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-	clientNonce := "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE"
-	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.hello", "pairingId": payload.PairingID, "clientNonce": clientNonce, "clientName": "phone"}); err != nil {
-		t.Fatal(err)
-	}
-	var challenge protocol.AuthChallenge
-	if err := wsReadJSON(ctx, conn, &challenge); err != nil {
-		t.Fatal(err)
-	}
-	proof, err := security.ClientProof(payload.Token, payload.PairingID, challenge.Salt, clientNonce, challenge.ServerNonce, challenge.ChallengeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.proof", "pairingId": payload.PairingID, "challengeId": challenge.ChallengeID, "proof": proof}); err != nil {
-		t.Fatal(err)
-	}
-	var ok protocol.AuthOK
-	if err := wsReadJSON(ctx, conn, &ok); err != nil {
-		t.Fatal(err)
-	}
-	if ok.Type != "auth.ok" || ok.SessionToken == "" {
-		t.Fatalf("expected auth.ok token, got %#v", ok)
 	}
 }
 

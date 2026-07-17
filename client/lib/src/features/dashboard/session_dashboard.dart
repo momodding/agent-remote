@@ -65,6 +65,22 @@ class _SessionDashboardState extends State<SessionDashboard> {
                 },
               ),
               const SizedBox(height: 16),
+              ShadButton(
+                onPressed: () async {
+                  try {
+                    setState(() => connectionError = '');
+                    await widget.state.api.createSession(
+                      name: 'remote session',
+                    );
+                    widget.state.sessions.value =
+                        await widget.state.api.fetchSessions();
+                  } catch (error) {
+                    setState(() => connectionError = error.toString());
+                  }
+                },
+                child: const Text('New session'),
+              ),
+              const SizedBox(height: 16),
               ShadInput(
                 controller: controller,
                 placeholder: const Text('Search sessions'),
