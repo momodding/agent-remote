@@ -1,6 +1,7 @@
 .agenticremote/
 backend/bin/
 client/build/
+builds/
 .dart_tool/
 .packages
 *.log
