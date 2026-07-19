@@ -30,32 +30,48 @@ Future<Uint8List?> peerCertificateDer(Uri uri) async {
 }
 
 http.Client createHttpClient({
-	String? trustedFingerprint,
-	required String Function(Uint8List) formatFingerprint,
-	bool skipFingerprintVerification = false,
-}) {
-	trustedFingerprint;
-	formatFingerprint;
-	skipFingerprintVerification;
-	return IOClient(_insecureHttpClient());
-}
+  String? trustedFingerprint,
+  required String Function(Uint8List) formatFingerprint,
+  bool skipFingerprintVerification = false,
+}) => IOClient(
+  _httpClient(
+    trustedFingerprint: trustedFingerprint,
+    formatFingerprint: formatFingerprint,
+    skipFingerprintVerification: skipFingerprintVerification,
+  ),
+);
 
 WebSocketChannel connectWebSocket(
-	Uri uri, {
-	String? trustedFingerprint,
-	required String Function(Uint8List) formatFingerprint,
-	bool skipFingerprintVerification = false,
-}) {
-	trustedFingerprint;
-	formatFingerprint;
-	skipFingerprintVerification;
-	return IOWebSocketChannel.connect(uri, customClient: _insecureHttpClient());
-}
+  Uri uri, {
+  String? trustedFingerprint,
+  required String Function(Uint8List) formatFingerprint,
+  bool skipFingerprintVerification = false,
+}) => IOWebSocketChannel.connect(
+  uri,
+  customClient: _httpClient(
+    trustedFingerprint: trustedFingerprint,
+    formatFingerprint: formatFingerprint,
+    skipFingerprintVerification: skipFingerprintVerification,
+  ),
+);
 
-HttpClient _insecureHttpClient() {
+HttpClient _httpClient({
+  String? trustedFingerprint,
+  required String Function(Uint8List) formatFingerprint,
+  required bool skipFingerprintVerification,
+}) {
   final client = HttpClient();
-  // ponytail: internal-only escape hatch; replace with managed CA trust before external use.
-  client.badCertificateCallback = (cert, host, port) => true;
+  if (skipFingerprintVerification) {
+    // ponytail: internal-only escape hatch; remove when managed CA trust exists.
+    client.badCertificateCallback = (cert, host, port) => true;
+    return client;
+  }
+  client.badCertificateCallback = (cert, host, port) {
+    if (trustedFingerprint == null || trustedFingerprint.isEmpty) {
+      return false;
+    }
+    return formatFingerprint(cert.der) == trustedFingerprint.toUpperCase();
+  };
   return client;
 }
 
