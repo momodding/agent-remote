@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:agentic_remote/src/protocol/messages.dart';
 import 'package:agentic_remote/src/services/agentic_remote_api.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart' as http_testing;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -126,5 +129,69 @@ void main() {
       agenticEndpointUri('https://host.example', '/v1/sessions').toString(),
       'https://host.example/v1/sessions',
     );
+  });
+
+  // -- 502 retry / cache tests --
+
+  final sessionJson = jsonEncode([
+    {
+      'id': 'active-1',
+      'name': 'dev',
+      'command': '/bin/sh',
+      'cwd': '/home',
+      'state': 'running',
+      'createdAt': '2026-01-01T00:00:00Z',
+      'updatedAt': '2026-01-01T00:00:01Z',
+      'preview': <String>[],
+    },
+  ]);
+
+  test('fetchSessions retries one gateway error and returns active sessions',
+      () async {
+    var callCount = 0;
+    final api = AgenticRemoteApi(
+      client: http_testing.MockClient((request) async {
+        callCount++;
+        if (callCount == 1) {
+          return http.Response('bad gateway', 502);
+        }
+        return http.Response(sessionJson, 200);
+      }),
+    );
+    api.pairing = payload;
+
+    final result = await api.fetchSessions();
+    expect(result, hasLength(1));
+    expect(result.first.id, 'active-1');
+    expect(callCount, 2);
+  });
+
+  test('fetchSessions reuses cached sessions after repeated gateway errors',
+      () async {
+    var callCount = 0;
+    final api = AgenticRemoteApi(
+      client: http_testing.MockClient((request) async {
+        callCount++;
+        if (callCount == 1) {
+          return http.Response(sessionJson, 200);
+        }
+        return http.Response('bad gateway', 502);
+      }),
+    );
+    api.pairing = payload;
+
+    // First fetch succeeds, populating the cache.
+    final first = await api.fetchSessions();
+    expect(first.first.id, 'active-1');
+
+    // Subscribe before the second call so the broadcast event is captured.
+    final diagnostic = api.diagnostics.stream.first;
+
+    // Second fetch hits 502 twice (initial + retry) but returns cached.
+    final second = await api.fetchSessions();
+    expect(second.first.id, 'active-1');
+    expect(await diagnostic,
+        'Session fetch failed (502); showing last known sessions');
+    expect(callCount, 3); // 1 success + 2 retried 502s
   });
 }
