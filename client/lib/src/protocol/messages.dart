@@ -6,11 +6,13 @@ class PairingPayload {
     required this.pairingId,
     required this.token,
     required this.expiresAt,
+    this.skipFingerprintVerification = false,
   });
 
   final int version;
   final String endpoint;
   final String fingerprint;
+  final bool skipFingerprintVerification;
   final String pairingId;
   final String token;
   final DateTime expiresAt;
@@ -37,6 +39,7 @@ class PairingPayload {
       pairingId: json['pairingId'] as String,
       token: json['token'] as String,
       expiresAt: DateTime.parse(json['expiresAt'] as String),
+      skipFingerprintVerification: json['skipFingerprintVerification'] == true,
     );
   }
 }

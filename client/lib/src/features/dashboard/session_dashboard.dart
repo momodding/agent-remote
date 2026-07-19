@@ -23,7 +23,8 @@ class _SessionDashboardState extends State<SessionDashboard> {
   String query = '';
   String connectionError = '';
   bool scanning = false;
-  bool skipFingerprintVerification = false;
+  bool skipFingerprintVerification =
+      AppState.defaultSkipFingerprintVerification;
 
   @override
   Widget build(BuildContext context) {
@@ -72,8 +73,8 @@ class _SessionDashboardState extends State<SessionDashboard> {
                     await widget.state.api.createSession(
                       name: 'remote session',
                     );
-                    widget.state.sessions.value =
-                        await widget.state.api.fetchSessions();
+                    widget.state.sessions.value = await widget.state.api
+                        .fetchSessions();
                   } catch (error) {
                     setState(() => connectionError = error.toString());
                   }

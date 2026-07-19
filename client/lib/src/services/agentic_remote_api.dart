@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
+import 'package:crypto/crypto.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
@@ -23,6 +25,26 @@ Uri agenticEndpointUri(String endpoint, String path, {String? scheme}) {
 @visibleForTesting
 String agenticWebSocketScheme(String endpoint) =>
     Uri.parse(endpoint).scheme == 'http' ? 'ws' : 'wss';
+
+const bool clientConfigSkipFingerprintVerification = bool.fromEnvironment(
+  'AGENTICREMOTE_SKIP_FINGERPRINT_VERIFICATION',
+);
+
+@visibleForTesting
+bool shouldSkipFingerprintVerification(
+  PairingPayload payload,
+  bool requestedSkip,
+) =>
+    requestedSkip ||
+    payload.skipFingerprintVerification ||
+    clientConfigSkipFingerprintVerification;
+
+@visibleForTesting
+String formatCertificateFingerprint(Uint8List der) => sha256
+    .convert(der)
+    .bytes
+    .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
+    .join(':');
 
 class AgenticRemoteApi {
   final StreamController<String> diagnostics =
@@ -46,9 +68,11 @@ class AgenticRemoteApi {
     required bool webTrustConfirmed,
     bool skipFingerprintVerification = false,
   }) async {
-    webTrustConfirmed;
-    _skipFingerprintVerification = skipFingerprintVerification;
     pairing = PairingPayload.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    _skipFingerprintVerification = shouldSkipFingerprintVerification(
+      pairing!,
+      skipFingerprintVerification,
+    );
     final endpointScheme = Uri.parse(pairing!.endpoint).scheme;
     diagnostics.add('Resolving endpoint...');
     if (endpointScheme == 'http') {
@@ -61,8 +85,10 @@ class AgenticRemoteApi {
     }
     // ponytail: fingerprint actually checked when transport implements pinning; bypass flag skips the step
     client = createHttpClient(
-      trustedFingerprint: _skipFingerprintVerification ? null : pairing!.fingerprint,
-      formatFingerprint: (_) => '',
+      trustedFingerprint: _skipFingerprintVerification
+          ? null
+          : pairing!.fingerprint,
+      formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
     if (_skipFingerprintVerification) {
@@ -81,8 +107,10 @@ class AgenticRemoteApi {
     );
     _channel = connectWebSocket(
       endpoint,
-      trustedFingerprint: _skipFingerprintVerification ? null : pairing!.fingerprint,
-      formatFingerprint: (_) => '',
+      trustedFingerprint: _skipFingerprintVerification
+          ? null
+          : pairing!.fingerprint,
+      formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
     bearerToken = 'dev-no-auth';
@@ -150,5 +178,4 @@ class AgenticRemoteApi {
     sessions.add(items);
     return items;
   }
-
 }

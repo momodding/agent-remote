@@ -6,6 +6,9 @@ import '../services/agentic_remote_api.dart';
 class AppState extends ChangeNotifier {
   AppState({AgenticRemoteApi? api}) : api = api ?? AgenticRemoteApi();
 
+  static const bool defaultSkipFingerprintVerification =
+      clientConfigSkipFingerprintVerification;
+
   final AgenticRemoteApi api;
   final ValueNotifier<List<String>> diagnostics = ValueNotifier<List<String>>(
     <String>[],
