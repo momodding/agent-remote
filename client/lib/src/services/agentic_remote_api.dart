@@ -59,6 +59,8 @@ String? fingerprintForTransport({
 }
 
 class AgenticRemoteApi {
+  AgenticRemoteApi({http.Client? client}) : client = client ?? http.Client();
+
   final StreamController<String> diagnostics =
       StreamController<String>.broadcast();
   final StreamController<List<SessionSummary>> sessions =
@@ -70,7 +72,7 @@ class AgenticRemoteApi {
 
   PairingPayload? pairing;
   WebSocketChannel? _channel;
-  http.Client client = http.Client();
+  http.Client client;
   String? bearerToken;
   bool _skipFingerprintVerification = false;
   String? _trustedFingerprint;
