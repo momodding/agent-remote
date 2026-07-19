@@ -73,6 +73,7 @@ class AgenticRemoteApi {
   PairingPayload? pairing;
   WebSocketChannel? _channel;
   http.Client client;
+  List<SessionSummary> _lastSessions = const <SessionSummary>[];
   String? bearerToken;
   bool _skipFingerprintVerification = false;
   String? _trustedFingerprint;
@@ -185,9 +186,16 @@ class AgenticRemoteApi {
   }
 
   Future<List<SessionSummary>> fetchSessions() async {
-    final response = await client.get(
-      agenticEndpointUri(pairing!.endpoint, '/v1/sessions'),
-    );
+    final uri = agenticEndpointUri(pairing!.endpoint, '/v1/sessions');
+    var response = await client.get(uri);
+    if (response.statusCode == 502) {
+      response = await client.get(uri);
+    }
+    if (response.statusCode == 502 && _lastSessions.isNotEmpty) {
+      diagnostics.add('Session fetch failed (502); showing last known sessions');
+      sessions.add(_lastSessions);
+      return _lastSessions;
+    }
     if (response.statusCode != 200) {
       throw StateError('fetch sessions failed: ${response.statusCode}');
     }
@@ -195,6 +203,7 @@ class AgenticRemoteApi {
     final items = decoded
         .map((item) => SessionSummary.fromJson(item as Map<String, dynamic>))
         .toList();
+    _lastSessions = items;
     sessions.add(items);
     return items;
   }
