@@ -19,14 +19,14 @@ class AppState extends ChangeNotifier {
     String payload, {
     required String clientName,
     required bool webTrustConfirmed,
-    bool allowBadCertificates = false,
+    bool skipFingerprintVerification = false,
   }) async {
     final name = validateClientName(clientName);
     await api.connectFromPayload(
       payload,
       clientName: name,
       webTrustConfirmed: webTrustConfirmed,
-      allowBadCertificates: allowBadCertificates,
+      skipFingerprintVerification: skipFingerprintVerification,
     );
     sessions.value = await api.fetchSessions();
   }

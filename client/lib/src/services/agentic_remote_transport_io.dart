@@ -32,11 +32,11 @@ Future<Uint8List?> peerCertificateDer(Uri uri) async {
 http.Client createHttpClient({
 	String? trustedFingerprint,
 	required String Function(Uint8List) formatFingerprint,
-	bool allowBadCertificates = false,
+	bool skipFingerprintVerification = false,
 }) {
 	trustedFingerprint;
 	formatFingerprint;
-	allowBadCertificates;
+	skipFingerprintVerification;
 	return IOClient(_insecureHttpClient());
 }
 
@@ -44,11 +44,11 @@ WebSocketChannel connectWebSocket(
 	Uri uri, {
 	String? trustedFingerprint,
 	required String Function(Uint8List) formatFingerprint,
-	bool allowBadCertificates = false,
+	bool skipFingerprintVerification = false,
 }) {
 	trustedFingerprint;
 	formatFingerprint;
-	allowBadCertificates;
+	skipFingerprintVerification;
 	return IOWebSocketChannel.connect(uri, customClient: _insecureHttpClient());
 }
 

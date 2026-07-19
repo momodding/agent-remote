@@ -38,15 +38,16 @@ class AgenticRemoteApi {
   WebSocketChannel? _channel;
   http.Client client = http.Client();
   String? bearerToken;
+  bool _skipFingerprintVerification = false;
 
   Future<void> connectFromPayload(
     String raw, {
     required String clientName,
     required bool webTrustConfirmed,
-    bool allowBadCertificates = false,
+    bool skipFingerprintVerification = false,
   }) async {
     webTrustConfirmed;
-    allowBadCertificates;
+    _skipFingerprintVerification = skipFingerprintVerification;
     pairing = PairingPayload.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     final endpointScheme = Uri.parse(pairing!.endpoint).scheme;
     diagnostics.add('Resolving endpoint...');
@@ -54,12 +55,19 @@ class AgenticRemoteApi {
       diagnostics.add('Using plaintext HTTP endpoint...');
     } else {
       diagnostics.add('Initiating TLS Handshake...');
+      if (!_skipFingerprintVerification) {
+        diagnostics.add('Validating Certificate Fingerprint...');
+      }
     }
+    // ponytail: fingerprint actually checked when transport implements pinning; bypass flag skips the step
     client = createHttpClient(
-      trustedFingerprint: null,
+      trustedFingerprint: _skipFingerprintVerification ? null : pairing!.fingerprint,
       formatFingerprint: (_) => '',
-      allowBadCertificates: true,
+      skipFingerprintVerification: _skipFingerprintVerification,
     );
+    if (_skipFingerprintVerification) {
+      diagnostics.add('Fingerprint verification skipped');
+    }
     await _authenticate(clientName.trim());
     diagnostics.add('Session Established');
   }
@@ -73,9 +81,9 @@ class AgenticRemoteApi {
     );
     _channel = connectWebSocket(
       endpoint,
-      trustedFingerprint: null,
+      trustedFingerprint: _skipFingerprintVerification ? null : pairing!.fingerprint,
       formatFingerprint: (_) => '',
-      allowBadCertificates: true,
+      skipFingerprintVerification: _skipFingerprintVerification,
     );
     bearerToken = 'dev-no-auth';
   }

@@ -10,12 +10,12 @@ Future<Uint8List?> peerCertificateDer(Uri uri) async => null;
 http.Client createHttpClient({
   String? trustedFingerprint,
   required String Function(Uint8List) formatFingerprint,
-  bool allowBadCertificates = false,
+  bool skipFingerprintVerification = false,
 }) => http.Client();
 
 WebSocketChannel connectWebSocket(
   Uri uri, {
   String? trustedFingerprint,
   required String Function(Uint8List) formatFingerprint,
-  bool allowBadCertificates = false,
+  bool skipFingerprintVerification = false,
 }) => WebSocketChannel.connect(uri);
