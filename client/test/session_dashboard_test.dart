@@ -43,4 +43,9 @@ void main() {
     expect(find.text('alpha'), findsOneWidget);
     expect(find.text('beta'), findsNothing);
   });
+
+  testWidgets('shows fingerprint bypass checkbox', (tester) async {
+    await tester.pumpWidget(SessionDashboard(state: AppState()));
+    expect(find.text('Skip fingerprint verification'), findsOneWidget);
+  });
 }

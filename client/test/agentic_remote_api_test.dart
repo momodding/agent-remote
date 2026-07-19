@@ -1,7 +1,51 @@
+import 'dart:typed_data';
+
+import 'package:agentic_remote/src/protocol/messages.dart';
 import 'package:agentic_remote/src/services/agentic_remote_api.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  final payload = PairingPayload(
+    version: 2,
+    endpoint: 'https://127.0.0.1:8765',
+    fingerprint: 'AA:BB',
+    pairingId: 'pairing',
+    token: 'token',
+    expiresAt: DateTime.parse('2026-01-01T00:00:00Z'),
+  );
+
+  test('formatCertificateFingerprint hashes DER bytes', () {
+    expect(
+      formatCertificateFingerprint(Uint8List.fromList([1, 2, 3])),
+      '03:90:58:C6:F2:C0:CB:49:2C:53:3B:0A:4D:14:EF:77:CC:0F:78:AB:CC:CE:D5:28:7D:84:A1:A2:01:1C:FB:81',
+    );
+  });
+
+  test('shouldSkipFingerprintVerification defaults false', () {
+    expect(shouldSkipFingerprintVerification(payload, false), isFalse);
+  });
+
+  test('shouldSkipFingerprintVerification honors requested skip', () {
+    expect(shouldSkipFingerprintVerification(payload, true), isTrue);
+  });
+
+  test('shouldSkipFingerprintVerification honors QR payload skip', () {
+    expect(
+      shouldSkipFingerprintVerification(
+        PairingPayload(
+          version: 2,
+          endpoint: 'https://127.0.0.1:8765',
+          fingerprint: 'AA:BB',
+          pairingId: 'pairing',
+          token: 'token',
+          expiresAt: DateTime.parse('2026-01-01T00:00:00Z'),
+          skipFingerprintVerification: true,
+        ),
+        false,
+      ),
+      isTrue,
+    );
+  });
   test('agenticEndpointUri builds bootstrap websocket path', () {
     expect(
       agenticEndpointUri(
