@@ -14,12 +14,13 @@ import (
 )
 
 type PairingPayload struct {
-	Version     int       `json:"v"`
-	Endpoint    string    `json:"endpoint"`
-	Fingerprint string    `json:"fingerprint"`
-	PairingID   string    `json:"pairingId"`
-	Token       string    `json:"token"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	Version                     int       `json:"v"`
+	Endpoint                    string    `json:"endpoint"`
+	Fingerprint                 string    `json:"fingerprint"`
+	SkipFingerprintVerification bool      `json:"skipFingerprintVerification,omitempty"`
+	PairingID                   string    `json:"pairingId"`
+	Token                       string    `json:"token"`
+	ExpiresAt                   time.Time `json:"expiresAt"`
 }
 
 type PairingRecord struct {
@@ -53,7 +54,7 @@ func LoadPairingStore(stateDir string) (*PairingStore, error) {
 	return store, nil
 }
 
-func (s *PairingStore) Create(endpoint, fingerprint string, now time.Time) (*PairingPayload, error) {
+func (s *PairingStore) Create(endpoint, fingerprint string, skipFingerprintVerification bool, now time.Time) (*PairingPayload, error) {
 	pairingID, err := randomEncoded(16)
 	if err != nil {
 		return nil, err
@@ -80,7 +81,7 @@ func (s *PairingStore) Create(endpoint, fingerprint string, now time.Time) (*Pai
 	if err := s.saveLocked(); err != nil {
 		return nil, err
 	}
-	return &PairingPayload{Version: 2, Endpoint: endpoint, Fingerprint: fingerprint, PairingID: pairingID, Token: token, ExpiresAt: expiresAt}, nil
+	return &PairingPayload{Version: 2, Endpoint: endpoint, Fingerprint: fingerprint, SkipFingerprintVerification: skipFingerprintVerification, PairingID: pairingID, Token: token, ExpiresAt: expiresAt}, nil
 }
 
 func (s *PairingStore) Save() error {
