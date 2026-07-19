@@ -46,6 +46,39 @@ void main() {
       isTrue,
     );
   });
+
+  test('fingerprintForTransport skips pinning for platform-trusted TLS', () {
+    expect(
+      fingerprintForTransport(
+        fingerprint: 'AA:BB',
+        skipFingerprintVerification: false,
+        platformTrusted: true,
+      ),
+      isNull,
+    );
+  });
+
+  test('fingerprintForTransport pins self-signed TLS', () {
+    expect(
+      fingerprintForTransport(
+        fingerprint: 'AA:BB',
+        skipFingerprintVerification: false,
+        platformTrusted: false,
+      ),
+      'AA:BB',
+    );
+  });
+
+  test('fingerprintForTransport skips pinning for explicit bypass', () {
+    expect(
+      fingerprintForTransport(
+        fingerprint: 'AA:BB',
+        skipFingerprintVerification: true,
+        platformTrusted: false,
+      ),
+      isNull,
+    );
+  });
   test('agenticEndpointUri builds bootstrap websocket path', () {
     expect(
       agenticEndpointUri(

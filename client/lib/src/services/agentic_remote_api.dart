@@ -46,6 +46,18 @@ String formatCertificateFingerprint(Uint8List der) => sha256
     .map((byte) => byte.toRadixString(16).padLeft(2, '0').toUpperCase())
     .join(':');
 
+@visibleForTesting
+String? fingerprintForTransport({
+  required String fingerprint,
+  required bool skipFingerprintVerification,
+  required bool platformTrusted,
+}) {
+  if (skipFingerprintVerification || platformTrusted) {
+    return null;
+  }
+  return fingerprint;
+}
+
 class AgenticRemoteApi {
   final StreamController<String> diagnostics =
       StreamController<String>.broadcast();
@@ -61,6 +73,7 @@ class AgenticRemoteApi {
   http.Client client = http.Client();
   String? bearerToken;
   bool _skipFingerprintVerification = false;
+  String? _trustedFingerprint;
 
   Future<void> connectFromPayload(
     String raw, {
@@ -73,7 +86,8 @@ class AgenticRemoteApi {
       pairing!,
       skipFingerprintVerification,
     );
-    final endpointScheme = Uri.parse(pairing!.endpoint).scheme;
+    final endpoint = Uri.parse(pairing!.endpoint);
+    final endpointScheme = endpoint.scheme;
     diagnostics.add('Resolving endpoint...');
     if (endpointScheme == 'http') {
       diagnostics.add('Using plaintext HTTP endpoint...');
@@ -83,11 +97,17 @@ class AgenticRemoteApi {
         diagnostics.add('Validating Certificate Fingerprint...');
       }
     }
-    // ponytail: fingerprint actually checked when transport implements pinning; bypass flag skips the step
+    final platformTrusted =
+        endpointScheme == 'https' &&
+        !_skipFingerprintVerification &&
+        await platformTrustsEndpoint(endpoint);
+    _trustedFingerprint = fingerprintForTransport(
+      fingerprint: pairing!.fingerprint,
+      skipFingerprintVerification: _skipFingerprintVerification,
+      platformTrusted: platformTrusted,
+    );
     client = createHttpClient(
-      trustedFingerprint: _skipFingerprintVerification
-          ? null
-          : pairing!.fingerprint,
+      trustedFingerprint: _trustedFingerprint,
       formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
@@ -107,9 +127,7 @@ class AgenticRemoteApi {
     );
     _channel = connectWebSocket(
       endpoint,
-      trustedFingerprint: _skipFingerprintVerification
-          ? null
-          : pairing!.fingerprint,
+      trustedFingerprint: _trustedFingerprint,
       formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
