@@ -230,7 +230,7 @@ func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint 
 		if err := store.Cleanup(now); err != nil {
 			log.Printf("pairing cleanup failed: %v", err)
 		}
-		payload, err := store.Create(cfg.PublicEndpoint, fingerprint, now)
+		payload, err := store.Create(cfg.PublicEndpoint, fingerprint, cfg.SkipFingerprintVerification, now)
 		if err != nil {
 			log.Printf("pairing create failed: %v", err)
 		} else {

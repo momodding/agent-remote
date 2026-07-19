@@ -10,5 +10,6 @@
   "channelBufferSize": 256,
   "maxScrollbackBytes": 10485760,
   "allowDestructiveFiles": false,
+  "skipFingerprintVerification": false,
   "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
 }

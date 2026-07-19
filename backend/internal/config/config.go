@@ -12,36 +12,38 @@ import (
 )
 
 type Config struct {
-	ListenAddr            string   `json:"listenAddr"`
-	ListenScheme          string   `json:"listenScheme"`
-	PublicEndpoint        string   `json:"publicEndpoint"`
-	StateDir              string   `json:"stateDir"`
-	WorkspaceRoot         string   `json:"workspaceRoot"`
-	UploadDir             string   `json:"uploadDir"`
-	AllowedCIDRs          []string `json:"allowedCidrs"`
-	MaxConnections        int      `json:"maxConnections"`
-	MaxSessions           int      `json:"maxSessions"`
-	ChannelBufferSize     int      `json:"channelBufferSize"`
-	MaxScrollbackBytes    int64    `json:"maxScrollbackBytes"`
-	AllowDestructiveFiles bool     `json:"allowDestructiveFiles"`
-	ExpoPushEndpoint      string   `json:"expoPushEndpoint"`
+	ListenAddr                  string   `json:"listenAddr"`
+	ListenScheme                string   `json:"listenScheme"`
+	PublicEndpoint              string   `json:"publicEndpoint"`
+	StateDir                    string   `json:"stateDir"`
+	WorkspaceRoot               string   `json:"workspaceRoot"`
+	UploadDir                   string   `json:"uploadDir"`
+	AllowedCIDRs                []string `json:"allowedCidrs"`
+	MaxConnections              int      `json:"maxConnections"`
+	MaxSessions                 int      `json:"maxSessions"`
+	ChannelBufferSize           int      `json:"channelBufferSize"`
+	MaxScrollbackBytes          int64    `json:"maxScrollbackBytes"`
+	AllowDestructiveFiles       bool     `json:"allowDestructiveFiles"`
+	SkipFingerprintVerification bool     `json:"skipFingerprintVerification"`
+	ExpoPushEndpoint            string   `json:"expoPushEndpoint"`
 }
 
 func Default() Config {
 	return Config{
-		ListenAddr:            "127.0.0.1:8765",
-		ListenScheme:          "https",
-		PublicEndpoint:        "https://127.0.0.1:8765",
-		StateDir:              ".agenticremote",
-		WorkspaceRoot:         ".",
-		UploadDir:             "uploads",
-		AllowedCIDRs:          []string{"127.0.0.0/8", "::1/128"},
-		MaxConnections:        8,
-		MaxSessions:           16,
-		ChannelBufferSize:     256,
-		MaxScrollbackBytes:    10485760,
-		AllowDestructiveFiles: false,
-		ExpoPushEndpoint:      "https://exp.host/--/api/v2/push/send",
+		ListenAddr:                  "127.0.0.1:8765",
+		ListenScheme:                "https",
+		PublicEndpoint:              "https://127.0.0.1:8765",
+		StateDir:                    ".agenticremote",
+		WorkspaceRoot:               ".",
+		UploadDir:                   "uploads",
+		AllowedCIDRs:                []string{"127.0.0.0/8", "::1/128"},
+		MaxConnections:              8,
+		MaxSessions:                 16,
+		ChannelBufferSize:           256,
+		MaxScrollbackBytes:          10485760,
+		AllowDestructiveFiles:       false,
+		SkipFingerprintVerification: false,
+		ExpoPushEndpoint:            "https://exp.host/--/api/v2/push/send",
 	}
 }
 
