@@ -131,6 +131,7 @@ func writeConfig(t *testing.T) string {
 	  "channelBufferSize": 256,
 	  "maxScrollbackBytes": 10485760,
 	  "allowDestructiveFiles": false,
+	  "skipFingerprintVerification": false,
 	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
