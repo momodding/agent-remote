@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestDefaultValues(t *testing.T) {
 	cfg := Default()
@@ -10,8 +14,42 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.ListenScheme != "https" {
 		t.Fatalf("unexpected listen scheme: %s", cfg.ListenScheme)
 	}
+	if cfg.SkipFingerprintVerification {
+		t.Fatal("fingerprint bypass must default off")
+	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should validate: %v", err)
+	}
+}
+
+func TestLoadAcceptsFingerprintBypass(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+	  "listenAddr": "127.0.0.1:0",
+	  "listenScheme": "https",
+	  "publicEndpoint": "https://127.0.0.1:8765",
+	  "stateDir": ".agenticremote",
+	  "workspaceRoot": ".",
+	  "uploadDir": "uploads",
+	  "allowedCidrs": ["127.0.0.0/8", "::1/128"],
+	  "maxConnections": 8,
+	  "maxSessions": 16,
+	  "channelBufferSize": 256,
+	  "maxScrollbackBytes": 10485760,
+	  "allowDestructiveFiles": false,
+	  "skipFingerprintVerification": true,
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SkipFingerprintVerification {
+		t.Fatal("expected fingerprint bypass to load")
 	}
 }
 
