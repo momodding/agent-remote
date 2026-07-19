@@ -43,10 +43,10 @@ class AgenticRemoteApi {
     String raw, {
     required String clientName,
     required bool webTrustConfirmed,
-    bool allowBadCertificates = false,
+    bool skipFingerprintVerification = false,
   }) async {
     webTrustConfirmed;
-    allowBadCertificates;
+    skipFingerprintVerification;
     pairing = PairingPayload.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     final endpointScheme = Uri.parse(pairing!.endpoint).scheme;
     diagnostics.add('Resolving endpoint...');
@@ -58,7 +58,7 @@ class AgenticRemoteApi {
     client = createHttpClient(
       trustedFingerprint: null,
       formatFingerprint: (_) => '',
-      allowBadCertificates: true,
+      skipFingerprintVerification: true,
     );
     await _authenticate(clientName.trim());
     diagnostics.add('Session Established');
@@ -75,7 +75,7 @@ class AgenticRemoteApi {
       endpoint,
       trustedFingerprint: null,
       formatFingerprint: (_) => '',
-      allowBadCertificates: true,
+      skipFingerprintVerification: true,
     );
     bearerToken = 'dev-no-auth';
   }
