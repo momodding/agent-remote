@@ -71,7 +71,7 @@ class AgenticRemoteApi {
       StreamController<WaitState>.broadcast();
 
   PairingPayload? pairing;
-  WebSocketChannel? _channel;
+  WebSocketChannel? _sessionChannel;
   http.Client client;
   List<SessionSummary> _lastSessions = const <SessionSummary>[];
   String? bearerToken;
@@ -123,22 +123,32 @@ class AgenticRemoteApi {
 
   Future<void> _authenticate(String clientName) async {
     clientName;
+    bearerToken = 'dev-no-auth';
+  }
+
+  void connectSession(String sessionId) {
     final endpoint = agenticEndpointUri(
       pairing!.endpoint,
-      '/v1/ws/sessions/bootstrap',
+      '/v1/ws/sessions/$sessionId',
       scheme: agenticWebSocketScheme(pairing!.endpoint),
     );
-    _channel = connectWebSocket(
+    _sessionChannel?.sink.close();
+    _sessionChannel = connectWebSocket(
       endpoint,
       trustedFingerprint: _trustedFingerprint,
       formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
-    bearerToken = 'dev-no-auth';
+    _sessionChannel!.stream.listen((raw) {
+      final msg = jsonDecode(raw as String) as Map<String, dynamic>;
+      if (msg['type'] == 'pty.output') {
+        terminalOutput.add(msg);
+      }
+    });
   }
 
   Future<void> resizeSession(String sessionId, int cols, int rows) async {
-    _channel?.sink.add(
+    _sessionChannel?.sink.add(
       jsonEncode({
         'type': 'pty.resize',
         'sessionId': sessionId,
@@ -149,7 +159,7 @@ class AgenticRemoteApi {
   }
 
   Future<void> sendInput(String sessionId, List<int> bytes) async {
-    _channel?.sink.add(
+    _sessionChannel?.sink.add(
       jsonEncode({
         'type': 'pty.input',
         'sessionId': sessionId,
