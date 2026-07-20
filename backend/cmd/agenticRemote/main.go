@@ -139,6 +139,14 @@ func run(args []string) error {
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if _, err := os.Stat(configPath); err == nil {
+			if err := config.CleanState(configPath); err != nil {
+				return fmt.Errorf("cleaning state: %w", err)
+			}
+			fmt.Fprintln(os.Stderr, "existing config found; TLS certificates, pairings, auth sessions, and PTY sessions removed")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		cfg := config.Default()
 		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 			return err

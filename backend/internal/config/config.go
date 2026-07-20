@@ -111,6 +111,24 @@ func Validate(cfg Config) error {
 	return nil
 }
 
+func CleanState(configPath string) error {
+	cfg := Default()
+	if data, err := os.ReadFile(configPath); err == nil {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	stateDir := filepath.Join(filepath.Dir(configPath), cfg.StateDir)
+	for _, name := range []string{"tls", "auth", "sessions"} {
+		if err := os.RemoveAll(filepath.Join(stateDir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func WriteSample(path string, cfg Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
