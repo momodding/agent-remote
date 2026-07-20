@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
-import '../../services/agentic_remote_api.dart';
 import '../../protocol/messages.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
@@ -72,11 +71,13 @@ class _SessionDashboardState extends State<SessionDashboard> {
                 onPressed: () async {
                   try {
                     setState(() => connectionError = '');
-                    await widget.state.api.createSession(
+                    final summary = await widget.state.api.createSession(
                       name: 'remote session',
                     );
                     widget.state.sessions.value = await widget.state.api
                         .fetchSessions();
+                    if (!context.mounted) return;
+                    _openSession(context, summary.id);
                   } catch (error) {
                     setState(() => connectionError = error.toString());
                   }
@@ -118,7 +119,17 @@ class _SessionDashboardState extends State<SessionDashboard> {
                           itemCount: filtered.length,
                           itemBuilder: (context, index) => _SessionCard(
                             session: filtered[index],
-                            api: widget.state.api,
+                            onOpen: () => _openSession(
+                              context,
+                              filtered[index].id,
+                            ),
+                            onClose: () async {
+                              await widget.state.api.closeSession(
+                                filtered[index].id,
+                              );
+                              widget.state.sessions.value =
+                                  await widget.state.api.fetchSessions();
+                            },
                           ),
                         );
                       },
@@ -136,6 +147,17 @@ class _SessionDashboardState extends State<SessionDashboard> {
         ),
       ),
       debugShowCheckedModeBanner: false,
+    );
+  }
+
+  void _openSession(BuildContext context, String sessionId) {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (context, _, _) => Directionality(
+          textDirection: TextDirection.ltr,
+          child: TerminalScreen(api: widget.state.api, sessionId: sessionId),
+        ),
+      ),
     );
   }
 }
@@ -235,24 +257,20 @@ class _PairingPanel extends StatelessWidget {
 }
 
 class _SessionCard extends StatelessWidget {
-  const _SessionCard({required this.session, required this.api});
+  const _SessionCard({
+    required this.session,
+    required this.onOpen,
+    required this.onClose,
+  });
 
   final SessionSummary session;
-  final AgenticRemoteApi api;
+  final VoidCallback onOpen;
+  final Future<void> Function() onClose;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
-        Navigator.of(context).push(
-          PageRouteBuilder(
-            pageBuilder: (context, _, _) => Directionality(
-              textDirection: TextDirection.ltr,
-              child: TerminalScreen(api: api, sessionId: session.id),
-            ),
-          ),
-        );
-      },
+      onTap: onOpen,
       child: ShadCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -280,10 +298,13 @@ class _SessionCard extends StatelessWidget {
                 const Text('>_'),
                 const SizedBox(width: 8),
                 Expanded(child: Text(session.name)),
-                const Text('local daemon'),
+                ShadButton.outline(
+                  onPressed: onOpen,
+                  child: const Text('Open'),
+                ),
                 const SizedBox(width: 8),
                 ShadButton.outline(
-                  onPressed: () {},
+                  onPressed: onClose,
                   child: const Text('Close'),
                 ),
               ],

@@ -41,6 +41,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void dispose() {
     _sub?.cancel();
+    widget.api.disconnectSession();
     super.dispose();
   }
 

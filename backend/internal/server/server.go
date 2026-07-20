@@ -57,7 +57,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ping", s.handlePing)
-	mux.HandleFunc("/v1/sessions", s.handleSessions)
+	mux.HandleFunc("/v1/sessions", s.withAuth(s.handleSessions))
+    mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
 	mux.HandleFunc("/v1/fs/search", s.withAuth(s.handleFSSearch))
 	mux.HandleFunc("/v1/fs/read", s.withAuth(s.handleFSRead))
@@ -68,7 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
-	return logRequests(mux)
+	return logRequests(cors(mux))
 }
 
 type statusRecorder struct {
@@ -102,6 +103,22 @@ func logRequests(next http.Handler) http.Handler {
 			rec.status = http.StatusOK
 		}
 		log.Printf("request complete remote=%s method=%s path=%s status=%d duration=%s", r.RemoteAddr, r.Method, r.URL.RequestURI(), rec.status, time.Since(started))
+	})
+}
+
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -147,6 +164,23 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.URL.Path, "/close") || r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/sessions/"), "/close")
+	if id == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if err := s.sessions.Close(id); err != nil {
+		writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "session_not_found", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
@@ -274,28 +308,75 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	ctx := r.Context()
-	authed := true
-	if authed {
-		_ = s.sessions.Subscribe(sessionID, func(output protocol.PTYOutputEnvelope, state protocol.SessionStateEnvelope) {
-			if output.Type != "" {
-				_ = wsWriteJSON(ctx, conn, output)
+	if sessionID == "bootstrap" {
+		s.handleBootstrapWS(ctx, conn)
+		return
+	}
+	s.handlePTYWS(ctx, conn, sessionID)
+}
+
+func (s *Server) handleBootstrapWS(ctx context.Context, conn *websocket.Conn) {
+	for {
+		var frame map[string]any
+		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			return
+		}
+		switch frame["type"] {
+		case "auth.hello":
+			var hello protocol.AuthHello
+			if err := mapToStruct(frame, &hello); err != nil {
+				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid auth hello"})
+				return
 			}
-			if state.Type != "" {
-				_ = wsWriteJSON(ctx, conn, state)
+			challenge, err := s.auth.Begin(security.HelloMessage{PairingID: hello.PairingID, ClientNonce: hello.ClientNonce, ClientName: hello.ClientName})
+			if err != nil {
+				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
+				return
 			}
-		})
+			_ = wsWriteJSON(ctx, conn, protocol.AuthChallenge{Type: "auth.challenge", ServerNonce: challenge.ServerNonce, ChallengeID: challenge.ChallengeID, Salt: challenge.Salt})
+		case "auth.proof":
+			var proof protocol.AuthProof
+			if err := mapToStruct(frame, &proof); err != nil {
+				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid auth proof"})
+				return
+			}
+			token, err := s.auth.Complete(proof.PairingID, proof.ChallengeID, proof.Proof)
+			if err != nil {
+				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
+				return
+			}
+			_ = wsWriteJSON(ctx, conn, protocol.AuthOK{Type: "auth.ok", SessionToken: token})
+			return
+		default:
+			_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
+			return
+		}
+	}
+}
+
+func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionID string) {
+	var token protocol.AuthToken
+	if err := wsReadJSON(ctx, conn, &token); err != nil || token.Type != "auth.token" || !s.authSession(token.Token) {
+		_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
+		return
+	}
+	if err := s.sessions.Subscribe(sessionID, func(output protocol.PTYOutputEnvelope, state protocol.SessionStateEnvelope) {
+		if output.Type != "" {
+			_ = wsWriteJSON(ctx, conn, output)
+		}
+		if state.Type != "" {
+			_ = wsWriteJSON(ctx, conn, state)
+		}
+	}); err != nil {
+		_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "session_not_found", Message: err.Error()})
+		return
 	}
 	for {
 		var frame map[string]any
 		if err := wsReadJSON(ctx, conn, &frame); err != nil {
 			return
 		}
-		kind, _ := frame["type"].(string)
-		if !authed && kind != "auth.hello" && kind != "auth.proof" {
-			_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
-			return
-		}
-		switch kind {
+		switch frame["type"] {
 		case "pty.input":
 			var env protocol.PTYInputEnvelope
 			if err := mapToStruct(frame, &env); err == nil {
@@ -310,27 +391,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			var env protocol.PTYResizeEnvelope
 			if err := mapToStruct(frame, &env); err == nil {
 				_ = s.sessions.Resize(sessionID, env.Cols, env.Rows)
-			}
-		case "auth.hello":
-			var hello protocol.AuthHello
-			if err := mapToStruct(frame, &hello); err == nil {
-				challenge, err := s.auth.Begin(security.HelloMessage{PairingID: hello.PairingID, ClientNonce: hello.ClientNonce, ClientName: hello.ClientName})
-				if err != nil {
-					_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
-					return
-				}
-				_ = wsWriteJSON(ctx, conn, protocol.AuthChallenge{Type: "auth.challenge", ServerNonce: challenge.ServerNonce, ChallengeID: challenge.ChallengeID, Salt: challenge.Salt})
-			}
-		case "auth.proof":
-			var proof protocol.AuthProof
-			if err := mapToStruct(frame, &proof); err == nil {
-				token, err := s.auth.Complete(proof.PairingID, proof.ChallengeID, proof.Proof)
-				if err != nil {
-					_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
-					return
-				}
-				authed = true
-				_ = wsWriteJSON(ctx, conn, protocol.AuthOK{Type: "auth.ok", SessionToken: token})
 			}
 		default:
 			_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})

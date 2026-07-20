@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' hide Cipher, Hash;
+import 'package:crypto/crypto.dart' hide Hmac;
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
-import 'package:crypto/crypto.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
@@ -56,6 +58,37 @@ String? fingerprintForTransport({
     return null;
   }
   return fingerprint;
+}
+
+@visibleForTesting
+Future<String> clientProof({
+  required String token,
+  required String pairingId,
+  required String salt,
+  required String clientNonce,
+  required String serverNonce,
+  required String challengeId,
+}) async {
+  final verifier = await Argon2id(
+    parallelism: 1,
+    memory: 64 * 1024,
+    iterations: 3,
+    hashLength: 32,
+  ).deriveKey(
+    secretKey: SecretKey(utf8.encode(token)),
+    nonce: base64Url.decode(base64Url.normalize(salt)),
+  );
+  final mac = await Hmac.sha256().calculateMac(
+    utf8.encode('agenticRemote-auth-v2$pairingId$clientNonce$serverNonce$challengeId'),
+    secretKey: verifier,
+  );
+  return base64Url.encode(mac.bytes).replaceAll('=', '');
+}
+
+@visibleForTesting
+String clientNonce([Random? random]) {
+  final rng = random ?? Random.secure();
+  return base64Url.encode(List<int>.generate(32, (_) => rng.nextInt(256))).replaceAll('=', '');
 }
 
 class AgenticRemoteApi {
@@ -122,8 +155,61 @@ class AgenticRemoteApi {
   }
 
   Future<void> _authenticate(String clientName) async {
-    clientName;
-    bearerToken = 'dev-no-auth';
+    final endpoint = agenticEndpointUri(
+      pairing!.endpoint,
+      '/v1/ws/sessions/bootstrap',
+      scheme: agenticWebSocketScheme(pairing!.endpoint),
+    );
+    final channel = connectWebSocket(
+      endpoint,
+      trustedFingerprint: _trustedFingerprint,
+      formatFingerprint: formatCertificateFingerprint,
+      skipFingerprintVerification: _skipFingerprintVerification,
+    );
+    final messages = StreamIterator(channel.stream);
+    try {
+      final nonce = clientNonce();
+      channel.sink.add(
+        jsonEncode({
+          'type': 'auth.hello',
+          'pairingId': pairing!.pairingId,
+          'clientNonce': nonce,
+          'clientName': clientName,
+        }),
+      );
+      if (!await messages.moveNext()) {
+        throw StateError('authentication failed');
+      }
+      final challenge = jsonDecode(messages.current as String) as Map<String, dynamic>;
+      if (challenge['type'] != 'auth.challenge') {
+        throw StateError('authentication failed');
+      }
+      channel.sink.add(
+        jsonEncode({
+          'type': 'auth.proof',
+          'pairingId': pairing!.pairingId,
+          'challengeId': challenge['challengeId'],
+          'proof': await clientProof(
+            token: pairing!.token,
+            pairingId: pairing!.pairingId,
+            salt: challenge['salt'] as String,
+            clientNonce: nonce,
+            serverNonce: challenge['serverNonce'] as String,
+            challengeId: challenge['challengeId'] as String,
+          ),
+        }),
+      );
+      if (!await messages.moveNext()) {
+        throw StateError('authentication failed');
+      }
+      final ok = jsonDecode(messages.current as String) as Map<String, dynamic>;
+      if (ok['type'] != 'auth.ok') {
+        throw StateError('authentication failed');
+      }
+      bearerToken = ok['sessionToken'] as String;
+    } finally {
+      await channel.sink.close();
+    }
   }
 
   void connectSession(String sessionId) {
@@ -132,19 +218,25 @@ class AgenticRemoteApi {
       '/v1/ws/sessions/$sessionId',
       scheme: agenticWebSocketScheme(pairing!.endpoint),
     );
-    _sessionChannel?.sink.close();
+    disconnectSession();
     _sessionChannel = connectWebSocket(
       endpoint,
       trustedFingerprint: _trustedFingerprint,
       formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
+    _sessionChannel!.sink.add(jsonEncode({'type': 'auth.token', 'token': bearerToken}));
     _sessionChannel!.stream.listen((raw) {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
       if (msg['type'] == 'pty.output') {
         terminalOutput.add(msg);
       }
     });
+  }
+
+  void disconnectSession() {
+    _sessionChannel?.sink.close();
+    _sessionChannel = null;
   }
 
   Future<void> resizeSession(String sessionId, int cols, int rows) async {
@@ -168,6 +260,11 @@ class AgenticRemoteApi {
     );
   }
 
+  Map<String, String> _headers({bool json = false}) => {
+    if (bearerToken case final token?) 'Authorization': 'Bearer $token',
+    if (json) 'Content-Type': 'application/json',
+  };
+
   Future<SessionSummary> createSession({
     String name = '',
     String command = '',
@@ -175,7 +272,7 @@ class AgenticRemoteApi {
   }) async {
     final response = await client.post(
       agenticEndpointUri(pairing!.endpoint, '/v1/sessions'),
-      headers: {'Content-Type': 'application/json'},
+      headers: _headers(json: true),
       body: jsonEncode({
         'name': name,
         'command': command,
@@ -195,11 +292,22 @@ class AgenticRemoteApi {
     return summary;
   }
 
+  Future<void> closeSession(String sessionId) async {
+    final response = await client.post(
+      agenticEndpointUri(pairing!.endpoint, '/v1/sessions/$sessionId/close'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 200) {
+      throw StateError('close session failed: ${response.statusCode}');
+    }
+    await fetchSessions();
+  }
+
   Future<List<SessionSummary>> fetchSessions() async {
     final uri = agenticEndpointUri(pairing!.endpoint, '/v1/sessions');
-    var response = await client.get(uri);
+    var response = await client.get(uri, headers: _headers());
     if (response.statusCode == 502) {
-      response = await client.get(uri);
+      response = await client.get(uri, headers: _headers());
     }
     if (response.statusCode == 502) {
       diagnostics.add(_lastSessions.isEmpty

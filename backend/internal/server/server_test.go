@@ -24,13 +24,56 @@ type noopNotify struct{}
 
 func (noopNotify) RegisterToken(context.Context, protocol.NotifyRegisterRequest) error { return nil }
 
-func TestSessionsListDoesNotRequireBearer(t *testing.T) {
-	srv := newTestServer(t)
+func TestSessionsRequiresBearer(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+}
+
+func TestSessionCloseRemovesFromList(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := testBearerToken(t, srv, pairings)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+summary.ID+"/close", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	for _, s := range srv.sessions.List(context.Background()) {
+		if s.ID == summary.ID {
+			t.Fatalf("expected session %s removed from List, still present", summary.ID)
+		}
+	}
+}
+
+func TestCORSPreflightAllowsAuthorization(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/sessions", nil)
+	req.Header.Set("Origin", "https://example.test")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.Code)
+	}
+	if allow := resp.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(allow, "Authorization") {
+		t.Fatalf("expected Authorization allowed, got %q", allow)
 	}
 }
 
@@ -76,8 +119,8 @@ func TestBootstrapAcceptsSessionFramesWithoutAuth(t *testing.T) {
 	}
 }
 
-func TestSessionWSDecodesBase64Input(t *testing.T) {
-	srv := newTestServer(t)
+func TestSessionWSRejectsPTYBeforeToken(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +137,36 @@ func TestSessionWSDecodesBase64Input(t *testing.T) {
 	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": "aGk="}); err != nil {
 		t.Fatal(err)
 	}
+	var frame map[string]any
+	if err := wsReadJSON(ctx, conn, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame["type"] != "error" || frame["code"] != "auth_failed" {
+		t.Fatalf("expected auth_failed error, got %v", frame)
+	}
+}
+
+func TestSessionWSAcceptsPTYAfterToken(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.token", "token": testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": "aGk="}); err != nil {
+		t.Fatal(err)
+	}
 	for ctx.Err() == nil {
 		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
 		if strings.Contains(preview, "hi") {
@@ -105,6 +178,42 @@ func TestSessionWSDecodesBase64Input(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal(ctx.Err())
+}
+
+func testBearerToken(t *testing.T, srv *Server, pairings *security.PairingStore) string {
+	t.Helper()
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/bootstrap", &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.hello", "pairingId": payload.PairingID, "clientNonce": strings.Repeat("A", 43), "clientName": "phone"}); err != nil {
+		t.Fatal(err)
+	}
+	var challenge map[string]any
+	if err := wsReadJSON(ctx, conn, &challenge); err != nil {
+		t.Fatal(err)
+	}
+	proof, err := security.ClientProof(payload.Token, payload.PairingID, challenge["salt"].(string), strings.Repeat("A", 43), challenge["serverNonce"].(string), challenge["challengeId"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.proof", "pairingId": payload.PairingID, "challengeId": challenge["challengeId"], "proof": proof}); err != nil {
+		t.Fatal(err)
+	}
+	var ok map[string]any
+	if err := wsReadJSON(ctx, conn, &ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok["sessionToken"].(string)
 }
 
 func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {

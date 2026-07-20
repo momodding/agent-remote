@@ -24,6 +24,18 @@ void main() {
     );
   });
 
+  test('clientProof matches fixed server-generated vector', () async {
+    final proof = await clientProof(
+      token: 'token-abc',
+      pairingId: 'pairing-1',
+      salt: 'c2FsdC1ieXRlcy0xNi1sZw',
+      clientNonce: 'client-nonce-value',
+      serverNonce: 'server-nonce-value',
+      challengeId: 'challenge-1',
+    );
+    expect(proof, '-Ok2V-w-Ds6LXfKpVvKxYHz2kBAR_Vji5zNeXutu8cA');
+  });
+
   test('shouldSkipFingerprintVerification defaults false', () {
     expect(shouldSkipFingerprintVerification(payload, false), isFalse);
   });
@@ -234,4 +246,41 @@ void main() {
       expect(callCount, 3); // 1 success + 2 retried 502s
     },
   );
+
+  test('fetchSessions sends Authorization bearer header', () async {
+    http.Request? captured;
+    final api = AgenticRemoteApi(
+      client: http_testing.MockClient((request) async {
+        captured = request;
+        return http.Response(sessionJson, 200);
+      }),
+    );
+    api.pairing = payload;
+    api.bearerToken = 'sess-token';
+
+    await api.fetchSessions();
+    expect(captured?.headers['Authorization'], 'Bearer sess-token');
+  });
+
+  test('closeSession posts close endpoint and refreshes sessions', () async {
+    final requests = <http.Request>[];
+    final api = AgenticRemoteApi(
+      client: http_testing.MockClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/close')) {
+          return http.Response('', 200);
+        }
+        return http.Response(sessionJson, 200);
+      }),
+    );
+    api.pairing = payload;
+    api.bearerToken = 'sess-token';
+
+    await api.closeSession('active-1');
+    expect(requests, hasLength(2));
+    expect(requests[0].method, 'POST');
+    expect(requests[0].url.path, '/v1/sessions/active-1/close');
+    expect(requests[0].headers['Authorization'], 'Bearer sess-token');
+    expect(requests[1].url.path, '/v1/sessions');
+  });
 }

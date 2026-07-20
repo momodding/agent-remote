@@ -81,6 +81,11 @@ type AuthOK struct {
 	SessionToken string `json:"sessionToken"`
 }
 
+type AuthToken struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+}
+
 type PTYInputEnvelope struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionId"`

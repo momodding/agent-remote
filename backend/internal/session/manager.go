@@ -188,6 +188,9 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 func (m *Manager) Close(id string) error {
 	m.mu.Lock()
 	runtime, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
 	m.mu.Unlock()
 	if !ok {
 		return errors.New("session not found")
@@ -198,6 +201,10 @@ func (m *Manager) Close(id string) error {
 	runtime.meta.UpdatedAt = time.Now().UTC()
 	m.notify(runtime, wait)
 	m.emitState(runtime)
+	// ponytail: outbound channel is left open (goroutine leaks until GC of the
+	// last subscriber send); explicit close is rare enough that a done-signal
+	// isn't worth it. Revisit if session churn gets heavy.
+	_ = os.Remove(runtime.scrollback)
 	return m.saveMetadata()
 }
 
