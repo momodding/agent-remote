@@ -60,6 +60,52 @@ func TestLoadAcceptsFingerprintBypass(t *testing.T) {
 	}
 }
 
+func TestWriteSampleOverwritesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{junk`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSample(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenScheme != "https" {
+		t.Fatalf("unexpected listen scheme: %s", cfg.ListenScheme)
+	}
+}
+
+func TestCleanStateRemovesIdentityAndSessionState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"stateDir":"state"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"state/tls/cert.pem", "state/auth/sessions.json", "state/sessions/sessions.json", "state/notify/tokens.json"} {
+		full := filepath.Join(dir, file)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CleanState(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tls", "auth", "sessions"} {
+		if _, err := os.Stat(filepath.Join(dir, "state", name)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state/notify/tokens.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInvalidCIDRRejected(t *testing.T) {
 	cfg := Default()
 	cfg.AllowedCIDRs = []string{"not-a-cidr"}
