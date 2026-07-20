@@ -17,6 +17,9 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.SkipFingerprintVerification {
 		t.Fatal("fingerprint bypass must default off")
 	}
+	if cfg.PairingRotationSeconds != 45 {
+		t.Fatalf("unexpected pairing rotation seconds: %d", cfg.PairingRotationSeconds)
+	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should validate: %v", err)
 	}
@@ -39,7 +42,8 @@ func TestLoadAcceptsFingerprintBypass(t *testing.T) {
 	  "maxScrollbackBytes": 10485760,
 	  "allowDestructiveFiles": false,
 	  "skipFingerprintVerification": true,
-	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send",
+	  "pairingRotationSeconds": 30
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -51,6 +55,9 @@ func TestLoadAcceptsFingerprintBypass(t *testing.T) {
 	if !cfg.SkipFingerprintVerification {
 		t.Fatal("expected fingerprint bypass to load")
 	}
+	if cfg.PairingRotationSeconds != 30 {
+		t.Fatalf("expected pairing rotation seconds to load, got %d", cfg.PairingRotationSeconds)
+	}
 }
 
 func TestInvalidCIDRRejected(t *testing.T) {
@@ -58,6 +65,14 @@ func TestInvalidCIDRRejected(t *testing.T) {
 	cfg.AllowedCIDRs = []string{"not-a-cidr"}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected invalid CIDR to fail")
+	}
+}
+
+func TestPairingRotationSecondsMustBePositive(t *testing.T) {
+	cfg := Default()
+	cfg.PairingRotationSeconds = 0
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected non-positive pairing rotation seconds to fail")
 	}
 }
 

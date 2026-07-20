@@ -132,7 +132,8 @@ func writeConfig(t *testing.T) string {
 	  "maxScrollbackBytes": 10485760,
 	  "allowDestructiveFiles": false,
 	  "skipFingerprintVerification": false,
-	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send",
+	  "pairingRotationSeconds": 45
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

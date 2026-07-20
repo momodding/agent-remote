@@ -26,6 +26,7 @@ type Config struct {
 	AllowDestructiveFiles       bool     `json:"allowDestructiveFiles"`
 	SkipFingerprintVerification bool     `json:"skipFingerprintVerification"`
 	ExpoPushEndpoint            string   `json:"expoPushEndpoint"`
+	PairingRotationSeconds      int      `json:"pairingRotationSeconds"`
 }
 
 func Default() Config {
@@ -44,6 +45,7 @@ func Default() Config {
 		AllowDestructiveFiles:       false,
 		SkipFingerprintVerification: false,
 		ExpoPushEndpoint:            "https://exp.host/--/api/v2/push/send",
+		PairingRotationSeconds:      45,
 	}
 }
 
@@ -63,7 +65,7 @@ func Load(path string) (Config, error) {
 }
 
 func Validate(cfg Config) error {
-	if cfg.MaxConnections <= 0 || cfg.MaxSessions <= 0 || cfg.ChannelBufferSize <= 0 || cfg.MaxScrollbackBytes <= 0 {
+	if cfg.MaxConnections <= 0 || cfg.MaxSessions <= 0 || cfg.ChannelBufferSize <= 0 || cfg.MaxScrollbackBytes <= 0 || cfg.PairingRotationSeconds <= 0 {
 		return errors.New("limits must be positive")
 	}
 	if cfg.ListenScheme != "http" && cfg.ListenScheme != "https" {

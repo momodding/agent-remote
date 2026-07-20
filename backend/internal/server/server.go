@@ -55,6 +55,7 @@ func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.Au
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
 	mux.HandleFunc("/v1/fs/search", s.withAuth(s.handleFSSearch))
@@ -109,6 +110,11 @@ func (s *Server) TLSConfig() *tls.Config {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.HealthResponse{OK: true, Version: "dev"})
+}
+
+func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("pong"))
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

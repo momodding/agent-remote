@@ -191,8 +191,10 @@ class AgenticRemoteApi {
     if (response.statusCode == 502) {
       response = await client.get(uri);
     }
-    if (response.statusCode == 502 && _lastSessions.isNotEmpty) {
-      diagnostics.add('Session fetch failed (502); showing last known sessions');
+    if (response.statusCode == 502) {
+      diagnostics.add(_lastSessions.isEmpty
+          ? 'Session fetch failed (502); showing no sessions'
+          : 'Session fetch failed (502); showing last known sessions');
       sessions.add(_lastSessions);
       return _lastSessions;
     }

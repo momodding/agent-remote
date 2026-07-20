@@ -34,6 +34,19 @@ func TestSessionsListDoesNotRequireBearer(t *testing.T) {
 	}
 }
 
+func TestPingReturnsPong(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	if strings.TrimSpace(resp.Body.String()) != "pong" {
+		t.Fatalf("expected pong, got %q", resp.Body.String())
+	}
+}
+
 func TestHandlerLogsRequestAttempt(t *testing.T) {
 	srv := newTestServer(t)
 	var buf bytes.Buffer
