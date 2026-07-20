@@ -76,6 +76,37 @@ func TestBootstrapAcceptsSessionFramesWithoutAuth(t *testing.T) {
 	}
 }
 
+func TestSessionWSDecodesBase64Input(t *testing.T) {
+	srv := newTestServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": "aGk="}); err != nil {
+		t.Fatal(err)
+	}
+	for ctx.Err() == nil {
+		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
+		if strings.Contains(preview, "hi") {
+			if strings.Contains(preview, "aGk=") {
+				t.Fatalf("preview contains base64 text: %q", preview)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(ctx.Err())
+}
+
 func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	t.Helper()
 	dir := t.TempDir()
