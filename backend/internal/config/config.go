@@ -112,11 +112,6 @@ func Validate(cfg Config) error {
 }
 
 func WriteSample(path string, cfg Config) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("config already exists: %s", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
