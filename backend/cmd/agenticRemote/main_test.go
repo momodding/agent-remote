@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agenticremote/agenticremote/backend/internal/config"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/server"
 )
@@ -25,6 +26,37 @@ func TestRunRejectsPairCommand(t *testing.T) {
 func TestRunServeRequiresConfig(t *testing.T) {
 	if err := run([]string{"serve"}); err == nil || !strings.Contains(err.Error(), "serve requires --config") {
 		t.Fatalf("expected missing config error, got %v", err)
+	}
+}
+
+func TestConfigInitAcceptsDirectoryAndReinitializes(t *testing.T) {
+	dir := t.TempDir()
+	if err := run([]string{"config", "init", "--path", dir}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.json")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"tls/cert.pem", "auth/sessions.json", "sessions/sessions.json"} {
+		full := filepath.Join(dir, ".agenticremote", file)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run([]string{"config", "init", "--path", dir}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tls", "auth", "sessions"} {
+		if _, err := os.Stat(filepath.Join(dir, ".agenticremote", name)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, got %v", name, err)
+		}
+	}
+	if _, err := config.Load(configPath); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -132,7 +164,8 @@ func writeConfig(t *testing.T) string {
 	  "maxScrollbackBytes": 10485760,
 	  "allowDestructiveFiles": false,
 	  "skipFingerprintVerification": false,
-	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send",
+	  "pairingRotationSeconds": 45
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

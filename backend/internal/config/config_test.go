@@ -17,6 +17,9 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.SkipFingerprintVerification {
 		t.Fatal("fingerprint bypass must default off")
 	}
+	if cfg.PairingRotationSeconds != 45 {
+		t.Fatalf("unexpected pairing rotation seconds: %d", cfg.PairingRotationSeconds)
+	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should validate: %v", err)
 	}
@@ -39,7 +42,8 @@ func TestLoadAcceptsFingerprintBypass(t *testing.T) {
 	  "maxScrollbackBytes": 10485760,
 	  "allowDestructiveFiles": false,
 	  "skipFingerprintVerification": true,
-	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+	  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send",
+	  "pairingRotationSeconds": 30
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -51,6 +55,55 @@ func TestLoadAcceptsFingerprintBypass(t *testing.T) {
 	if !cfg.SkipFingerprintVerification {
 		t.Fatal("expected fingerprint bypass to load")
 	}
+	if cfg.PairingRotationSeconds != 30 {
+		t.Fatalf("expected pairing rotation seconds to load, got %d", cfg.PairingRotationSeconds)
+	}
+}
+
+func TestWriteSampleOverwritesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{junk`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSample(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenScheme != "https" {
+		t.Fatalf("unexpected listen scheme: %s", cfg.ListenScheme)
+	}
+}
+
+func TestCleanStateRemovesIdentityAndSessionState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"stateDir":"state"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"state/tls/cert.pem", "state/auth/sessions.json", "state/sessions/sessions.json", "state/notify/tokens.json"} {
+		full := filepath.Join(dir, file)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CleanState(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tls", "auth", "sessions"} {
+		if _, err := os.Stat(filepath.Join(dir, "state", name)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state/notify/tokens.json")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestInvalidCIDRRejected(t *testing.T) {
@@ -58,6 +111,14 @@ func TestInvalidCIDRRejected(t *testing.T) {
 	cfg.AllowedCIDRs = []string{"not-a-cidr"}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected invalid CIDR to fail")
+	}
+}
+
+func TestPairingRotationSecondsMustBePositive(t *testing.T) {
+	cfg := Default()
+	cfg.PairingRotationSeconds = 0
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected non-positive pairing rotation seconds to fail")
 	}
 }
 

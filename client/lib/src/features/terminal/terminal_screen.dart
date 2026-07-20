@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
@@ -18,6 +19,7 @@ class TerminalScreen extends StatefulWidget {
 
 class _TerminalScreenState extends State<TerminalScreen> {
   final Terminal terminal = Terminal(maxLines: 10000);
+  StreamSubscription<Map<String, dynamic>>? _sub;
 
   @override
   void initState() {
@@ -26,6 +28,20 @@ class _TerminalScreenState extends State<TerminalScreen> {
         widget.api.sendInput(widget.sessionId, utf8.encode(data));
     terminal.onResize = (cols, rows, _, _) =>
         widget.api.resizeSession(widget.sessionId, cols, rows);
+    widget.api.connectSession(widget.sessionId);
+    _sub = widget.api.terminalOutput.stream.listen((msg) {
+      if (msg['sessionId'] != widget.sessionId) {
+        return;
+      }
+      final bytes = base64Decode(msg['data'] as String);
+      terminal.write(utf8.decode(bytes, allowMalformed: true));
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   @override

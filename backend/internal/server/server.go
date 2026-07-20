@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -55,6 +56,7 @@ func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.Au
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
 	mux.HandleFunc("/v1/fs/search", s.withAuth(s.handleFSSearch))
@@ -109,6 +111,11 @@ func (s *Server) TLSConfig() *tls.Config {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.HealthResponse{OK: true, Version: "dev"})
+}
+
+func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("pong"))
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +299,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		case "pty.input":
 			var env protocol.PTYInputEnvelope
 			if err := mapToStruct(frame, &env); err == nil {
-				_ = s.sessions.Input(sessionID, []byte(env.Data))
+				data, err := base64.StdEncoding.DecodeString(env.Data)
+				if err != nil {
+					_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
+					continue
+				}
+				_ = s.sessions.Input(sessionID, data)
 			}
 		case "pty.resize":
 			var env protocol.PTYResizeEnvelope

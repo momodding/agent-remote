@@ -93,6 +93,17 @@ void main() {
     );
   });
 
+  test('agenticEndpointUri builds session websocket path', () {
+    expect(
+      agenticEndpointUri(
+        'https://host.example',
+        '/v1/ws/sessions/session-1',
+        scheme: 'wss',
+      ).toString(),
+      'wss://host.example/v1/ws/sessions/session-1',
+    );
+  });
+
   test('agenticEndpointUri builds plaintext bootstrap websocket path', () {
     expect(
       agenticEndpointUri(
@@ -146,52 +157,81 @@ void main() {
     },
   ]);
 
-  test('fetchSessions retries one gateway error and returns active sessions',
-      () async {
-    var callCount = 0;
-    final api = AgenticRemoteApi(
-      client: http_testing.MockClient((request) async {
-        callCount++;
-        if (callCount == 1) {
-          return http.Response('bad gateway', 502);
-        }
-        return http.Response(sessionJson, 200);
-      }),
-    );
-    api.pairing = payload;
-
-    final result = await api.fetchSessions();
-    expect(result, hasLength(1));
-    expect(result.first.id, 'active-1');
-    expect(callCount, 2);
-  });
-
-  test('fetchSessions reuses cached sessions after repeated gateway errors',
-      () async {
-    var callCount = 0;
-    final api = AgenticRemoteApi(
-      client: http_testing.MockClient((request) async {
-        callCount++;
-        if (callCount == 1) {
+  test(
+    'fetchSessions retries one gateway error and returns active sessions',
+    () async {
+      var callCount = 0;
+      final api = AgenticRemoteApi(
+        client: http_testing.MockClient((request) async {
+          callCount++;
+          if (callCount == 1) {
+            return http.Response('bad gateway', 502);
+          }
           return http.Response(sessionJson, 200);
-        }
-        return http.Response('bad gateway', 502);
-      }),
-    );
-    api.pairing = payload;
+        }),
+      );
+      api.pairing = payload;
 
-    // First fetch succeeds, populating the cache.
-    final first = await api.fetchSessions();
-    expect(first.first.id, 'active-1');
+      final result = await api.fetchSessions();
+      expect(result, hasLength(1));
+      expect(result.first.id, 'active-1');
+      expect(callCount, 2);
+    },
+  );
 
-    // Subscribe before the second call so the broadcast event is captured.
-    final diagnostic = api.diagnostics.stream.first;
+  test(
+    'fetchSessions returns empty sessions after repeated initial gateway errors',
+    () async {
+      var callCount = 0;
+      final api = AgenticRemoteApi(
+        client: http_testing.MockClient((request) async {
+          callCount++;
+          return http.Response('bad gateway', 502);
+        }),
+      );
+      api.pairing = payload;
+      final diagnostic = api.diagnostics.stream.first;
 
-    // Second fetch hits 502 twice (initial + retry) but returns cached.
-    final second = await api.fetchSessions();
-    expect(second.first.id, 'active-1');
-    expect(await diagnostic,
-        'Session fetch failed (502); showing last known sessions');
-    expect(callCount, 3); // 1 success + 2 retried 502s
-  });
+      final result = await api.fetchSessions();
+      expect(result, isEmpty);
+      expect(
+        await diagnostic,
+        'Session fetch failed (502); showing no sessions',
+      );
+      expect(callCount, 2);
+    },
+  );
+
+  test(
+    'fetchSessions reuses cached sessions after repeated gateway errors',
+    () async {
+      var callCount = 0;
+      final api = AgenticRemoteApi(
+        client: http_testing.MockClient((request) async {
+          callCount++;
+          if (callCount == 1) {
+            return http.Response(sessionJson, 200);
+          }
+          return http.Response('bad gateway', 502);
+        }),
+      );
+      api.pairing = payload;
+
+      // First fetch succeeds, populating the cache.
+      final first = await api.fetchSessions();
+      expect(first.first.id, 'active-1');
+
+      // Subscribe before the second call so the broadcast event is captured.
+      final diagnostic = api.diagnostics.stream.first;
+
+      // Second fetch hits 502 twice (initial + retry) but returns cached.
+      final second = await api.fetchSessions();
+      expect(second.first.id, 'active-1');
+      expect(
+        await diagnostic,
+        'Session fetch failed (502); showing last known sessions',
+      );
+      expect(callCount, 3); // 1 success + 2 retried 502s
+    },
+  );
 }

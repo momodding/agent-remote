@@ -2,10 +2,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../../services/agentic_remote_api.dart';
 import '../../protocol/messages.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
 import '../connection/connection_diagnostics_overlay.dart';
+import '../terminal/terminal_screen.dart';
 
 class SessionDashboard extends StatefulWidget {
   const SessionDashboard({super.key, required this.state});
@@ -114,8 +116,10 @@ class _SessionDashboardState extends State<SessionDashboard> {
                                 mainAxisExtent: 220,
                               ),
                           itemCount: filtered.length,
-                          itemBuilder: (context, index) =>
-                              _SessionCard(session: filtered[index]),
+                          itemBuilder: (context, index) => _SessionCard(
+                            session: filtered[index],
+                            api: widget.state.api,
+                          ),
                         );
                       },
                     );
@@ -231,45 +235,61 @@ class _PairingPanel extends StatelessWidget {
 }
 
 class _SessionCard extends StatelessWidget {
-  const _SessionCard({required this.session});
+  const _SessionCard({required this.session, required this.api});
 
   final SessionSummary session;
+  final AgenticRemoteApi api;
 
   @override
   Widget build(BuildContext context) {
-    return ShadCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              color: const Color(0xFF111111),
-              child: DefaultTextStyle(
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  color: Color(0xFFF0F0F0),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: session.preview.map(Text.new).toList(),
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          PageRouteBuilder(
+            pageBuilder: (context, _, _) => Directionality(
+              textDirection: TextDirection.ltr,
+              child: TerminalScreen(api: api, sessionId: session.id),
+            ),
+          ),
+        );
+      },
+      child: ShadCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                color: const Color(0xFF111111),
+                child: DefaultTextStyle(
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    color: Color(0xFFF0F0F0),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: session.preview.map(Text.new).toList(),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              const Text('>_'),
-              const SizedBox(width: 8),
-              Expanded(child: Text(session.name)),
-              const Text('local daemon'),
-              const SizedBox(width: 8),
-              ShadButton.outline(onPressed: () {}, child: const Text('Close')),
-            ],
-          ),
-        ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Text('>_'),
+                const SizedBox(width: 8),
+                Expanded(child: Text(session.name)),
+                const Text('local daemon'),
+                const SizedBox(width: 8),
+                ShadButton.outline(
+                  onPressed: () {},
+                  child: const Text('Close'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

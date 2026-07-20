@@ -133,11 +133,25 @@ func run(args []string) error {
 		if *path == "" {
 			return errors.New("config init requires --path")
 		}
-		cfg := config.Default()
-		if err := os.MkdirAll(filepath.Dir(*path), 0o755); err != nil {
+		configPath := *path
+		if info, err := os.Stat(configPath); err == nil && info.IsDir() {
+			configPath = filepath.Join(configPath, "config.json")
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return config.WriteSample(*path, cfg)
+		if _, err := os.Stat(configPath); err == nil {
+			if err := config.CleanState(configPath); err != nil {
+				return fmt.Errorf("cleaning state: %w", err)
+			}
+			fmt.Fprintln(os.Stderr, "existing config found; TLS certificates, pairings, auth sessions, and PTY sessions removed")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		cfg := config.Default()
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return err
+		}
+		return config.WriteSample(configPath, cfg)
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -244,7 +258,7 @@ func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint 
 			}
 		}
 		select {
-		case <-time.After(45 * time.Second):
+		case <-time.After(time.Duration(cfg.PairingRotationSeconds) * time.Second):
 		case <-refresh:
 		}
 	}
