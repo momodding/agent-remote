@@ -41,6 +41,42 @@ func TestSessionsRequiresBearer(t *testing.T) {
 	}
 }
 
+func TestSessionCloseRemovesFromList(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := testBearerToken(t, srv, pairings)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+summary.ID+"/close", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	for _, s := range srv.sessions.List(context.Background()) {
+		if s.ID == summary.ID {
+			t.Fatalf("expected session %s removed from List, still present", summary.ID)
+		}
+	}
+}
+
+func TestCORSPreflightAllowsAuthorization(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/sessions", nil)
+	req.Header.Set("Origin", "https://example.test")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.Code)
+	}
+	if allow := resp.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(allow, "Authorization") {
+		t.Fatalf("expected Authorization allowed, got %q", allow)
+	}
+}
+
 func TestPingReturnsPong(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
