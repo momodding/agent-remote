@@ -1,6 +1,7 @@
 import 'package:agentic_remote/src/features/dashboard/session_dashboard.dart';
 import 'package:agentic_remote/src/protocol/messages.dart';
 import 'package:agentic_remote/src/state/app_state.dart';
+import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -41,6 +42,13 @@ void main() {
     );
     await tester.pump();
     expect(find.text('alpha'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.text('alpha'),
+        matching: find.byType(GestureDetector),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('beta'), findsNothing);
   });
 

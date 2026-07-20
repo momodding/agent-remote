@@ -93,6 +93,17 @@ void main() {
     );
   });
 
+  test('agenticEndpointUri builds session websocket path', () {
+    expect(
+      agenticEndpointUri(
+        'https://host.example',
+        '/v1/ws/sessions/session-1',
+        scheme: 'wss',
+      ).toString(),
+      'wss://host.example/v1/ws/sessions/session-1',
+    );
+  });
+
   test('agenticEndpointUri builds plaintext bootstrap websocket path', () {
     expect(
       agenticEndpointUri(

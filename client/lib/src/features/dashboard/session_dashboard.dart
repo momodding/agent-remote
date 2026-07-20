@@ -246,7 +246,7 @@ class _SessionCard extends StatelessWidget {
       onTap: () {
         Navigator.of(context).push(
           PageRouteBuilder(
-            pageBuilder: (_, __, ___) => Directionality(
+            pageBuilder: (context, _, _) => Directionality(
               textDirection: TextDirection.ltr,
               child: TerminalScreen(api: api, sessionId: session.id),
             ),
