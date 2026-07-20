@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' hide Cipher, Hash;
+import 'package:crypto/crypto.dart' hide Hmac;
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
-import 'package:crypto/crypto.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
@@ -56,6 +58,37 @@ String? fingerprintForTransport({
     return null;
   }
   return fingerprint;
+}
+
+@visibleForTesting
+Future<String> clientProof({
+  required String token,
+  required String pairingId,
+  required String salt,
+  required String clientNonce,
+  required String serverNonce,
+  required String challengeId,
+}) async {
+  final verifier = await Argon2id(
+    parallelism: 1,
+    memory: 64 * 1024,
+    iterations: 3,
+    hashLength: 32,
+  ).deriveKey(
+    secretKey: SecretKey(utf8.encode(token)),
+    nonce: base64Url.decode(base64Url.normalize(salt)),
+  );
+  final mac = await Hmac.sha256().calculateMac(
+    utf8.encode('agenticRemote-auth-v2$pairingId$clientNonce$serverNonce$challengeId'),
+    secretKey: verifier,
+  );
+  return base64Url.encode(mac.bytes).replaceAll('=', '');
+}
+
+@visibleForTesting
+String clientNonce([Random? random]) {
+  final rng = random ?? Random.secure();
+  return base64Url.encode(List<int>.generate(32, (_) => rng.nextInt(256))).replaceAll('=', '');
 }
 
 class AgenticRemoteApi {
@@ -122,8 +155,54 @@ class AgenticRemoteApi {
   }
 
   Future<void> _authenticate(String clientName) async {
-    clientName;
-    bearerToken = 'dev-no-auth';
+    final endpoint = agenticEndpointUri(
+      pairing!.endpoint,
+      '/v1/ws/sessions/bootstrap',
+      scheme: agenticWebSocketScheme(pairing!.endpoint),
+    );
+    final channel = connectWebSocket(
+      endpoint,
+      trustedFingerprint: _trustedFingerprint,
+      formatFingerprint: formatCertificateFingerprint,
+      skipFingerprintVerification: _skipFingerprintVerification,
+    );
+    try {
+      final nonce = clientNonce();
+      channel.sink.add(
+        jsonEncode({
+          'type': 'auth.hello',
+          'pairingId': pairing!.pairingId,
+          'clientNonce': nonce,
+          'clientName': clientName,
+        }),
+      );
+      final challenge = jsonDecode(await channel.stream.first as String) as Map<String, dynamic>;
+      if (challenge['type'] != 'auth.challenge') {
+        throw StateError('authentication failed');
+      }
+      channel.sink.add(
+        jsonEncode({
+          'type': 'auth.proof',
+          'pairingId': pairing!.pairingId,
+          'challengeId': challenge['challengeId'],
+          'proof': await clientProof(
+            token: pairing!.token,
+            pairingId: pairing!.pairingId,
+            salt: challenge['salt'] as String,
+            clientNonce: nonce,
+            serverNonce: challenge['serverNonce'] as String,
+            challengeId: challenge['challengeId'] as String,
+          ),
+        }),
+      );
+      final ok = jsonDecode(await channel.stream.first as String) as Map<String, dynamic>;
+      if (ok['type'] != 'auth.ok') {
+        throw StateError('authentication failed');
+      }
+      bearerToken = ok['sessionToken'] as String;
+    } finally {
+      await channel.sink.close();
+    }
   }
 
   void connectSession(String sessionId) {
