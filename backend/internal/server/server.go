@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -298,7 +299,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		case "pty.input":
 			var env protocol.PTYInputEnvelope
 			if err := mapToStruct(frame, &env); err == nil {
-				_ = s.sessions.Input(sessionID, []byte(env.Data))
+				data, err := base64.StdEncoding.DecodeString(env.Data)
+				if err != nil {
+					_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
+					continue
+				}
+				_ = s.sessions.Input(sessionID, data)
 			}
 		case "pty.resize":
 			var env protocol.PTYResizeEnvelope
