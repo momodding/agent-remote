@@ -146,16 +146,16 @@ class _SessionDashboardState extends State<SessionDashboard> {
                           itemCount: filtered.length,
                           itemBuilder: (context, index) => _SessionCard(
                             session: filtered[index],
-                            onOpen: () => _openSession(
-                              context,
-                              filtered[index].id,
-                            ),
+                            onOpen: () =>
+                                _openSession(context, filtered[index].id),
                             onClose: () async {
                               await widget.state.api.closeSession(
                                 filtered[index].id,
                               );
-                              widget.state.sessions.value =
-                                  await widget.state.api.fetchSessions();
+                              widget.state.sessions.value = await widget
+                                  .state
+                                  .api
+                                  .fetchSessions();
                             },
                           ),
                         );

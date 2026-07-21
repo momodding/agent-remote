@@ -69,17 +69,20 @@ Future<String> clientProof({
   required String serverNonce,
   required String challengeId,
 }) async {
-  final verifier = await Argon2id(
-    parallelism: 1,
-    memory: 64 * 1024,
-    iterations: 3,
-    hashLength: 32,
-  ).deriveKey(
-    secretKey: SecretKey(utf8.encode(token)),
-    nonce: base64Url.decode(base64Url.normalize(salt)),
-  );
+  final verifier =
+      await Argon2id(
+        parallelism: 1,
+        memory: 64 * 1024,
+        iterations: 3,
+        hashLength: 32,
+      ).deriveKey(
+        secretKey: SecretKey(utf8.encode(token)),
+        nonce: base64Url.decode(base64Url.normalize(salt)),
+      );
   final mac = await Hmac.sha256().calculateMac(
-    utf8.encode('agenticRemote-auth-v2$pairingId$clientNonce$serverNonce$challengeId'),
+    utf8.encode(
+      'agenticRemote-auth-v2$pairingId$clientNonce$serverNonce$challengeId',
+    ),
     secretKey: verifier,
   );
   return base64Url.encode(mac.bytes).replaceAll('=', '');
@@ -88,7 +91,9 @@ Future<String> clientProof({
 @visibleForTesting
 String clientNonce([Random? random]) {
   final rng = random ?? Random.secure();
-  return base64Url.encode(List<int>.generate(32, (_) => rng.nextInt(256))).replaceAll('=', '');
+  return base64Url
+      .encode(List<int>.generate(32, (_) => rng.nextInt(256)))
+      .replaceAll('=', '');
 }
 
 class AgenticRemoteApi {
@@ -180,7 +185,8 @@ class AgenticRemoteApi {
       if (!await messages.moveNext()) {
         throw StateError('authentication failed');
       }
-      final challenge = jsonDecode(messages.current as String) as Map<String, dynamic>;
+      final challenge =
+          jsonDecode(messages.current as String) as Map<String, dynamic>;
       if (challenge['type'] != 'auth.challenge') {
         throw StateError('authentication failed');
       }
@@ -225,7 +231,9 @@ class AgenticRemoteApi {
       formatFingerprint: formatCertificateFingerprint,
       skipFingerprintVerification: _skipFingerprintVerification,
     );
-    _sessionChannel!.sink.add(jsonEncode({'type': 'auth.token', 'token': bearerToken}));
+    _sessionChannel!.sink.add(
+      jsonEncode({'type': 'auth.token', 'token': bearerToken}),
+    );
     _sessionChannel!.stream.listen((raw) {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
       if (msg['type'] == 'pty.output') {
@@ -321,9 +329,11 @@ class AgenticRemoteApi {
       response = await client.get(uri, headers: _headers());
     }
     if (response.statusCode == 502) {
-      diagnostics.add(_lastSessions.isEmpty
-          ? 'Session fetch failed (502); showing no sessions'
-          : 'Session fetch failed (502); showing last known sessions');
+      diagnostics.add(
+        _lastSessions.isEmpty
+            ? 'Session fetch failed (502); showing no sessions'
+            : 'Session fetch failed (502); showing last known sessions',
+      );
       sessions.add(_lastSessions);
       return _lastSessions;
     }
