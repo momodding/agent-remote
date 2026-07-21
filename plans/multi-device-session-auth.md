@@ -1,4 +1,5 @@
 <!-- omp-source-branch: main -->
+<!-- omp-work-branch: omp/multi-device-session-auth -->
 ## Context
 
 Web client pairs, opens a terminal, but it is unusable; Android then fails with 401. Two independent root causes, both confirmed by reading the code (not inferred):
