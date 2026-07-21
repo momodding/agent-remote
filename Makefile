@@ -36,12 +36,12 @@ daemon-build:
 	done
 
 client-test:
-	cd client && npm ci && npm run typecheck && npm test
+	cd client && bun install && bun run typecheck && bun run test
 
 client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
-			web) cd client && npm ci && npm run build:web && cd .. ;; \
+			web) cd client && bun install && bun run build:web && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
@@ -55,10 +55,10 @@ test:
 
 lint:
 	cd backend && go vet ./...
-	cd client && npm ci && npm run typecheck
+	cd client && bun install && bun run typecheck
 
 run-daemon:
 	cd backend && go run ./cmd/agenticRemote serve --config ../examples/config.local.json
 
 run-client:
-	cd client && npm start
+	cd client && bun start
