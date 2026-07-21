@@ -18,19 +18,17 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
 
-  node:
+  client:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build:web
+          bun-version: 1.3.14
+      - run: bun install
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build:web
