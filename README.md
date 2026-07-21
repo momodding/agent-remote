@@ -14,8 +14,8 @@ Expo client:
 
 ```sh
 cd client
-npm ci
-npx expo start
+bun install
+bun expo start
 ```
 
 Open Expo Go and scan the Metro QR to launch the managed app. In the app, enter this device's name, then scan the daemon QR or paste its raw pairing payload.

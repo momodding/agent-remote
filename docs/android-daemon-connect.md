@@ -71,8 +71,8 @@ If the proxy requires a trusted origin, configure it to allow the daemon's self-
 
 ```sh
 cd client
-npm ci
-npx expo start
+bun install
+bun expo start
 ```
 
 Open Expo Go on Android and scan the Metro QR. This opens the managed app; it is separate from the daemon pairing QR.
@@ -130,8 +130,8 @@ backend/bin/agenticRemote serve --config examples/config.android.direct.json
 
 ```sh
 cd client
-npm ci
-npx expo start
+bun install
+bun expo start
 ```
 
 1. Open Expo Go and scan the Metro QR.
