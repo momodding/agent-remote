@@ -9,9 +9,8 @@ import type {
 } from '../protocol';
 import { clientProof, newClientNonce, validateClientName } from './auth';
 import type { Connection } from './connection';
-
-const wsURL = (endpoint: string, path: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}${path}`;
-const apiURL = (endpoint: string, path: string) => `${endpoint.replace(/\/$/, '')}${path}`;
+export const wsURL = (endpoint: string, path: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}${path}`;
+export const apiURL = (endpoint: string, path: string) => `${endpoint.replace(/\/$/, '')}${path}`;
 
 export class APIError extends Error {
   constructor(public readonly status: number, message: string) {

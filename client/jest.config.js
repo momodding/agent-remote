@@ -2,7 +2,7 @@ const expoPreset = require('jest-expo/jest-preset');
 
 module.exports = {
   ...expoPreset,
-  testMatch: ['**/*.test.ts'],
+  testMatch: ['**/*.test.ts', '**/*.test.tsx'],
   transformIgnorePatterns: [
     '/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|standard-navigation|@noble/hashes))',
     '/node_modules/react-native-reanimated/plugin/',
