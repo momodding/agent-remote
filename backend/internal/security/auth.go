@@ -87,6 +87,10 @@ func (a *AuthService) SetPairedHook(fn func()) {
 	a.onPaired = fn
 }
 
+func (a *AuthService) NewPairing(endpoint, fingerprint string, skipFingerprintVerification bool, now time.Time) (*PairingPayload, error) {
+	return a.pairings.Create(endpoint, fingerprint, skipFingerprintVerification, now)
+}
+
 func (a *AuthService) Begin(msg HelloMessage) (*ChallengeMessage, error) {
 	if _, err := decodeNonce(msg.ClientNonce); err != nil {
 		return nil, errors.New("authentication failed")

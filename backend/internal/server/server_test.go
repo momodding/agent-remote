@@ -220,6 +220,32 @@ func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
 	t.Fatal(ctx.Err())
 }
 
+func TestPairingCreateMintsIndependentDevice(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	deviceAToken := testBearerToken(t, srv, pairings)
+	req := httptest.NewRequest(http.MethodPost, "/v1/pairing", nil)
+	req.Header.Set("Authorization", "Bearer "+deviceAToken)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var payload security.PairingPayload
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	deviceBToken := testBearerTokenFromPayload(t, srv, &payload)
+	if deviceBToken == deviceAToken {
+		t.Fatal("expected independent bearer tokens")
+	}
+	if !srv.auth.Verify(deviceAToken) {
+		t.Fatal("device A token invalid")
+	}
+	if !srv.auth.Verify(deviceBToken) {
+		t.Fatal("device B token invalid")
+	}
+}
+
 func testBearerToken(t *testing.T, srv *Server, pairings *security.PairingStore) string {
 	t.Helper()
 	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())

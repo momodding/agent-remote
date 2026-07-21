@@ -303,6 +303,17 @@ class AgenticRemoteApi {
     await fetchSessions();
   }
 
+  Future<String> createPairing() async {
+    final response = await client.post(
+      agenticEndpointUri(pairing!.endpoint, '/v1/pairing'),
+      headers: _headers(),
+    );
+    if (response.statusCode != 201) {
+      throw StateError('create pairing failed: ${response.statusCode}');
+    }
+    return response.body;
+  }
+
   Future<List<SessionSummary>> fetchSessions() async {
     final uri = agenticEndpointUri(pairing!.endpoint, '/v1/sessions');
     var response = await client.get(uri, headers: _headers());
