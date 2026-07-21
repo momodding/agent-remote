@@ -20,13 +20,11 @@ export default function Dashboard() {
   const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
   const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
 
+  const disconnect = useCallback(async () => { await clearConnection(); setConnection(null); setSessions([]); }, []);
   const refresh = useCallback(async () => {
     if (!api) return;
     try { setSessions(await api.sessions()); } catch (error) { if (error instanceof APIError && error.status === 401) await disconnect(); else Alert.alert('Could not load sessions', error instanceof Error ? error.message : 'Unknown error'); }
-  }, [api]);
-
-  const disconnect = useCallback(async () => { await clearConnection(); setConnection(null); setSessions([]); }, []);
-
+  }, [api, disconnect]);
   useEffect(() => { void loadConnection().then((saved) => { setConnection(saved); setLoading(false); }); }, []);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
@@ -41,6 +39,7 @@ export default function Dashboard() {
       await saveConnection(connected);
       setConnection(connected);
       await new AgenticRemoteAPI(connected).sessions().then(setSessions);
+      setTimeout(() => setDiagnostics([]), 1500);
     } catch (error) {
       Alert.alert('Connection failed', error instanceof Error ? error.message : 'Unknown error');
     }
