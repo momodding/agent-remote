@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/detect"
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	"github.com/creack/pty"
 )
 
 type State string
@@ -55,6 +57,9 @@ type sessionRuntime struct {
 	scrollback string
 	plain      string
 	outbound   chan outboundMessage
+	cmd        *exec.Cmd
+	ptmx       *os.File
+	exitOnce   sync.Once
 }
 
 type outboundMessage struct {
@@ -97,6 +102,19 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	if cwd == "" {
 		cwd = m.workspaceRoot
 	}
+	cols, rows := req.Cols, req.Rows
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	cmd := exec.Command(command, req.Args...)
+	cmd.Dir = cwd
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	runtime := &sessionRuntime{
 		meta: Session{
@@ -104,21 +122,28 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 			Name:      req.Name,
 			Command:   command,
 			CWD:       cwd,
-			State:     StateIdle,
+			State:     StateRunning,
 			CreatedAt: now,
 			UpdatedAt: now,
 			Preview:   []string{"> session created"},
 		},
 		scrollback: filepath.Join(m.stateDir, "sessions", id+".scrollback"),
 		outbound:   make(chan outboundMessage, m.channelBufferSize),
+		cmd:        cmd,
+		ptmx:       ptmx,
 	}
 	if err := appendScrollback(runtime.scrollback, []byte("> session created\n"), m.maxScrollbackBytes); err != nil {
+		_ = ptmx.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
 		return nil, err
 	}
 	m.mu.Lock()
 	m.sessions[id] = runtime
 	m.mu.Unlock()
 	go m.forward(runtime)
+	go m.readOutput(runtime)
 	if err := m.saveMetadata(); err != nil {
 		return nil, err
 	}
@@ -143,6 +168,9 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 	if !ok {
 		return errors.New("session not found")
 	}
+	if data, err := os.ReadFile(runtime.scrollback); err == nil && len(data) > 0 {
+		fn(protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: runtime.seq}, protocol.SessionStateEnvelope{})
+	}
 	runtime.subs = append(runtime.subs, fn)
 	return nil
 }
@@ -154,35 +182,27 @@ func (m *Manager) Input(id string, b []byte) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	chunk := append([]byte(nil), b...)
-	runtime.seq++
-	if err := appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes); err != nil {
-		return err
+	if runtime.ptmx == nil {
+		return errors.New("session not running")
 	}
-	plain := detect.StripANSI(string(chunk))
-	runtime.plain = trimPreview(runtime.plain + plain)
-	runtime.meta.Preview = previewLines(runtime.plain)
-	runtime.meta.UpdatedAt = time.Now().UTC()
-	if wait := runtime.detector.Push(string(chunk), time.Now()); wait != nil {
-		runtime.meta.WaitState = wait
-		runtime.meta.State = StateWaiting
-		m.notify(runtime, wait)
-		m.emitState(runtime)
-	}
-	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: runtime.seq}})
-	return m.saveMetadata()
+	_, err := runtime.ptmx.Write(b)
+	return err
 }
 
 func (m *Manager) Resize(id string, cols, rows int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.sessions[id]; !ok {
+	runtime, ok := m.sessions[id]
+	if !ok {
 		return errors.New("session not found")
 	}
 	if cols <= 0 || rows <= 0 {
 		return errors.New("invalid terminal size")
 	}
-	return nil
+	if runtime.ptmx == nil {
+		return nil
+	}
+	return pty.Setsize(runtime.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 }
 
 func (m *Manager) Close(id string) error {
@@ -195,17 +215,19 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	runtime.meta.State = StateExited
-	wait := runtime.detector.Exited()
-	runtime.meta.WaitState = wait
-	runtime.meta.UpdatedAt = time.Now().UTC()
-	m.notify(runtime, wait)
-	m.emitState(runtime)
+	if runtime.cmd != nil && runtime.cmd.Process != nil {
+		_ = runtime.cmd.Process.Kill()
+	}
+	if runtime.ptmx != nil {
+		_ = runtime.ptmx.Close()
+	}
+	m.markExited(runtime)
+	// ponytail: Process.Kill only hits direct PTY child, not whole process tree; add per-OS process-group kill if orphaned grandchildren become real.
 	// ponytail: outbound channel is left open (goroutine leaks until GC of the
 	// last subscriber send); explicit close is rare enough that a done-signal
 	// isn't worth it. Revisit if session churn gets heavy.
 	_ = os.Remove(runtime.scrollback)
-	return m.saveMetadata()
+	return nil
 }
 
 func (m *Manager) forward(runtime *sessionRuntime) {
@@ -222,6 +244,51 @@ func (m *Manager) forward(runtime *sessionRuntime) {
 			sub(output, state)
 		}
 	}
+}
+
+func (m *Manager) readOutput(runtime *sessionRuntime) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := runtime.ptmx.Read(buf)
+		if n > 0 {
+			m.recordOutput(runtime, buf[:n])
+		}
+		if err != nil {
+			m.markExited(runtime)
+			return
+		}
+	}
+}
+
+func (m *Manager) recordOutput(runtime *sessionRuntime, chunk []byte) {
+	runtime.seq++
+	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
+	plain := detect.StripANSI(string(chunk))
+	runtime.plain = trimPreview(runtime.plain + plain)
+	runtime.meta.Preview = previewLines(runtime.plain)
+	runtime.meta.UpdatedAt = time.Now().UTC()
+	if wait := runtime.detector.Push(string(chunk), time.Now()); wait != nil {
+		runtime.meta.WaitState = wait
+		runtime.meta.State = StateWaiting
+		m.notify(runtime, wait)
+		m.emitState(runtime)
+	} else if runtime.meta.State == StateWaiting {
+		runtime.meta.State = StateRunning
+	}
+	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: runtime.seq}})
+	_ = m.saveMetadata()
+}
+
+func (m *Manager) markExited(runtime *sessionRuntime) {
+	runtime.exitOnce.Do(func() {
+		runtime.meta.State = StateExited
+		wait := runtime.detector.Exited()
+		runtime.meta.WaitState = wait
+		runtime.meta.UpdatedAt = time.Now().UTC()
+		m.notify(runtime, wait)
+		m.emitState(runtime)
+		_ = m.saveMetadata()
+	})
 }
 
 func (m *Manager) emitState(runtime *sessionRuntime) {
