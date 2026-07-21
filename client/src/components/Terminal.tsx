@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-const terminalHTML = require('../../assets/terminal.html');
+import { terminalHTML } from './terminal_html';
 
 type TerminalMessage = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 
@@ -15,6 +15,8 @@ type Props = {
 export function Terminal({ onInput, onResize, output }: Props) {
   const web = useRef<WebView>(null);
   const lastOutput = useRef('');
+  const currentOutput = useRef(output);
+  currentOutput.current = output;
 
   useEffect(() => {
     if (output === lastOutput.current) return;
@@ -38,7 +40,13 @@ export function Terminal({ onInput, onResize, output }: Props) {
   );
 
   if (Platform.OS === 'web') return <View style={styles.unavailable} />;
-  return <WebView ref={web} source={terminalHTML} onLoadEnd={() => { lastOutput.current = ''; }} onMessage={onMessage} originWhitelist={['*']} allowFileAccess style={styles.webview} />;
+  return <WebView ref={web} source={{ html: terminalHTML }} onLoadEnd={() => {
+    lastOutput.current = '';
+    if (currentOutput.current) {
+      web.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'output', data: currentOutput.current }))}}));true;`);
+      lastOutput.current = currentOutput.current;
+    }
+  }} onMessage={onMessage} originWhitelist={['*']} style={styles.webview} />;
 }
 
 const styles = StyleSheet.create({
