@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -180,7 +181,55 @@ func TestSessionWSAcceptsPTYAfterToken(t *testing.T) {
 	t.Fatal(ctx.Err())
 }
 
+func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test",
+		Command: "sh",
+		Args:    []string{"-c", "echo agentic-remote-marker-123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
+		if strings.Contains(preview, "agentic-remote-marker-123") {
+			var seeded string
+			err = srv.sessions.Subscribe(summary.ID, func(output protocol.PTYOutputEnvelope, _ protocol.SessionStateEnvelope) {
+				if seeded != "" || output.Data == "" {
+					return
+				}
+				data, decodeErr := base64.StdEncoding.DecodeString(output.Data)
+				if decodeErr != nil {
+					t.Fatalf("decode output: %v", decodeErr)
+				}
+				seeded = string(data)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(seeded, "agentic-remote-marker-123") {
+				t.Fatalf("expected seeded scrollback, got %q", seeded)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(ctx.Err())
+}
+
 func testBearerToken(t *testing.T, srv *Server, pairings *security.PairingStore) string {
+	t.Helper()
+	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testBearerTokenFromPayload(t, srv, payload)
+}
+
+func testBearerTokenFromPayload(t *testing.T, srv *Server, payload *security.PairingPayload) string {
 	t.Helper()
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
@@ -191,10 +240,6 @@ func testBearerToken(t *testing.T, srv *Server, pairings *security.PairingStore)
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "auth.hello", "pairingId": payload.PairingID, "clientNonce": strings.Repeat("A", 43), "clientName": "phone"}); err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +288,11 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		for _, sess := range srv.sessions.List(context.Background()) {
+			_ = srv.sessions.Close(sess.ID)
+		}
+	})
 	return srv, pairings
 }
 
