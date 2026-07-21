@@ -6,7 +6,7 @@ agenticRemote provides remote control of AI terminal sessions through a host dae
 
 ## Architecture & Data Flow
 
-The daemon exposes HTTPS REST endpoints plus authenticated WSS session streams. Pairing creates one-time client credentials; the client scans a QR payload, validates the daemon certificate fingerprint, completes Auth-v2, then uses a bearer session token for REST and WSS access. PTY session state, pairing verifier material, session bearer-token hashes, notification tokens, and scrollback persist under the daemon state directory. Backend protocol types are defined once in `backend/internal/protocol` and mirrored in `client/lib/src/protocol`.
+The daemon exposes HTTPS REST endpoints plus authenticated WSS session streams. Pairing creates one-time client credentials; the client scans a QR payload, completes Auth-v2, then uses a bearer session token for REST and WSS access. Expo Go cannot dynamically pin a daemon certificate; self-signed/direct-LAN payloads must opt in with `skipFingerprintVerification:true`. PTY session state, pairing verifier material, session bearer-token hashes, notification tokens, and scrollback persist under the daemon state directory. Backend protocol types are defined once in `backend/internal/protocol` and mirrored in `client/src/protocol.ts`.
 
 ## Key Directories
 
@@ -38,7 +38,7 @@ The daemon exposes HTTPS REST endpoints plus authenticated WSS session streams. 
 
 ## Code Conventions & Common Patterns
 
-Go packages live under `backend/internal/<behavior>`. Keep exported Go symbols PascalCase. Keep JSON wire fields lowerCamelCase. Put API and wire-contract types in `backend/internal/protocol` and mirror them in `client/lib/src/protocol`. Dart filenames use snake_case. Prefer direct, boring packages over cross-cutting abstraction. Never store raw pairing tokens; persist only verifier material. Reject unauthenticated filesystem and session endpoints.
+Go packages live under `backend/internal/<behavior>`. Keep exported Go symbols PascalCase. Keep JSON wire fields lowerCamelCase. Put API and wire-contract types in `backend/internal/protocol` and mirror them in `client/src/protocol.ts`. TypeScript filenames use snake_case only for non-component modules; Expo route/component files follow React conventions. Prefer direct, boring packages over cross-cutting abstraction. Never store raw pairing tokens in backend state; persist only verifier material. Reject unauthenticated filesystem and session endpoints.
 
 ## Important Files
 

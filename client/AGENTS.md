@@ -1,3 +1,3 @@
-# Expo HAS CHANGED
+# Client Guidelines
 
-Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before writing any code.
+Use Expo SDK 57 Managed workflow only. Keep the app compatible with Expo Go; do not add native modules requiring a custom development client. Use local terminal assets, not CDN resources. Read the repository `AGENTS.md` for backend protocol and testing conventions.
