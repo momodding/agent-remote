@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
-	return logRequests(cors(mux))
+	return logRequests(cors(s.allowedCIDR(mux)))
 }
 
 type statusRecorder struct {
@@ -120,6 +121,32 @@ func cors(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) allowedCIDR(next http.Handler) http.Handler {
+	if len(s.cfg.AllowedCIDRs) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			writeJSON(w, http.StatusForbidden, protocol.ErrorEnvelope{Type: "error", Code: "forbidden_source", Message: "source address is not allowed"})
+			return
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			writeJSON(w, http.StatusForbidden, protocol.ErrorEnvelope{Type: "error", Code: "forbidden_source", Message: "source address is not allowed"})
+			return
+		}
+		for _, allowed := range s.cfg.AllowedCIDRs {
+			_, network, err := net.ParseCIDR(allowed)
+			if err == nil && network.Contains(ip) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		writeJSON(w, http.StatusForbidden, protocol.ErrorEnvelope{Type: "error", Code: "forbidden_source", Message: "source address is not allowed"})
 	})
 }
 

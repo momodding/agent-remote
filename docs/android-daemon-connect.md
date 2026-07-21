@@ -1,26 +1,26 @@
-# Run the daemon and connect from Android
+# Run the daemon and connect with Expo Go
 
-Use this when Android reports `certificate fingerprint mismatch` or `Bad state: client certificate mismatch`.
+Use this when connecting an Expo Go client to the daemon from Android.
 
-## Why this happens
+## TLS requirements
 
-The QR payload contains the daemon certificate fingerprint. If your public endpoint is a TLS proxy or tunnel, Android sees the proxy certificate instead of the daemon certificate. That mismatch is expected unless fingerprint verification is explicitly skipped.
+Expo Go cannot dynamically trust or pin the daemon's self-signed certificate. For a direct LAN or Tailscale daemon, set `skipFingerprintVerification: true` in the daemon configuration and pairing payload. A public endpoint must serve a browser-trusted TLS certificate; Expo Go cannot accept a self-signed public certificate.
 
-## Public endpoint / tunnel setup
+## Public endpoint or tunnel
 
-Use this for Cloudflare Tunnel, reverse proxy, public-CA HTTPS, or any endpoint where TLS is terminated before the daemon.
+Use this for Cloudflare Tunnel, a reverse proxy, or another public TLS endpoint. The public URL must have a browser-trusted certificate. Since TLS terminates before the daemon, skip the daemon fingerprint check.
 
 ### 1. Build the daemon
 
-From the repo root:
+From the repository root:
 
 ```sh
 make backend-build
 ```
 
-### 2. Create an Android public config
+### 2. Create a public config
 
-Replace `https://remote.example.com` with the exact HTTPS URL Android will scan or paste.
+Replace `https://remote.example.com` with the exact HTTPS URL the phone will use.
 
 ```sh
 cat > examples/config.android.public.json <<'JSON'
@@ -43,7 +43,7 @@ cat > examples/config.android.public.json <<'JSON'
 JSON
 ```
 
-Keep `skipFingerprintVerification: true` for public proxy/tunnel endpoints. The QR JSON printed by the daemon must include:
+The daemon's QR JSON must include:
 
 ```json
 "skipFingerprintVerification": true
@@ -55,58 +55,41 @@ Keep `skipFingerprintVerification: true` for public proxy/tunnel endpoints. The 
 backend/bin/agenticRemote serve --config examples/config.android.public.json
 ```
 
-Leave this terminal running. It prints a QR code and a raw JSON payload. The QR rolls every 45 seconds.
+Leave this terminal running. It prints a daemon pairing QR and raw JSON payload; the QR rotates every 45 seconds.
 
-### 4. Point your proxy/tunnel at the daemon
+### 4. Point the proxy or tunnel at the daemon
 
-Configure your public endpoint to forward to the daemon at:
+Configure the public endpoint to forward to:
 
 ```text
 https://127.0.0.1:8765
 ```
 
-If your proxy refuses the daemon's self-signed origin certificate, either allow self-signed origin TLS in the proxy or run a local origin certificate that the proxy trusts.
+If the proxy requires a trusted origin, configure it to allow the daemon's self-signed origin certificate or give the daemon an origin certificate trusted by the proxy.
 
-### 5. Rebuild and install the Android app
-
-Use a fresh build so the client has the current fingerprint-bypass logic.
+### 5. Start Expo Go
 
 ```sh
 cd client
-flutter clean
-flutter pub get
-flutter devices
-flutter run -d <android-device-id> --dart-define=AGENTICREMOTE_SKIP_FINGERPRINT_VERIFICATION=true
+npm ci
+npx expo start
 ```
 
-For an APK instead:
+Open Expo Go on Android and scan the Metro QR. This opens the managed app; it is separate from the daemon pairing QR.
 
-```sh
-cd client
-flutter clean
-flutter pub get
-flutter build apk --debug --dart-define=AGENTICREMOTE_SKIP_FINGERPRINT_VERIFICATION=true
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
-```
+### 6. Connect
 
-### 6. Connect from Android
+1. Enter a device name in the app.
+2. Scan the daemon pairing QR, or paste its raw JSON payload.
+3. Connect. The pairing payload's `skipFingerprintVerification` setting is used automatically.
 
-1. Open the app on Android.
-2. Enter a device name.
-3. Scan the daemon QR code, or paste the raw JSON payload.
-4. Ensure `Skip fingerprint verification` is checked.
-5. Tap `Connect`.
-6. In diagnostics, expect `Fingerprint verification skipped` before `Session Established`.
+## Direct LAN or Tailscale connection
 
-If diagnostics still says `Validating Certificate Fingerprint...` and then fails with a mismatch, the app is not using the bypass path. Reinstall the APK built with `--dart-define=AGENTICREMOTE_SKIP_FINGERPRINT_VERIFICATION=true`, confirm the checkbox is checked, and confirm the QR JSON contains `"skipFingerprintVerification":true`.
-
-## Direct LAN or Tailscale connection without a TLS proxy
-
-Use this only when Android connects directly to the daemon certificate, not through a public TLS proxy.
+Use this when the phone reaches the daemon directly. Expo Go cannot dynamically pin the daemon's self-signed certificate, so `skipFingerprintVerification` must be `true`.
 
 ### 1. Create a direct config
 
-Replace `100.64.1.2` with the host/IP Android can reach.
+Replace `100.64.1.2` with the host or IP the phone can reach.
 
 ```sh
 cat > examples/config.android.direct.json <<'JSON'
@@ -123,15 +106,15 @@ cat > examples/config.android.direct.json <<'JSON'
   "channelBufferSize": 256,
   "maxScrollbackBytes": 10485760,
   "allowDestructiveFiles": false,
-  "skipFingerprintVerification": false,
+  "skipFingerprintVerification": true,
   "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
 }
 JSON
 ```
 
-### 2. Regenerate TLS if you changed the endpoint
+### 2. Regenerate TLS if the endpoint changed
 
-The daemon reuses saved TLS files. If `publicEndpoint` changed for this state directory, remove only that config's TLS files before starting:
+The daemon reuses saved TLS files. If `publicEndpoint` changed for this state directory, remove only that configuration's TLS files before starting:
 
 ```sh
 rm -f examples/.agenticremote-android-direct/tls/cert.pem examples/.agenticremote-android-direct/tls/key.pem
@@ -143,23 +126,21 @@ rm -f examples/.agenticremote-android-direct/tls/cert.pem examples/.agenticremot
 backend/bin/agenticRemote serve --config examples/config.android.direct.json
 ```
 
-### 4. Connect from Android
+### 4. Open and pair in Expo Go
 
-1. Build/run the app normally:
+```sh
+cd client
+npm ci
+npx expo start
+```
 
-   ```sh
-   cd client
-   flutter run -d <android-device-id>
-   ```
-
+1. Open Expo Go and scan the Metro QR.
 2. Enter a device name.
-3. Scan the QR or paste the raw JSON payload.
-4. Leave `Skip fingerprint verification` unchecked.
-5. Tap `Connect`.
+3. Scan the daemon pairing QR, or paste its raw JSON payload.
+4. Connect; the pairing payload skips fingerprint verification.
 
 ## Quick failure checks
 
-- Public proxy/tunnel endpoint: `skipFingerprintVerification` must be `true` in daemon config, QR JSON, Android build define, or Android checkbox. Use all three while debugging.
-- Direct daemon endpoint: `publicEndpoint` must be the exact host/IP Android uses, and the saved daemon TLS cert must have been generated for that endpoint.
-- Stale Android app: uninstall/reinstall or run `flutter clean` before rebuilding.
-- Stale QR: scan the newest QR; it rotates every 45 seconds and tokens expire after 2 minutes.
+- Public endpoint: the URL must serve a browser-trusted TLS certificate, and the daemon config and pairing payload must set `skipFingerprintVerification` to `true` when TLS terminates at a proxy or tunnel.
+- Direct daemon endpoint: `publicEndpoint` must be the exact host or IP the phone uses, the saved daemon certificate must match that endpoint, and `skipFingerprintVerification` must be `true`.
+- Stale pairing payload: scan the newest daemon QR; it rotates every 45 seconds and tokens expire after 2 minutes.

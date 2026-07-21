@@ -1,14 +1,23 @@
-# agentic_remote
+# agenticRemote Expo client
 
-Flutter client for agenticRemote.
+This is a managed Expo app. Install Expo Go on the phone before connecting.
 
-## Android
+## Run
 
-From `client/`:
+```sh
+npm ci
+npx expo start
+```
 
-1. List emulators: `flutter emulators`
-2. Launch one: `flutter emulators --launch byobudash-api35-arm64`
-3. Run the app: `flutter run -d <emulator-id>`
-4. Build a debug APK: `flutter build apk --debug`
+Open Expo Go and scan the Metro QR to open the app. In the app, enter a device name, then scan the daemon pairing QR or paste its raw JSON payload.
 
-APK output: `build/app/outputs/flutter-apk/app-debug.apk`
+## Commands
+
+```sh
+npm run typecheck
+npm test
+npm run build:web
+npm start
+```
+
+For direct LAN or self-signed daemon endpoints, the pairing payload must set `skipFingerprintVerification: true`; Expo Go cannot dynamically trust or pin the daemon certificate. Public endpoints need a browser-trusted TLS certificate. See `../docs/android-daemon-connect.md` for setup details.

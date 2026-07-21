@@ -5,7 +5,6 @@ CLIENT_TARGETS ?= web
 DAEMON_TARGET ?=
 CLIENT_TARGET ?=
 GOFLAGS ?=
-FLUTTER_BUILD_FLAGS ?= --dart-define=AGENTICREMOTE_SKIP_FINGERPRINT_VERIFICATION=true
 
 DAEMON_BUILD_TARGETS := $(strip $(if $(DAEMON_TARGET),$(DAEMON_TARGET),$(DAEMON_TARGETS)))
 CLIENT_BUILD_TARGETS := $(strip $(if $(CLIENT_TARGET),$(CLIENT_TARGET),$(CLIENT_TARGETS)))
@@ -37,38 +36,12 @@ daemon-build:
 	done
 
 client-test:
-	cd client && flutter test
+	cd client && npm ci && npm run typecheck && npm test
 
 client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
-			web) \
-				rm -rf builds/client/web; \
-				cd client && flutter build web $(FLUTTER_BUILD_FLAGS) --output ../builds/client/web && cd .. \
-				;; \
-			android) \
-				cd client && flutter build apk $(FLUTTER_BUILD_FLAGS) && cd ..; \
-				rm -rf builds/client/android; \
-				mkdir -p builds/client/android; \
-				cp client/build/app/outputs/flutter-apk/*.apk builds/client/android/ \
-				;; \
-			android-arm64) \
-				cd client && flutter build apk --target-platform android-arm64 $(FLUTTER_BUILD_FLAGS) && cd ..; \
-				rm -rf builds/client/android-arm64; \
-				mkdir -p builds/client/android-arm64; \
-				cp client/build/app/outputs/flutter-apk/*.apk builds/client/android-arm64/ \
-				;; \
-			windows) \
-				cd client && flutter build windows $(FLUTTER_BUILD_FLAGS) && cd ..; \
-				rm -rf builds/client/windows; \
-				cp -R client/build/windows/x64/runner/Release builds/client/windows \
-				;; \
-			macos) \
-				cd client && flutter build macos $(FLUTTER_BUILD_FLAGS) && cd ..; \
-				rm -rf builds/client/macos; \
-				mkdir -p builds/client/macos; \
-				cp -R client/build/macos/Build/Products/Release/agentic_remote.app builds/client/macos/agentic_remote.app \
-				;; \
+			web) cd client && npm ci && npm run build:web && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
@@ -82,10 +55,10 @@ test:
 
 lint:
 	cd backend && go vet ./...
-	cd client && dart analyze
+	cd client && npm ci && npm run typecheck
 
 run-daemon:
 	cd backend && go run ./cmd/agenticRemote serve --config ../examples/config.local.json
 
 run-client:
-	cd client && flutter run -d chrome
+	cd client && npm start
