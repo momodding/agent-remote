@@ -18,14 +18,19 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
 
-  flutter:
+  node:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-      - run: flutter pub get
-      - run: dart analyze
-      - run: flutter test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:web
