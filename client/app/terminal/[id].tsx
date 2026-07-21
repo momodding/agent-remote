@@ -15,6 +15,7 @@ export default function TerminalScreen() {
 
   const connect = useCallback((current: Connection) => {
     if (!id) return;
+    setOutput(''); // Subscription replays complete scrollback after each reconnect.
     socket.current = new SessionSocket(current, id, (data) => setOutput((existing) => existing + data), () => undefined, (message) => Alert.alert('Terminal', message));
     socket.current.connect();
   }, [id]);

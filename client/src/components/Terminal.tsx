@@ -17,7 +17,12 @@ export function Terminal({ onInput, onResize, output }: Props) {
   const lastOutput = useRef('');
 
   useEffect(() => {
-    if (!output || output === lastOutput.current) return;
+    if (output === lastOutput.current) return;
+    if (output.length < lastOutput.current.length) {
+      web.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'clear' }))}}));true;`);
+      lastOutput.current = '';
+    }
+    if (!output) return;
     const data = output.slice(lastOutput.current.length);
     lastOutput.current = output;
     web.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'output', data }))}}));true;`);
@@ -33,7 +38,7 @@ export function Terminal({ onInput, onResize, output }: Props) {
   );
 
   if (Platform.OS === 'web') return <View style={styles.unavailable} />;
-  return <WebView ref={web} source={terminalHTML} onMessage={onMessage} originWhitelist={['*']} allowFileAccess style={styles.webview} />;
+  return <WebView ref={web} source={terminalHTML} onLoadEnd={() => { lastOutput.current = ''; }} onMessage={onMessage} originWhitelist={['*']} allowFileAccess style={styles.webview} />;
 }
 
 const styles = StyleSheet.create({
