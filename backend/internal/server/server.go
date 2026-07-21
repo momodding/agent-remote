@@ -58,7 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/v1/sessions", s.withAuth(s.handleSessions))
-    mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
+	mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
+	mux.HandleFunc("/v1/pairing", s.withAuth(s.handlePairingCreate))
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
 	mux.HandleFunc("/v1/fs/search", s.withAuth(s.handleFSSearch))
 	mux.HandleFunc("/v1/fs/read", s.withAuth(s.handleFSRead))
@@ -293,6 +294,19 @@ func (s *Server) handleNotifyRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePairingCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	payload, err := s.auth.NewPairing(s.cfg.PublicEndpoint, s.tls.Fingerprint, s.cfg.SkipFingerprintVerification, time.Now().UTC())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "pairing_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, payload)
 }
 
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {

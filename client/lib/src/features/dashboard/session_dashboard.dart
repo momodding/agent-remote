@@ -23,6 +23,7 @@ class _SessionDashboardState extends State<SessionDashboard> {
   final TextEditingController nameController = TextEditingController();
   String query = '';
   String connectionError = '';
+  String invitePayload = '';
   bool scanning = false;
   bool skipFingerprintVerification =
       AppState.defaultSkipFingerprintVerification;
@@ -67,24 +68,50 @@ class _SessionDashboardState extends State<SessionDashboard> {
                 },
               ),
               const SizedBox(height: 16),
-              ShadButton(
-                onPressed: () async {
-                  try {
-                    setState(() => connectionError = '');
-                    final summary = await widget.state.api.createSession(
-                      name: 'remote session',
-                    );
-                    widget.state.sessions.value = await widget.state.api
-                        .fetchSessions();
-                    if (!context.mounted) return;
-                    _openSession(context, summary.id);
-                  } catch (error) {
-                    setState(() => connectionError = error.toString());
-                  }
-                },
-                child: const Text('New session'),
+              Row(
+                children: [
+                  ShadButton(
+                    onPressed: () async {
+                      try {
+                        setState(() => connectionError = '');
+                        final summary = await widget.state.api.createSession(
+                          name: 'remote session',
+                        );
+                        widget.state.sessions.value = await widget.state.api
+                            .fetchSessions();
+                        if (!context.mounted) return;
+                        _openSession(context, summary.id);
+                      } catch (error) {
+                        setState(() => connectionError = error.toString());
+                      }
+                    },
+                    child: const Text('New session'),
+                  ),
+                  const SizedBox(width: 8),
+                  ShadButton.outline(
+                    onPressed: () async {
+                      try {
+                        setState(() => connectionError = '');
+                        final payload = await widget.state.api.createPairing();
+                        setState(() => invitePayload = payload);
+                      } catch (error) {
+                        setState(() => connectionError = error.toString());
+                      }
+                    },
+                    child: const Text('Invite device'),
+                  ),
+                ],
               ),
+              if (invitePayload.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ShadInput(
+                  controller: TextEditingController(text: invitePayload),
+                  readOnly: true,
+                  maxLines: 6,
+                ),
+              ],
               const SizedBox(height: 16),
+
               ShadInput(
                 controller: controller,
                 placeholder: const Text('Search sessions'),
@@ -119,16 +146,16 @@ class _SessionDashboardState extends State<SessionDashboard> {
                           itemCount: filtered.length,
                           itemBuilder: (context, index) => _SessionCard(
                             session: filtered[index],
-                            onOpen: () => _openSession(
-                              context,
-                              filtered[index].id,
-                            ),
+                            onOpen: () =>
+                                _openSession(context, filtered[index].id),
                             onClose: () async {
                               await widget.state.api.closeSession(
                                 filtered[index].id,
                               );
-                              widget.state.sessions.value =
-                                  await widget.state.api.fetchSessions();
+                              widget.state.sessions.value = await widget
+                                  .state
+                                  .api
+                                  .fetchSessions();
                             },
                           ),
                         );
