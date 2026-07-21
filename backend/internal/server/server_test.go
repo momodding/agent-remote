@@ -104,6 +104,25 @@ func TestHandlerLogsRequestAttempt(t *testing.T) {
 	}
 }
 
+func TestAllowedCIDRsRejectsUnlistedSource(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.AllowedCIDRs = []string{"127.0.0.0/8"}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.Code)
+	}
+	var body protocol.ErrorEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "forbidden_source" {
+		t.Fatalf("expected forbidden_source, got %q", body.Code)
+	}
+}
+
 func TestBootstrapAcceptsSessionFramesWithoutAuth(t *testing.T) {
 	srv, _ := newBootstrapServer(t)
 	ts := httptest.NewTLSServer(srv.Handler())
@@ -292,6 +311,7 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(dir, ".agenticremote")
+	cfg.AllowedCIDRs = nil
 	cfg.WorkspaceRoot = dir
 	tlsMaterial, err := security.EnsureTLS(cfg.StateDir, "127.0.0.1:8765", cfg.PublicEndpoint)
 	if err != nil {
