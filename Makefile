@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-build daemon-build client-test client-build client-build-web test lint run-daemon run-client
+.PHONY: backend-test backend-build daemon-build client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
@@ -42,12 +42,19 @@ client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
 			web) cd client && bun install && bun run build:web && cd .. ;; \
+			android|ios) cd client && bun install && bunx eas-cli build --platform "$$target" --local && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
 
 client-build-web:
 	$(MAKE) client-build CLIENT_TARGETS=web
+
+client-build-android:
+	$(MAKE) client-build CLIENT_TARGETS=android
+
+client-build-ios:
+	$(MAKE) client-build CLIENT_TARGETS=ios
 
 test:
 	$(MAKE) backend-test

@@ -17,7 +17,12 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.paperplain.agenticremote"
     },
     "web": {
       "bundler": "metro",
@@ -27,6 +32,12 @@
       "expo-router",
       "expo-camera",
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3ce75888-9686-4b11-bd78-6514de0391cf"
+      }
+    }
   }
 }

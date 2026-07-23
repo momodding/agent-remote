@@ -1,4 +1,6 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 import type { PairingPayload } from '../protocol';
 
@@ -9,21 +11,44 @@ export type Connection = Pick<PairingPayload, 'endpoint' | 'fingerprint' | 'skip
   clientName: string;
 };
 
+async function getConnectionValue(): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return AsyncStorage.getItem(CONNECTION_KEY);
+  }
+  return SecureStore.getItemAsync(CONNECTION_KEY);
+}
+
+async function setConnectionValue(value: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.setItem(CONNECTION_KEY, value);
+    return;
+  }
+  await SecureStore.setItemAsync(CONNECTION_KEY, value);
+}
+
+async function removeConnectionValue(): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.removeItem(CONNECTION_KEY);
+    return;
+  }
+  await SecureStore.deleteItemAsync(CONNECTION_KEY);
+}
+
 export async function loadConnection(): Promise<Connection | null> {
-  const raw = await SecureStore.getItemAsync(CONNECTION_KEY);
+  const raw = await getConnectionValue();
   if (!raw) return null;
   try {
     return JSON.parse(raw) as Connection;
   } catch {
-    await SecureStore.deleteItemAsync(CONNECTION_KEY);
+    await removeConnectionValue();
     return null;
   }
 }
 
 export async function saveConnection(connection: Connection): Promise<void> {
-  await SecureStore.setItemAsync(CONNECTION_KEY, JSON.stringify(connection));
+  await setConnectionValue(JSON.stringify(connection));
 }
 
 export async function clearConnection(): Promise<void> {
-  await SecureStore.deleteItemAsync(CONNECTION_KEY);
+  await removeConnectionValue();
 }
