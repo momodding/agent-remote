@@ -33,6 +33,7 @@ class MockWebSocket {
 globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 
 const connection: Connection = {
+  name: 'Test daemon',
   endpoint: 'https://daemon.test',
   token: 'secret',
   fingerprint: '',
@@ -103,7 +104,7 @@ describe('SessionSocket', () => {
       data: JSON.stringify({ type: 'pty.output', sessionId: 'session', data: base64(utf8('stale')), seq: 1 }),
     });
     oldSocket.onmessage?.({
-      data: JSON.stringify({ type: 'session.state', sessionId: 'session', state: 'finished' }),
+      data: JSON.stringify({ type: 'session.state', sessionId: 'session', state: 'exited' }),
     });
     oldSocket.onerror?.();
     expect(oldSocket.sent).toEqual([]);

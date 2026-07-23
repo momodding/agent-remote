@@ -20,7 +20,7 @@ export type SessionSummary = {
   name: string;
   command: string;
   cwd: string;
-  state: 'running' | 'finished';
+  state: 'running' | 'exited' | 'waiting' | 'idle';
   createdAt: string;
   updatedAt: string;
   preview: string[];

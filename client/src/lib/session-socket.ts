@@ -1,12 +1,12 @@
 import type { Connection } from './connection';
 import { base64, decodeBase64, text, utf8 } from './bytes';
-import type { WaitState } from '../protocol';
+import type { SessionSummary, WaitState } from '../protocol';
 
 const wsURL = (endpoint: string, id: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/sessions/${encodeURIComponent(id)}`;
 
 type SessionFrame =
   | { type: 'pty.output'; sessionId: string; data: string; seq: number }
-  | { type: 'session.state'; sessionId: string; state: 'running' | 'finished'; waitState?: WaitState }
+  | { type: 'session.state'; sessionId: string; state: SessionSummary['state']; waitState?: WaitState }
   | { type: 'error'; code: string; message: string };
 
 type InputFrame = { type: 'pty.input'; sessionId: string; data: string };
@@ -21,7 +21,7 @@ export class SessionSocket {
     private readonly connection: Connection,
     private readonly sessionId: string,
     private readonly onOutput: (data: string) => void,
-    private readonly onState: (state: 'running' | 'finished', waitState?: WaitState) => void,
+    private readonly onState: (state: SessionSummary['state'], waitState?: WaitState) => void,
     private readonly onError: (message: string) => void,
   ) {}
 

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "MDk1NjE5LjgzMTY0ODAwMA",
+    "name": "Shell",
+    "command": "bash",
+    "cwd": "/Users/fajaru/Documents/golang/agent-remote/examples",
+    "state": "running",
+    "createdAt": "2026-07-23T09:56:19.874701Z",
+    "updatedAt": "2026-07-23T09:56:20.177651Z",
+    "preview": [
+      "bash-5.2$ "
+    ]
+  }
+]

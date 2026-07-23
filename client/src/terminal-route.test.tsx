@@ -3,28 +3,55 @@ import { Alert, type AlertButton } from 'react-native';
 import { router } from 'expo-router';
 
 import TerminalScreen from '../app/terminal/[id]';
-import type { Connection } from './lib/connection';
+import type { Connection, ConnectionStore } from './lib/connection';
+import { APIError } from './lib/api';
 
 const mockCloseSession = jest.fn();
 const mockSocket = { connect: jest.fn(), close: jest.fn(), input: jest.fn(), resize: jest.fn() };
+let mockOnState: (state: string, waitState?: unknown) => void = () => undefined;
+let mockOnOutput: (data: string) => void = () => undefined;
 
-const connection: Connection = {
+const mockConnection: Connection = {
+  name: 'Test daemon',
   endpoint: 'https://daemon.test',
   token: 'secret',
   fingerprint: '',
   skipFingerprintVerification: false,
   clientName: 'test',
 };
+const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
-  router: { back: jest.fn() },
-  useLocalSearchParams: () => ({ id: 'session', name: 'Shell' }),
+  router: { replace: jest.fn() },
+  useLocalSearchParams: () => ({ id: 'session', name: 'Shell', connectionEndpoint: mockConnection.endpoint }),
 }));
-jest.mock('./lib/connection', () => ({ loadConnection: jest.fn(async () => connection) }));
-jest.mock('./lib/api', () => ({ AgenticRemoteAPI: jest.fn(() => ({ closeSession: mockCloseSession })) }));
-jest.mock('./lib/session-socket', () => ({ SessionSocket: jest.fn(() => mockSocket) }));
-jest.mock('./components/Terminal', () => ({ Terminal: () => null }));
+jest.mock('./lib/connection', () => ({
+  loadConnections: jest.fn(async () => mockStore),
+  getConnection: jest.fn((s: ConnectionStore, endpoint: string | null) =>
+    s.connections.find((c) => c.endpoint === endpoint) ?? null),
+}));
+jest.mock('./lib/api', () => {
+  class APIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return { AgenticRemoteAPI: jest.fn(() => ({ closeSession: mockCloseSession })), APIError };
+});
+jest.mock('./lib/session-socket', () => ({
+  SessionSocket: jest.fn((_connection: unknown, _id: unknown, onOutputCb: (data: string) => void, onStateCb: (state: string, waitState?: unknown) => void) => {
+    mockOnOutput = onOutputCb;
+    mockOnState = onStateCb;
+    return mockSocket;
+  }),
+}));
+let mockTerminalOutput: string | undefined;
+jest.mock('./components/Terminal', () => ({
+  Terminal: (props: { output: string }) => { mockTerminalOutput = props.output; return null; },
+}));
 jest.mock('./components/ShortcutKeyboard', () => ({ ShortcutKeyboard: () => null }));
 
 async function renderScreen() {
@@ -32,17 +59,94 @@ async function renderScreen() {
   await act(async () => {
     tree = create(<TerminalScreen />);
     await Promise.resolve();
+    await Promise.resolve();
   });
   return tree!;
 }
 
-function closeAction(tree: ReactTestRenderer) {
-  return tree.root.findByProps({ accessibilityLabel: 'Close session' }).props.onPress as () => void;
+function actionFor(tree: ReactTestRenderer, label: string) {
+  return tree.root.findByProps({ accessibilityLabel: label }).props.onPress as () => void;
 }
 
 function confirmation() {
   const buttons = (jest.mocked(Alert.alert).mock.calls.at(-1)?.[2] ?? []) as AlertButton[];
   return buttons;
+}
+
+describe('terminal route connection resolution', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(Alert, 'alert');
+    mockCloseSession.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('alerts and redirects home when connectionEndpoint does not resolve', async () => {
+    const { getConnection } = jest.requireMock('./lib/connection') as { getConnection: jest.Mock };
+    getConnection.mockReturnValueOnce(null);
+
+    const tree = await renderScreen();
+
+    expect(Alert.alert).toHaveBeenCalledWith('Could not load daemon connection');
+    expect(router.replace).toHaveBeenCalledWith('/');
+    act(() => tree.unmount());
+  });
+});
+
+describe('terminal route natural exit', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(Alert, 'alert');
+    mockCloseSession.mockResolvedValue(undefined);
+    mockTerminalOutput = undefined;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('closes the REST session, clears rendered output, and navigates home exactly once on session.state exited', async () => {
+    const tree = await renderScreen();
+    act(() => { mockOnOutput('shell output'); });
+    expect(mockTerminalOutput).toBe('shell output');
+
+    await act(async () => { mockOnState('exited'); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(mockCloseSession).toHaveBeenCalledWith('session');
+    expect(mockSocket.close).toHaveBeenCalledTimes(1);
+    expect(mockTerminalOutput).toBe('');
+    expect(router.replace).toHaveBeenCalledWith('/');
+    act(() => tree.unmount());
+  });
+
+  it('ignores a 404 APIError from the redundant close call (already closed server-side)', async () => {
+    mockCloseSession.mockRejectedValue(new APIError(404, 'not found'));
+    const tree = await renderScreen();
+    await act(async () => { mockOnState('exited'); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(Alert.alert).not.toHaveBeenCalledWith('Could not close session', expect.anything());
+    expect(router.replace).toHaveBeenCalledWith('/');
+    act(() => tree.unmount());
+  });
+
+  it('does not double-close when natural exit and manual Close race', async () => {
+    const tree = await renderScreen();
+    act(() => { mockOnState('exited'); });
+    act(() => closeAction(tree)());
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(mockCloseSession).toHaveBeenCalledTimes(1);
+    expect(Alert.alert).not.toHaveBeenCalledWith('Close session?', expect.anything(), expect.anything());
+    act(() => tree.unmount());
+  });
+});
+
+function closeAction(tree: ReactTestRenderer) {
+  return tree.root.findByProps({ accessibilityLabel: 'Close session' }).props.onPress as () => void;
 }
 
 describe('terminal route close action', () => {
@@ -56,7 +160,7 @@ describe('terminal route close action', () => {
     jest.restoreAllMocks();
   });
 
-  it('closes the remote and local session, then navigates back', async () => {
+  it('closes the remote and local session, then navigates home', async () => {
     const tree = await renderScreen();
     act(() => closeAction(tree)());
 
@@ -65,7 +169,7 @@ describe('terminal route close action', () => {
 
     expect(mockCloseSession).toHaveBeenCalledWith('session');
     expect(mockSocket.close).toHaveBeenCalled();
-    expect(router.back).toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });
 
@@ -75,7 +179,7 @@ describe('terminal route close action', () => {
     act(() => { confirmation()[0].onPress?.(); });
 
     expect(mockCloseSession).not.toHaveBeenCalled();
-    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
     act(() => tree.unmount());
   });
 
@@ -87,7 +191,29 @@ describe('terminal route close action', () => {
 
     expect(Alert.alert).toHaveBeenLastCalledWith('Could not close session', 'daemon unavailable');
     expect(mockSocket.close).not.toHaveBeenCalled();
-    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+});
+
+describe('terminal route detach', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(Alert, 'alert');
+    mockCloseSession.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('closes the socket and navigates home without any REST close call', async () => {
+    const tree = await renderScreen();
+    act(() => actionFor(tree, 'Detach')());
+
+    expect(mockCloseSession).not.toHaveBeenCalled();
+    expect(mockSocket.close).toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });
 });

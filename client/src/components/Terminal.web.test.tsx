@@ -37,11 +37,18 @@ globalThis.ResizeObserver = class {
   disconnect = disconnect;
 } as unknown as typeof ResizeObserver;
 
+let rafCallback: FrameRequestCallback | undefined;
+const rafSpy = jest.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+  rafCallback = cb;
+  return 1;
+});
+
 describe('web terminal', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockOnData = undefined;
     resize = undefined;
+    rafCallback = undefined;
   });
 
   it('writes output deltas and connects terminal input, sizing, and cleanup', () => {
@@ -81,6 +88,30 @@ describe('web terminal', () => {
     act(() => tree!.unmount());
     expect(mockInputSubscription.dispose).toHaveBeenCalledTimes(1);
     expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(mockTerminal.dispose).not.toHaveBeenCalled();
+    act(() => rafCallback?.(0));
     expect(mockTerminal.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers xterm dispose until after any in-flight resize RAF drains', () => {
+    const element = {} as HTMLDivElement;
+    let tree: ReactTestRenderer;
+
+    act(() => {
+      tree = create(<Terminal output="" onInput={jest.fn()} onResize={jest.fn()} />, {
+        createNodeMock: () => element,
+      });
+    });
+
+    act(() => tree!.unmount());
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(mockTerminal.dispose).not.toHaveBeenCalled();
+
+    act(() => rafCallback?.(0));
+    expect(mockTerminal.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  afterAll(() => {
+    rafSpy.mockRestore();
   });
 });

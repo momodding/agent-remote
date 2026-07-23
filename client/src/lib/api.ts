@@ -8,7 +8,7 @@ import type {
   SessionSummary,
 } from '../protocol';
 import { clientProof, newClientNonce, validateClientName } from './auth';
-import type { Connection } from './connection';
+import type { Connection, PairedConnection } from './connection';
 export const wsURL = (endpoint: string, path: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}${path}`;
 export const apiURL = (endpoint: string, path: string) => `${endpoint.replace(/\/$/, '')}${path}`;
 
@@ -71,7 +71,7 @@ export class AgenticRemoteAPI {
 
 export type Diagnostics = (message: string) => void;
 
-export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<Connection> {
+export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<PairedConnection> {
   const clientName = validateClientName(rawClientName);
   diagnostic('Resolving endpoint...');
   const endpoint = new URL(payload.endpoint);
@@ -113,5 +113,5 @@ export async function authenticatePairing(payload: PairingPayload, rawClientName
     };
   });
   diagnostic('Session Established');
-  return { endpoint: payload.endpoint, fingerprint: payload.fingerprint, skipFingerprintVerification: payload.skipFingerprintVerification, token, clientName };
+  return { endpoint: payload.endpoint, fingerprint: payload.fingerprint, skipFingerprintVerification: payload.skipFingerprintVerification ?? false, token, clientName };
 }

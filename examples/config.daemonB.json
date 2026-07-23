@@ -1,0 +1,16 @@
+{
+  "listenAddr": "127.0.0.1:8766",
+  "publicEndpoint": "https://127.0.0.1:8766",
+  "stateDir": ".agenticremote-b",
+  "workspaceRoot": ".",
+  "uploadDir": "uploads",
+  "allowedCidrs": ["127.0.0.0/8", "::1/128"],
+  "maxConnections": 8,
+  "maxSessions": 16,
+  "channelBufferSize": 256,
+  "maxScrollbackBytes": 10485760,
+  "allowDestructiveFiles": false,
+  "skipFingerprintVerification": false,
+  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send",
+  "pairingRotationSeconds": 45
+}

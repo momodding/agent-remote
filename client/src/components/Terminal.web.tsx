@@ -57,7 +57,11 @@ export function Terminal({ onInput, onResize, output }: Props) {
       input.dispose();
       observer.disconnect();
       terminal.current = null;
-      xterm.dispose();
+      // xterm.js queues an internal viewport-refresh requestAnimationFrame after fit()/resize()
+      // (see https://github.com/xtermjs/xterm.js/issues/4983). Disposing synchronously can let
+      // that stale frame fire against an already-torn-down renderService and throw. Deferring
+      // dispose one frame lets any in-flight refresh drain first.
+      requestAnimationFrame(() => xterm.dispose());
     };
   }, []);
 

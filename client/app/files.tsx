@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Stack, router } from 'expo-router';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
 
 import { AgenticRemoteAPI } from '../src/lib/api';
-import { loadConnection } from '../src/lib/connection';
+import { getConnection, loadConnections } from '../src/lib/connection';
 import type { FileEntry, GitStatus, ReadFileResponse } from '../src/protocol';
 
 export default function FilesScreen() {
+  const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
   const [api, setAPI] = useState<AgenticRemoteAPI | null>(null);
   const [path, setPath] = useState('');
   const [query, setQuery] = useState('');
@@ -23,7 +24,22 @@ export default function FilesScreen() {
     } catch (error) { Alert.alert('Could not load files', error instanceof Error ? error.message : 'Unknown error'); }
     finally { setLoading(false); }
   }, [api, path, query]);
-  useEffect(() => { void loadConnection().then((connection) => { const client = connection && new AgenticRemoteAPI(connection); setAPI(client); if (client) void reload(client); else setLoading(false); }); }, []);
+  useEffect(() => {
+    void loadConnections()
+      .then((store) => {
+        const connection = getConnection(store, connectionEndpoint ?? null);
+        if (!connection) {
+          setLoading(false);
+          Alert.alert('Could not load daemon connection');
+          router.replace('/');
+          return;
+        }
+        const client = new AgenticRemoteAPI(connection);
+        setAPI(client);
+        void reload(client);
+      })
+      .catch(() => { Alert.alert('Could not load daemon connections'); router.replace('/'); setLoading(false); });
+  }, []);
   const gitCodes = useMemo(() => new Map(git?.entries.map((entry) => [entry.path, entry.code])), [git]);
   const open = async (entry: FileEntry) => { if (entry.isDir) { setPath(entry.path); setQuery(''); await reload(api, entry.path, ''); } else if (api) { try { setFile(await api.readFile(entry.path)); } catch (error) { Alert.alert('Could not read file', error instanceof Error ? error.message : 'Unknown error'); } } };
   if (file) return <Editor file={file} api={api} onBack={() => setFile(null)} />;
