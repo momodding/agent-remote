@@ -71,7 +71,8 @@ export default function Dashboard() {
       if (reconnected) await loadSessions(reconnected);
       setTimeout(() => setDiagnostics([]), 1500);
     } catch (error) {
-      Alert.alert('Connection failed', error instanceof Error ? error.message : 'Unknown error');
+      setDiagnostics([]);
+      throw error;
     }
   };
 

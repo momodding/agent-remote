@@ -169,6 +169,23 @@ describe('dashboard saved-daemon lifecycle', () => {
     act(() => tree.unmount());
   });
 
+  it('propagates a pairing failure instead of swallowing it', async () => {
+    mockAuthenticatePairing.mockRejectedValue(new Error('bad token'));
+    const tree = await renderDashboard();
+
+    await expect(
+      act(async () => {
+        await mockPairingProps!.onConnect(
+          { v: 2, endpoint: first.endpoint, fingerprint: first.fingerprint, pairingId: 'pair', token: 'pairing-token', expiresAt: '2030-01-01T00:00:00Z' },
+          'renewed-client',
+        );
+      }),
+    ).rejects.toThrow('bad token');
+
+    expect(mockSaveConnection).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
   it('edits and deletes through ConnectionSheet callbacks', async () => {
     const renamed = { ...first, name: 'Renamed daemon' };
     mockUpdateConnection.mockResolvedValue({ connections: [renamed, second], selectedEndpoint: first.endpoint });
