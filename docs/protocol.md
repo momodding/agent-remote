@@ -12,6 +12,9 @@
 6. Client derives `verifier = Argon2id(token, salt, time=3, memory=64 MiB, threads=1, keyLen=32)` and sends `auth.proof = HMAC-SHA256(verifier, "agenticRemote-auth-v2" || pairingId || clientNonce || serverNonce || challengeId)`.
 7. Server verifies the proof and returns `auth.ok` with a bearer `sessionToken`. The server stores only `sha256(sessionToken)` and the accepted `clientName` at rest.
 8. Bootstrap WebSocket accepts only auth frames until `auth.ok`. All REST filesystem/session endpoints, and non-bootstrap session WebSockets, require `Authorization: Bearer <sessionToken>`.
+
+`GET /pairing` (optional, Basic Auth via `pairingPageUsername`/`pairingPagePassword`) renders the current rotating pairing payload as an HTML page with QR image and raw JSON — a browser presentation of the same payload printed to the terminal, not a separate pairing protocol. Payloads scanned or pasted from it still authenticate over `/v1/ws/sessions/bootstrap` using the Auth-v2 flow above.
+
 ## REST endpoints
 
 - `GET /healthz` → `{"ok":true,"version":"dev"}`.
