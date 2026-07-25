@@ -342,6 +342,135 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	return srv, pairings
 }
 
+func newPairingPageServer(t *testing.T) (*Server, *security.PairingSnapshot) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.StateDir = filepath.Join(dir, ".agenticremote")
+	cfg.AllowedCIDRs = nil
+	cfg.WorkspaceRoot = dir
+	cfg.PairingPageUsername = "pairing"
+	cfg.PairingPagePassword = "s3cret-pass"
+	tlsMaterial, err := security.EnsureTLS(cfg.StateDir, "127.0.0.1:8765", cfg.PublicEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairings, err := security.LoadPairingStore(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := security.LoadSessionStore(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := security.NewAuthService(pairings, sessions)
+	manager, err := session.NewManager(cfg.StateDir, cfg.WorkspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &security.PairingSnapshot{}
+	srv, err := New(cfg, tlsMaterial, auth, manager, noopNotify{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, sess := range srv.sessions.List(context.Background()) {
+			_ = srv.sessions.Close(sess.ID)
+		}
+	})
+	return srv, snapshot
+}
+
+func TestPairingPageDisabledWithoutCredentials(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/pairing", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when pairing page credentials unset, got %d", resp.Code)
+	}
+}
+
+func TestPairingPageRequiresBasicAuth(t *testing.T) {
+	srv, _ := newPairingPageServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/pairing", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without credentials, got %d", resp.Code)
+	}
+	if resp.Header().Get("WWW-Authenticate") == "" {
+		t.Fatal("expected WWW-Authenticate challenge header")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/pairing", nil)
+	req.SetBasicAuth("pairing", "wrong-password")
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong password, got %d", resp.Code)
+	}
+}
+
+func TestPairingPageServiceUnavailableBeforeFirstPublish(t *testing.T) {
+	srv, _ := newPairingPageServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/pairing", nil)
+	req.SetBasicAuth("pairing", "s3cret-pass")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 before first publish, got %d", resp.Code)
+	}
+}
+
+func TestPairingPageRendersPublishedPayload(t *testing.T) {
+	srv, snapshot := newPairingPageServer(t)
+	payload := &security.PairingPayload{
+		Version:   2,
+		Endpoint:  "https://127.0.0.1:8765",
+		PairingID: "pid-1",
+		Token:     "token-1",
+		ExpiresAt: time.Now().Add(2 * time.Minute).UTC(),
+	}
+	snapshot.Store(payload)
+
+	req := httptest.NewRequest(http.MethodGet, "/pairing", nil)
+	req.SetBasicAuth("pairing", "s3cret-pass")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if resp.Header().Get("Cache-Control") != "no-store, max-age=0" {
+		t.Fatalf("unexpected cache-control: %q", resp.Header().Get("Cache-Control"))
+	}
+	if resp.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("expected X-Content-Type-Options: nosniff")
+	}
+	body := resp.Body.String()
+	if !strings.Contains(body, "pid-1") || !strings.Contains(body, "token-1") {
+		t.Fatalf("expected raw JSON payload fields in page, got: %s", body)
+	}
+	if !strings.Contains(body, "data:image/png;base64,") {
+		t.Fatal("expected inline QR code image")
+	}
+}
+
+func TestPairingPageRejectsNonGET(t *testing.T) {
+	srv, snapshot := newPairingPageServer(t)
+	snapshot.Store(&security.PairingPayload{Version: 2, Endpoint: "https://127.0.0.1:8765"})
+	req := httptest.NewRequest(http.MethodPost, "/pairing", nil)
+	req.SetBasicAuth("pairing", "s3cret-pass")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", resp.Code)
+	}
+	if resp.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("expected Allow: GET, got %q", resp.Header().Get("Allow"))
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	srv, _ := newBootstrapServer(t)
