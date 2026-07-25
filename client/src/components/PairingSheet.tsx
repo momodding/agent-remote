@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Linking, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
@@ -7,21 +7,113 @@ import type { PairingPayload } from '../protocol';
 
 type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: PairingPayload, clientName: string) => Promise<void> };
 
+// Camera readiness beyond the OS permission grant: unknown while checking, then available/unavailable.
+type Availability = 'checking' | 'available' | 'unavailable';
+
 export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const [name, setName] = useState('phone');
   const [payloadText, setPayloadText] = useState('');
   const [scan, setScan] = useState(false);
   const [skip, setSkip] = useState(false);
+  const [availability, setAvailability] = useState<Availability>('checking');
+  const [busy, setBusy] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
-  const connect = async (raw: string) => {
+  const scanLock = useRef(false);
+
+  useEffect(() => {
+    if (!scan || !permission?.granted) return;
+    let cancelled = false;
+    setAvailability('checking');
+    CameraView.isAvailableAsync()
+      .then((ok) => { if (!cancelled) setAvailability(ok ? 'available' : 'unavailable'); })
+      .catch(() => { if (!cancelled) setAvailability('unavailable'); });
+    return () => { cancelled = true; };
+  }, [scan, permission?.granted]);
+
+  useEffect(() => {
+    if (!visible) { setScan(false); setAvailability('checking'); scanLock.current = false; }
+  }, [visible]);
+
+  const openScan = () => { setAvailability('checking'); scanLock.current = false; setScan(true); };
+
+  const connect = async (raw: string): Promise<boolean> => {
     try {
       const payload = parsePairingPayload(raw);
       await onConnect({ ...payload, skipFingerprintVerification: skip || payload.skipFingerprintVerification }, name);
       onDismiss();
+      return true;
     } catch (error) {
       Alert.alert('Pairing failed', error instanceof Error ? error.message : 'Invalid pairing data');
+      return false;
     }
   };
+
+  const onScanned = (data: string) => {
+    if (scanLock.current) return;
+    scanLock.current = true;
+    setBusy(true);
+    void connect(data).finally(() => {
+      setBusy(false);
+      scanLock.current = false;
+    });
+  };
+
+  const onPaste = () => {
+    setBusy(true);
+    void connect(payloadText).finally(() => setBusy(false));
+  };
+
+  const renderCamera = () => {
+    if (permission === null) {
+      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-loading">Checking camera permission…</Text></View>;
+    }
+    if (!permission.granted && permission.canAskAgain) {
+      return (
+        <View style={styles.camera}>
+          <Pressable style={styles.primary} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
+            <Text style={styles.primaryText}>Allow camera</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    if (!permission.granted) {
+      return (
+        <View style={styles.camera}>
+          <Text style={styles.cameraStatus}>Camera access was denied. Enable it in system settings to scan.</Text>
+          <Pressable style={styles.primary} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
+            <Text style={styles.primaryText}>Open camera settings</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    if (availability === 'checking') {
+      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-checking">Checking camera availability…</Text></View>;
+    }
+    if (availability === 'unavailable') {
+      return (
+        <View style={styles.camera}>
+          <Text style={styles.cameraStatus}>Camera is unavailable right now.</Text>
+          <Pressable style={styles.primary} accessibilityLabel="retry-camera" onPress={openScan}>
+            <Text style={styles.primaryText}>Retry camera</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    if (busy) {
+      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-connecting">Connecting…</Text></View>;
+    }
+    return (
+      <View style={styles.camera}>
+        <CameraView
+          style={StyleSheet.absoluteFill}
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          onBarcodeScanned={({ data }) => onScanned(data)}
+          onMountError={() => setAvailability('unavailable')}
+        />
+      </View>
+    );
+  };
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onDismiss}>
       <View style={styles.sheet}>
@@ -31,11 +123,14 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
         <View style={styles.row}><Text style={styles.label}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} /></View>
         <Text style={styles.warning}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
         {scan ? (
-          <View style={styles.camera}>{permission?.granted ? <CameraView style={StyleSheet.absoluteFill} barcodeScannerSettings={{ barcodeTypes: ['qr'] }} onBarcodeScanned={({ data }) => { setScan(false); void connect(data); }} /> : <Pressable style={styles.primary} onPress={() => void requestPermission()}><Text style={styles.primaryText}>Allow camera</Text></Pressable>}</View>
+          <>
+            {renderCamera()}
+            <Pressable style={styles.secondary} accessibilityLabel="use-pasted-json" onPress={() => setScan(false)}><Text style={styles.primaryText}>Use pasted JSON</Text></Pressable>
+          </>
         ) : <>
-          <Pressable style={styles.secondary} onPress={() => setScan(true)}><Text style={styles.primaryText}>Scan QR code</Text></Pressable>
+          <Pressable style={styles.secondary} onPress={openScan}><Text style={styles.primaryText}>Scan QR code</Text></Pressable>
           <TextInput style={[styles.input, styles.payload]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" />
-          <Pressable style={styles.primary} onPress={() => void connect(payloadText)}><Text style={styles.primaryText}>Connect</Text></Pressable>
+          <Pressable style={styles.primary} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>
         </>}
       </View>
     </Modal>
@@ -56,5 +151,6 @@ const styles = StyleSheet.create({
   primary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#D19A2C' },
   secondary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#264E54' },
   primaryText: { color: '#0A0A0A', fontWeight: '700' },
-  camera: { minHeight: 320, overflow: 'hidden', borderRadius: 10, backgroundColor: '#181818' },
+  camera: { minHeight: 320, overflow: 'hidden', borderRadius: 10, backgroundColor: '#181818', justifyContent: 'center', alignItems: 'center', gap: 12, padding: 20 },
+  cameraStatus: { color: '#B8B8B8', textAlign: 'center', lineHeight: 20 },
 });
