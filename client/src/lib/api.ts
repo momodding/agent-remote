@@ -7,6 +7,7 @@ import type {
   ReadFileResponse,
   SessionSummary,
 } from '../protocol';
+import { Platform } from 'react-native';
 import { clientProof, newClientNonce, validateClientName } from './auth';
 import type { Connection, PairedConnection } from './connection';
 export const wsURL = (endpoint: string, path: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}${path}`;
@@ -71,27 +72,56 @@ export class AgenticRemoteAPI {
 
 export type Diagnostics = (message: string) => void;
 
-export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<PairedConnection> {
-  const clientName = validateClientName(rawClientName);
-  diagnostic('Resolving endpoint...');
-  const endpoint = new URL(payload.endpoint);
-  if (endpoint.protocol === 'https:') {
-    diagnostic('Initiating TLS Handshake...');
-    diagnostic(payload.skipFingerprintVerification ? 'Fingerprint verification skipped' : 'Validating Certificate Fingerprint...');
+// ponytail: /8, /16, /12, /10 etc. bit-boundary checks kept as plain integer math — no ip-address lib for four range checks.
+export function isLocalHostname(rawHost: string): boolean {
+  const host = rawHost.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1') return true;
+  if (host.endsWith('.local')) return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    return (
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
   }
-  diagnostic('Executing Auth-v2 Challenge...');
+  if (host.includes(':')) return /^fe[89ab][0-9a-f]:/.test(host) || /^f[cd][0-9a-f]{2}:/.test(host);
+  return false;
+}
+
+// Retryable transport failure (pre-frame onerror/onclose) — distinct from protocol/auth failures, which never retry.
+class TransportError extends Error {}
+
+async function attemptAuth(endpoint: string, payload: PairingPayload, clientName: string): Promise<string> {
   const clientNonce = newClientNonce();
-  const token = await new Promise<string>((resolve, reject) => {
-    const socket = new WebSocket(wsURL(payload.endpoint, '/v1/ws/sessions/bootstrap'));
-    const fail = (error: unknown) => {
+  return new Promise<string>((resolve, reject) => {
+    let frameReceived = false;
+    const socket = new WebSocket(wsURL(endpoint, '/v1/ws/sessions/bootstrap'));
+    const fail = (error: unknown, retryable: boolean) => {
       socket.close();
-      reject(error instanceof Error ? error : new Error('Connection failed'));
+      const message = error instanceof Error ? error.message : 'Connection failed';
+      reject(retryable ? new TransportError(message) : new Error(message));
     };
-    socket.onerror = () => fail(new Error('Connection failed'));
+    socket.onerror = () => fail(new Error('Connection failed'), !frameReceived);
+    socket.onclose = () => {
+      if (!frameReceived) fail(new Error('Connection closed'), true);
+    };
     socket.onopen = () => socket.send(JSON.stringify({ type: 'auth.hello', pairingId: payload.pairingId, clientNonce, clientName }));
     socket.onmessage = async ({ data }) => {
+      let frame: Record<string, string>;
       try {
-        const frame = JSON.parse(String(data)) as Record<string, string>;
+        frame = JSON.parse(String(data)) as Record<string, string>;
+      } catch (error) {
+        fail(error, false);
+        return;
+      }
+      frameReceived = true;
+      try {
         if (frame.type === 'auth.challenge') {
           socket.send(
             JSON.stringify({
@@ -105,13 +135,48 @@ export async function authenticatePairing(payload: PairingPayload, rawClientName
           socket.close();
           resolve(frame.sessionToken);
         } else if (frame.type === 'error') {
-          fail(new Error(frame.message || 'Authentication failed'));
+          fail(new Error(frame.message || 'Authentication failed'), false);
         }
       } catch (error) {
-        fail(error);
+        fail(error, false);
       }
     };
   });
+}
+
+export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<PairedConnection> {
+  const clientName = validateClientName(rawClientName);
+  diagnostic('Resolving endpoint...');
+  const endpoint = new URL(payload.endpoint);
+  if (endpoint.protocol === 'https:') {
+    diagnostic('Initiating TLS Handshake...');
+    diagnostic(payload.skipFingerprintVerification ? 'Fingerprint verification skipped' : 'Validating Certificate Fingerprint...');
+  }
+  diagnostic('Executing Auth-v2 Challenge...');
+
+  const canFallback =
+    Platform.OS === 'android' &&
+    endpoint.protocol === 'https:' &&
+    payload.skipFingerprintVerification === true &&
+    isLocalHostname(endpoint.hostname);
+
+  let resolvedEndpoint = payload.endpoint;
+  let token: string;
+  try {
+    token = await attemptAuth(resolvedEndpoint, payload, clientName);
+  } catch (error) {
+    if (!canFallback || !(error instanceof TransportError)) throw error;
+    diagnostic('Secure transport unavailable; retrying direct LAN over HTTP...');
+    const fallback = new URL(payload.endpoint);
+    fallback.protocol = 'http:';
+    resolvedEndpoint = fallback.toString().replace(/\/$/, '');
+    try {
+      token = await attemptAuth(resolvedEndpoint, payload, clientName);
+    } catch {
+      throw new Error(`Connection failed on both ${payload.endpoint} and ${resolvedEndpoint}`);
+    }
+  }
+
   diagnostic('Session Established');
-  return { endpoint: payload.endpoint, fingerprint: payload.fingerprint, skipFingerprintVerification: payload.skipFingerprintVerification ?? false, token, clientName };
+  return { endpoint: resolvedEndpoint, fingerprint: payload.fingerprint, skipFingerprintVerification: payload.skipFingerprintVerification ?? false, token, clientName };
 }
