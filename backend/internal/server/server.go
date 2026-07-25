@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"io"
 	"log"
 	"mime/multipart"
@@ -21,6 +24,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/coder/websocket"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type SessionAPI interface {
@@ -44,14 +48,15 @@ type Server struct {
 	notify   NotifyAPI
 	limits   *Limits
 	tls      *security.TLSMaterial
+	pairingSnapshot *security.PairingSnapshot
 }
 
-func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, notify NotifyAPI) (*Server, error) {
+func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, notify NotifyAPI, pairingSnapshot *security.PairingSnapshot) (*Server, error) {
 	fsSvc, err := fsservice.NewService(cfg.WorkspaceRoot, filepath.Join(cfg.WorkspaceRoot, cfg.UploadDir), cfg.AllowDestructiveFiles)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial}, nil
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -70,6 +75,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/fs/upload", s.withAuth(s.handleFSUpload))
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
+	if s.cfg.PairingPageUsername != "" && s.cfg.PairingPagePassword != "" {
+		mux.HandleFunc("/pairing", s.handlePairingPage)
+	}
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
 	return logRequests(cors(s.allowedCIDR(mux)))
 }
@@ -334,6 +342,89 @@ func (s *Server) handlePairingCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, payload)
+}
+
+var pairingPageTemplate = template.Must(template.New("pairing").Parse(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<title>agenticRemote pairing</title>
+</head>
+<body>
+<h1>agenticRemote pairing</h1>
+<p>This page shows the daemon's current rotating pairing payload. It refreshes automatically every five seconds and after a device pairs.</p>
+<img src="data:image/png;base64,{{.QRBase64}}" alt="pairing QR code" width="384" height="384">
+<p>Endpoint: {{.Endpoint}}</p>
+<p>Expires: {{.ExpiresAt}}</p>
+<pre>{{.RawJSON}}</pre>
+</body>
+</html>
+`))
+
+const pairingPageUnavailableHTML = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta http-equiv="refresh" content="5"><title>agenticRemote pairing</title></head>
+<body><h1>agenticRemote pairing</h1><p>No pairing payload has been published yet. This page refreshes automatically.</p></body>
+</html>
+`
+
+func (s *Server) setPairingPageHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+func (s *Server) handlePairingPage(w http.ResponseWriter, r *http.Request) {
+	s.setPairingPageHeaders(w)
+	username, password, ok := r.BasicAuth()
+	wantUser := sha256.Sum256([]byte(s.cfg.PairingPageUsername))
+	wantPass := sha256.Sum256([]byte(s.cfg.PairingPagePassword))
+	gotUser := sha256.Sum256([]byte(username))
+	gotPass := sha256.Sum256([]byte(password))
+	if !ok || subtle.ConstantTimeCompare(wantUser[:], gotUser[:]) != 1 || subtle.ConstantTimeCompare(wantPass[:], gotPass[:]) != 1 {
+		w.Header().Set("WWW-Authenticate", `Basic realm="agenticRemote pairing", charset="UTF-8"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	payload, ok := s.pairingSnapshot.Load()
+	if !ok {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, pairingPageUnavailableHTML)
+		return
+	}
+	rawJSON, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("pairing page marshal failed: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	png, err := qrcode.Encode(string(rawJSON), qrcode.Medium, 384)
+	if err != nil {
+		log.Printf("pairing page qr failed: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := pairingPageTemplate.Execute(w, struct {
+		QRBase64  string
+		Endpoint  string
+		ExpiresAt string
+		RawJSON   string
+	}{
+		QRBase64:  base64.StdEncoding.EncodeToString(png),
+		Endpoint:  payload.Endpoint,
+		ExpiresAt: payload.ExpiresAt.Format(time.RFC3339),
+		RawJSON:   string(rawJSON),
+	}); err != nil {
+		log.Printf("pairing page render failed: %v", err)
+	}
 }
 
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {

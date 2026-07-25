@@ -330,7 +330,7 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(cfg, tlsMaterial, auth, manager, noopNotify{})
+	srv, err := New(cfg, tlsMaterial, auth, manager, noopNotify{}, &security.PairingSnapshot{})
 	if err != nil {
 		t.Fatal(err)
 	}

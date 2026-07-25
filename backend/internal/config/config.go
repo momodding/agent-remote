@@ -27,6 +27,8 @@ type Config struct {
 	SkipFingerprintVerification bool     `json:"skipFingerprintVerification"`
 	ExpoPushEndpoint            string   `json:"expoPushEndpoint"`
 	PairingRotationSeconds      int      `json:"pairingRotationSeconds"`
+	PairingPageUsername         string   `json:"pairingPageUsername"`
+	PairingPagePassword         string   `json:"pairingPagePassword"`
 }
 
 func Default() Config {
@@ -108,6 +110,9 @@ func Validate(cfg Config) error {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return errors.New("uploadDir must stay within workspaceRoot")
 	}
+	if (cfg.PairingPageUsername == "") != (cfg.PairingPagePassword == "") {
+		return errors.New("pairingPageUsername and pairingPagePassword must be set together")
+	}
 	return nil
 }
 
@@ -135,5 +140,8 @@ func WriteSample(path string, cfg Config) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

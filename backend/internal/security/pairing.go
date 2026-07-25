@@ -23,6 +23,34 @@ type PairingPayload struct {
 	ExpiresAt                   time.Time `json:"expiresAt"`
 }
 
+// PairingSnapshot publishes the latest pairing payload for presentation without
+// exposing the mutable rotation state.
+type PairingSnapshot struct {
+	mu      sync.RWMutex
+	payload *PairingPayload
+}
+
+func (s *PairingSnapshot) Store(payload *PairingPayload) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if payload == nil {
+		s.payload = nil
+		return
+	}
+	clone := *payload
+	s.payload = &clone
+}
+
+func (s *PairingSnapshot) Load() (*PairingPayload, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.payload == nil {
+		return nil, false
+	}
+	clone := *s.payload
+	return &clone, true
+}
+
 type PairingRecord struct {
 	PairingID  string    `json:"pairingId"`
 	Salt       string    `json:"salt"`

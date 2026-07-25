@@ -203,11 +203,12 @@ func serve(configPath string) error {
 	}
 	cfg.StateDir = stateDir
 	cfg.WorkspaceRoot = workspaceRoot
-	srv, err := server.New(cfg, tlsMaterial, auth, manager, tokens)
+	pairingSnapshot := &security.PairingSnapshot{}
+	srv, err := server.New(cfg, tlsMaterial, auth, manager, tokens, pairingSnapshot)
 	if err != nil {
 		return err
 	}
-	go rotatePairing(pairings, cfg, tlsMaterial.Fingerprint, qrRefresh, pairingReady)
+	go rotatePairing(context.Background(), pairings, pairingSnapshot, cfg, tlsMaterial.Fingerprint, qrRefresh, pairingReady)
 	httpServer := server.ServerTimeouts(srv.Handler(), cfg.ListenAddr)
 	tlsConfig := srv.TLSConfig()
 	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
@@ -238,7 +239,7 @@ func serve(configPath string) error {
 	return nil
 }
 
-func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint string, refresh <-chan struct{}, ready chan<- struct{}) {
+func rotatePairing(ctx context.Context, store *security.PairingStore, snapshot *security.PairingSnapshot, cfg config.Config, fingerprint string, refresh <-chan struct{}, ready chan<- struct{}) {
 	for {
 		now := time.Now().UTC()
 		if err := store.Cleanup(now); err != nil {
@@ -248,6 +249,7 @@ func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint 
 		if err != nil {
 			log.Printf("pairing create failed: %v", err)
 		} else {
+			snapshot.Store(payload)
 			printPairing(payload)
 			if ready != nil {
 				select {
@@ -257,9 +259,19 @@ func rotatePairing(store *security.PairingStore, cfg config.Config, fingerprint 
 				ready = nil
 			}
 		}
+
+		timer := time.NewTimer(time.Duration(cfg.PairingRotationSeconds) * time.Second)
 		select {
-		case <-time.After(time.Duration(cfg.PairingRotationSeconds) * time.Second):
+		case <-timer.C:
 		case <-refresh:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
 		}
 	}
 }

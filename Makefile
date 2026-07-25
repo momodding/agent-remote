@@ -42,7 +42,8 @@ client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
 			web) cd client && bun install && bun run build:web && cd .. ;; \
-			android|ios) cd client && bun install && bunx eas-cli build --platform "$$target" --local && cd .. ;; \
+			android) mkdir -p builds && cd client && bun install && bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
+			ios) cd client && bun install && bunx eas-cli build --platform ios --local && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done

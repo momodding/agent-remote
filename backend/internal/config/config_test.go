@@ -131,6 +131,64 @@ func TestUploadDirOutsideWorkspaceRejected(t *testing.T) {
 	}
 }
 
+func TestPairingPageCredentialsDefaultEmptyAndDisabled(t *testing.T) {
+	cfg := Default()
+	if cfg.PairingPageUsername != "" || cfg.PairingPagePassword != "" {
+		t.Fatal("pairing page credentials must default empty")
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("empty pairing page credentials should validate: %v", err)
+	}
+}
+
+func TestPairingPageCredentialsBothSetValidates(t *testing.T) {
+	cfg := Default()
+	cfg.PairingPageUsername = "pairing"
+	cfg.PairingPagePassword = "replace-with-a-long-random-password"
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("both pairing page credentials should validate: %v", err)
+	}
+}
+
+func TestPairingPageCredentialsHalfSetRejected(t *testing.T) {
+	for _, cfg := range []Config{
+		func() Config { c := Default(); c.PairingPageUsername = "pairing"; return c }(),
+		func() Config { c := Default(); c.PairingPagePassword = "secret"; return c }(),
+	} {
+		if err := Validate(cfg); err == nil {
+			t.Fatal("expected half-configured pairing page credentials to fail")
+		}
+	}
+}
+
+func TestWriteSampleSetsOwnerOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := WriteSample(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("expected 0600 on new sample file, got %o", perm)
+	}
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSample(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("expected 0600 on overwritten sample file, got %o", perm)
+	}
+}
+
 func TestPublicEndpointValidation(t *testing.T) {
 	tests := []struct {
 		name     string
