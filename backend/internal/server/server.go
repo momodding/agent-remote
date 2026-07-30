@@ -41,13 +41,13 @@ type NotifyAPI interface {
 }
 
 type Server struct {
-	cfg      config.Config
-	fs       *fsservice.Service
-	auth     *security.AuthService
-	sessions SessionAPI
-	notify   NotifyAPI
-	limits   *Limits
-	tls      *security.TLSMaterial
+	cfg             config.Config
+	fs              *fsservice.Service
+	auth            *security.AuthService
+	sessions        SessionAPI
+	notify          NotifyAPI
+	limits          *Limits
+	tls             *security.TLSMaterial
 	pairingSnapshot *security.PairingSnapshot
 }
 
@@ -345,28 +345,89 @@ func (s *Server) handlePairingCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 var pairingPageTemplate = template.Must(template.New("pairing").Parse(`<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="5">
 <title>agenticRemote pairing</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #0A0A0A; color: #F0F0F0; }
+main { max-width: 960px; margin: 0 auto; padding: 24px 20px 48px; }
+h1 { margin: 0 0 4px; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+p.lede { margin: 0 0 24px; color: #B8B8B8; }
+.grid { display: grid; gap: 24px; grid-template-columns: 1fr; }
+@media (min-width: 720px) { .grid { grid-template-columns: minmax(0, 384px) 1fr; align-items: start; } }
+.qr { background: #F0F0F0; border-radius: 12px; padding: 12px; }
+.qr img { display: block; width: 100%; height: auto; }
+.meta { display: grid; gap: 10px; }
+.meta dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
+.meta dt { color: #B8B8B8; font-weight: 600; }
+.meta dd { margin: 0; word-break: break-all; }
+.payload { position: relative; background: #141414; border: 1px solid #2A2A2A; border-radius: 10px; }
+.payload-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #2A2A2A; }
+.payload-head span { font-weight: 600; color: #B8B8B8; font-size: 13px; text-transform: none; }
+.payload pre { margin: 0; padding: 14px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #F0F0F0; white-space: pre-wrap; word-break: break-all; overflow-x: auto; }
+button.copy { min-height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: #D19A2C; color: #0A0A0A; font-weight: 700; font-size: 13px; cursor: pointer; }
+button.copy:disabled { background: #264E54; color: #F0F0F0; cursor: default; }
+.hint { color: #B8B8B8; font-size: 13px; margin-top: 16px; }
+</style>
 </head>
 <body>
-<h1>agenticRemote pairing</h1>
-<p>This page shows the daemon's current rotating pairing payload. It refreshes automatically every five seconds and after a device pairs.</p>
-<img src="data:image/png;base64,{{.QRBase64}}" alt="pairing QR code" width="384" height="384">
-<p>Endpoint: {{.Endpoint}}</p>
-<p>Expires: {{.ExpiresAt}}</p>
-<pre>{{.RawJSON}}</pre>
+<main>
+  <h1>agenticRemote pairing</h1>
+  <p class="lede">Scan the QR from the app or copy the JSON below. Rotates every few seconds.</p>
+  <div class="grid">
+    <div class="qr"><img src="data:image/png;base64,{{.QRBase64}}" alt="pairing QR code" width="384" height="384"></div>
+    <div class="meta">
+      <dl>
+        <dt>Endpoint</dt><dd>{{.Endpoint}}</dd>
+        <dt>Expires</dt><dd>{{.ExpiresAt}}</dd>
+      </dl>
+      <div class="payload">
+        <div class="payload-head"><span>Pairing payload</span><button type="button" class="copy" id="copy-btn" data-payload="{{.RawJSON}}">Copy JSON</button></div>
+        <pre id="payload-json">{{.PrettyJSON}}</pre>
+      </div>
+      <p class="hint">Auto-refreshes every 5 seconds; the token rotates on each refresh.</p>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  var btn = document.getElementById('copy-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async function () {
+    var text = btn.getAttribute('data-payload') || '';
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+      }
+      var original = btn.textContent;
+      btn.textContent = 'Copied'; btn.disabled = true;
+      setTimeout(function () { btn.textContent = original; btn.disabled = false; }, 1500);
+    } catch (e) {
+      btn.textContent = 'Copy failed';
+      setTimeout(function () { btn.textContent = 'Copy JSON'; }, 1500);
+    }
+  });
+})();
+</script>
 </body>
 </html>
 `))
 
 const pairingPageUnavailableHTML = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta http-equiv="refresh" content="5"><title>agenticRemote pairing</title></head>
-<body><h1>agenticRemote pairing</h1><p>No pairing payload has been published yet. This page refreshes automatically.</p></body>
-</html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>agenticRemote pairing</title>
+<style>body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#0A0A0A;color:#F0F0F0}main{max-width:640px;margin:0 auto;padding:48px 20px;text-align:center}h1{margin:0 0 8px;font-size:22px}p{margin:0;color:#B8B8B8}</style>
+</head><body><main><h1>agenticRemote pairing</h1><p>No pairing payload has been published yet. This page refreshes automatically.</p></main></body></html>
 `
 
 func (s *Server) setPairingPageHeaders(w http.ResponseWriter) {
@@ -405,6 +466,12 @@ func (s *Server) handlePairingPage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	prettyJSON, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		log.Printf("pairing page pretty marshal failed: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	png, err := qrcode.Encode(string(rawJSON), qrcode.Medium, 384)
 	if err != nil {
 		log.Printf("pairing page qr failed: %v", err)
@@ -413,15 +480,17 @@ func (s *Server) handlePairingPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pairingPageTemplate.Execute(w, struct {
-		QRBase64  string
-		Endpoint  string
-		ExpiresAt string
-		RawJSON   string
+		QRBase64   string
+		Endpoint   string
+		ExpiresAt  string
+		RawJSON    string
+		PrettyJSON string
 	}{
-		QRBase64:  base64.StdEncoding.EncodeToString(png),
-		Endpoint:  payload.Endpoint,
-		ExpiresAt: payload.ExpiresAt.Format(time.RFC3339),
-		RawJSON:   string(rawJSON),
+		QRBase64:   base64.StdEncoding.EncodeToString(png),
+		Endpoint:   payload.Endpoint,
+		ExpiresAt:  payload.ExpiresAt.Format(time.RFC3339),
+		RawJSON:    string(rawJSON),
+		PrettyJSON: string(prettyJSON),
 	}); err != nil {
 		log.Printf("pairing page render failed: %v", err)
 	}

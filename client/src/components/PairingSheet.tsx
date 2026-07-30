@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Linking, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Linking, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
@@ -22,6 +22,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
 
   useEffect(() => {
     if (!scan || !permission?.granted) return;
+    if (Platform.OS !== 'web') { setAvailability('available'); return; }
     let cancelled = false;
     setAvailability('checking');
     CameraView.isAvailableAsync()

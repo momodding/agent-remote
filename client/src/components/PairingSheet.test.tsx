@@ -105,40 +105,24 @@ describe('PairingSheet camera states', () => {
     expect(Linking.openSettings).toHaveBeenCalled();
   });
 
-  it('checks availability after permission is granted, then renders the camera', async () => {
+  it('renders the camera immediately after permission is granted on native', async () => {
     mockPermission = { granted: true, canAskAgain: true };
-    const { promise, resolve } = Promise.withResolvers<boolean>();
-    mockIsAvailable = () => promise;
     const tree = await renderSheet();
 
     act(() => pressableWithText(tree, 'Scan QR code').props.onPress());
-    expect(has(tree, 'camera-checking')).toBe(true);
-
-    await act(async () => {
-      resolve(true);
-      await flush();
-    });
-    expect(has(tree, 'camera-checking')).toBe(false);
     expect(has(tree, 'camera-loading')).toBe(false);
     expect(has(tree, 'retry-camera')).toBe(false);
   });
 
-  it('offers a retry when the camera is unavailable, and retrying re-checks availability', async () => {
+  it('offers a retry when the camera mount fails, and retrying resets it', async () => {
     mockPermission = { granted: true, canAskAgain: true };
-    mockIsAvailable = async () => false;
     const tree = await renderSheet();
 
-    await act(async () => {
-      pressableWithText(tree, 'Scan QR code').props.onPress();
-      await flush();
-    });
+    act(() => pressableWithText(tree, 'Scan QR code').props.onPress());
+    act(() => mockMountError?.());
     expect(has(tree, 'retry-camera')).toBe(true);
 
-    mockIsAvailable = async () => true;
-    await act(async () => {
-      byLabel(tree, 'retry-camera').props.onPress();
-      await flush();
-    });
+    act(() => byLabel(tree, 'retry-camera').props.onPress());
     expect(has(tree, 'retry-camera')).toBe(false);
   });
 

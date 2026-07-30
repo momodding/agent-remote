@@ -68,7 +68,7 @@ The daemon's QR JSON must include:
 ### 3. Start the daemon
 
 ```sh
-backend/bin/agenticRemote serve --config examples/config.android.public.json
+builds/daemon/linux-amd64/agenticRemote serve --config examples/config.android.public.json
 ```
 
 Leave this terminal running. It prints a daemon pairing QR and raw JSON payload; the QR rotates every 45 seconds.
@@ -139,7 +139,7 @@ rm -f examples/.agenticremote-android-direct/tls/cert.pem examples/.agenticremot
 ### 3. Start the daemon
 
 ```sh
-backend/bin/agenticRemote serve --config examples/config.android.direct.json
+builds/daemon/linux-amd64/agenticRemote serve --config examples/config.android.direct.json
 ```
 
 ### 4. Rebuild and open the app

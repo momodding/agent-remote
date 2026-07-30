@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"html"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -448,6 +449,25 @@ func TestPairingPageRendersPublishedPayload(t *testing.T) {
 		t.Fatal("expected X-Content-Type-Options: nosniff")
 	}
 	body := resp.Body.String()
+	rawJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal pairing payload: %v", err)
+	}
+	if !strings.Contains(body, `id="copy-btn"`) {
+		t.Fatal("expected copy button")
+	}
+	if !strings.Contains(body, `data-payload="`+html.EscapeString(string(rawJSON))+`"`) {
+		t.Fatal("expected compact JSON payload on copy button")
+	}
+	if !strings.Contains(body, `<pre id="payload-json">`) {
+		t.Fatal("expected pretty JSON container")
+	}
+	if !strings.Contains(body, html.EscapeString(`"pairingId": "pid-1"`)) {
+		t.Fatal("expected pretty-printed pairing ID")
+	}
+	if !strings.Contains(body, `@media (min-width: 720px)`) {
+		t.Fatal("expected responsive breakpoint")
+	}
 	if !strings.Contains(body, "pid-1") || !strings.Contains(body, "token-1") {
 		t.Fatalf("expected raw JSON payload fields in page, got: %s", body)
 	}

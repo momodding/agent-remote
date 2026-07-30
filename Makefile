@@ -143,8 +143,8 @@ client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
 			web) cd client && bun install && bun run build:web && cd .. ;; \
-			android) mkdir -p builds && cd client && bun install && bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
-			ios) cd client && bun install && bunx eas-cli build --platform ios --local && cd .. ;; \
+			android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p builds && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
+			ios) cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 bunx eas-cli build --platform ios --local && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
@@ -153,7 +153,7 @@ client-build-web:
 	$(MAKE) client-build CLIENT_TARGETS=web
 
 client-build-android:
-	$(MAKE) client-build CLIENT_TARGETS=android
+	$(MAKE) client-build CLIENT_TARGETS=android ANDROID_HOME=$$HOME/android-sdk ANDROID_SDK_ROOT=$$HOME/android-sdk
 
 client-build-ios:
 	$(MAKE) client-build CLIENT_TARGETS=ios
