@@ -73,13 +73,13 @@ type Manager struct {
 	sessions           map[string]*sessionRuntime
 	stateDir           string
 	workspaceRoot      string
+	defaultCWD         string
 	maxScrollbackBytes int64
 	channelBufferSize  int
 	notifier           notify.Notifier
 }
-
-func NewManager(stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
-	m := &Manager{sessions: map[string]*sessionRuntime{}, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
+func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
+	m := &Manager{sessions: map[string]*sessionRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	}
 	cwd := req.CWD
 	if cwd == "" {
-		cwd = m.workspaceRoot
+		cwd = m.defaultCWD
 	}
 	cols, rows := req.Cols, req.Rows
 	if cols <= 0 {

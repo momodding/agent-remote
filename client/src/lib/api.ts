@@ -97,6 +97,42 @@ export function isLocalHostname(rawHost: string): boolean {
 // Retryable transport failure (pre-frame onerror/onclose) — distinct from protocol/auth failures, which never retry.
 class TransportError extends Error {}
 
+// Resolve the endpoint for auth attempt. On Android with local HTTPS + skip flag, resolve to HTTP directly.
+export function resolveAuthEndpoint(
+  advertised: string,
+  platform: string,
+  skipFingerprint: boolean,
+  hostname: string,
+): string {
+  if (platform === 'android' && skipFingerprint && isLocalHostname(hostname)) {
+    const url = new URL(advertised);
+    if (url.protocol === 'https:') {
+      url.protocol = 'http:';
+      return url.toString().replace(/\/$/, '');
+    }
+  }
+  return advertised;
+}
+
+// Health probe before WebSocket auth. Detects forbidden_source and other structured errors.
+async function probeHealth(endpoint: string): Promise<null | { code: string; message: string }> {
+  try {
+    const response = await fetch(apiURL(endpoint, '/healthz'), {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (response.ok) return null;
+    const body = await response.json() as unknown;
+    if (body && typeof body === 'object' && 'code' in body && 'message' in body) {
+      return { code: (body as Record<string, string>).code, message: (body as Record<string, string>).message };
+    }
+    return null;
+  } catch {
+    // Network failure: let it propagate as TransportError in attemptAuth
+    return null;
+  }
+}
+
 async function attemptAuth(endpoint: string, payload: PairingPayload, clientName: string): Promise<string> {
   const clientNonce = newClientNonce();
   return new Promise<string>((resolve, reject) => {
@@ -123,14 +159,12 @@ async function attemptAuth(endpoint: string, payload: PairingPayload, clientName
       frameReceived = true;
       try {
         if (frame.type === 'auth.challenge') {
-          socket.send(
-            JSON.stringify({
-              type: 'auth.proof',
-              pairingId: payload.pairingId,
-              challengeId: frame.challengeId,
-              proof: await clientProof(payload.token, payload.pairingId, frame.salt, clientNonce, frame.serverNonce, frame.challengeId),
-            }),
-          );
+          socket.send(JSON.stringify({
+            type: 'auth.proof',
+            pairingId: payload.pairingId,
+            challengeId: frame.challengeId,
+            proof: await clientProof(payload.token, payload.pairingId, frame.salt, clientNonce, frame.serverNonce, frame.challengeId),
+          }));
         } else if (frame.type === 'auth.ok') {
           socket.close();
           resolve(frame.sessionToken);
@@ -146,34 +180,57 @@ async function attemptAuth(endpoint: string, payload: PairingPayload, clientName
 
 export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<PairedConnection> {
   const clientName = validateClientName(rawClientName);
+  const advertisedURL = new URL(payload.endpoint);
   diagnostic('Resolving endpoint...');
-  const endpoint = new URL(payload.endpoint);
-  if (endpoint.protocol === 'https:') {
-    diagnostic('Initiating TLS Handshake...');
+
+  // Resolve endpoint: Android + local + skip = HTTP directly, no TLS attempt first.
+  const resolvedEndpoint = resolveAuthEndpoint(
+    payload.endpoint,
+    Platform.OS,
+    payload.skipFingerprintVerification === true,
+    advertisedURL.hostname,
+  );
+  const isDirectHTTP = resolvedEndpoint !== payload.endpoint;
+
+  if (advertisedURL.protocol === 'https:') {
+    diagnostic(isDirectHTTP ? 'Direct cleartext HTTP for local pairing' : 'Initiating TLS Handshake...');
     diagnostic(payload.skipFingerprintVerification ? 'Fingerprint verification skipped' : 'Validating Certificate Fingerprint...');
   }
+
+  // Health probe before WebSocket to surface forbidden_source and other errors.
+  const healthError = await probeHealth(resolvedEndpoint);
+  if (healthError) {
+    if (healthError.code === 'forbidden_source') {
+      throw new Error(
+        `Pairing not available from this network. Daemon allowedCidrs must include your LAN subnet. ` +
+        `Current error: ${healthError.message}`,
+      );
+    }
+    throw new Error(`Pairing unavailable: ${healthError.code} - ${healthError.message}`);
+  }
+
   diagnostic('Executing Auth-v2 Challenge...');
-
-  const canFallback =
-    Platform.OS === 'android' &&
-    endpoint.protocol === 'https:' &&
-    payload.skipFingerprintVerification === true &&
-    isLocalHostname(endpoint.hostname);
-
-  let resolvedEndpoint = payload.endpoint;
   let token: string;
   try {
     token = await attemptAuth(resolvedEndpoint, payload, clientName);
   } catch (error) {
+    // On Android with advertised HTTPS→HTTP fallback eligible, retry once more with HTTP.
+    const canFallback =
+      Platform.OS === 'android' &&
+      advertisedURL.protocol === 'https:' &&
+      payload.skipFingerprintVerification === true &&
+      isLocalHostname(advertisedURL.hostname) &&
+      !isDirectHTTP; // Only fallback if we didn't already select HTTP
+
     if (!canFallback || !(error instanceof TransportError)) throw error;
     diagnostic('Secure transport unavailable; retrying direct LAN over HTTP...');
-    const fallback = new URL(payload.endpoint);
-    fallback.protocol = 'http:';
-    resolvedEndpoint = fallback.toString().replace(/\/$/, '');
+    const fallbackEndpoint = new URL(payload.endpoint);
+    fallbackEndpoint.protocol = 'http:';
+    const fallbackStr = fallbackEndpoint.toString().replace(/\/$/, '');
     try {
-      token = await attemptAuth(resolvedEndpoint, payload, clientName);
+      token = await attemptAuth(fallbackStr, payload, clientName);
     } catch {
-      throw new Error(`Connection failed on both ${payload.endpoint} and ${resolvedEndpoint}`);
+      throw new Error(`Connection failed on both ${payload.endpoint} and ${fallbackStr}`);
     }
   }
 
