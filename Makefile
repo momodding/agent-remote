@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-build daemon-build daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client help
+.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client help
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
@@ -7,6 +7,9 @@ CLIENT_TARGET ?=
 GOFLAGS ?=
 DAEMON_INSTALL_DIR ?= /usr/local/bin
 DAEMON_CONFIG_DIR ?= /etc/agenticremote
+RELEASE_TARGETS ?= linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 DAEMON_BUILD_TARGETS := $(strip $(if $(DAEMON_TARGET),$(DAEMON_TARGET),$(DAEMON_TARGETS)))
 CLIENT_BUILD_TARGETS := $(strip $(if $(CLIENT_TARGET),$(CLIENT_TARGET),$(CLIENT_TARGETS)))
@@ -40,8 +43,26 @@ daemon-build:
 		exe=; \
 		if [ "$$goos" = windows ]; then exe=.exe; fi; \
 		mkdir -p builds/daemon/$$target; \
-		cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -o ../builds/daemon/$$target/agenticRemote$$exe ./cmd/agenticRemote && cd ..; \
+		cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o ../builds/daemon/$$target/agenticRemote$$exe ./cmd/agenticRemote && cd ..; \
 	done
+
+daemon-release:
+	@set -eu; \
+	rm -rf builds/release; \
+	mkdir -p builds/release; \
+	$(MAKE) daemon-build DAEMON_TARGETS="$(RELEASE_TARGETS)"; \
+	cd builds/release; \
+	for target in $(RELEASE_TARGETS); do \
+		goos=$${target%%-*}; \
+		goarch=$${target#*-}; \
+		exe=; \
+		if [ "$$goos" = windows ]; then exe=.exe; fi; \
+		archive="agenticRemote_$(VERSION)_$${goos}_$${goarch}.tar.gz"; \
+		tar -czf "$$archive" -C "../daemon/$$target" "agenticRemote$$exe"; \
+	done; \
+	sha256sum agenticRemote_*.tar.gz > SHA256SUMS; \
+	cd ../..; \
+	echo "release artifacts written to builds/release/ (version $(VERSION), commit $(COMMIT))"
 
 daemon-install:
 	@set -eu; \
@@ -184,23 +205,7 @@ help:
 	echo '  client-build-web      alias for client-build CLIENT_TARGETS=web'; \
 	echo '  client-build-android  alias for client-build CLIENT_TARGETS=android'; \
 	echo '  client-build-ios      alias for client-build CLIENT_TARGETS=ios'; \
-	echo '  test                  run backend-test and client-test'; \
-	echo '  lint                  run go vet and client typecheck'; \
-	echo '  run-daemon            run the daemon locally against examples/config.local.json'; \
-	echo '  run-client            run the Expo client dev server'; \
-	echo '  help                  show this message'; \
-	echo; \
-	echo 'Overrides:'; \
-	echo '  DAEMON_TARGETS="linux-amd64 darwin-arm64"  space-separated daemon-build cross-compile list'; \
-	echo '  DAEMON_TARGET=linux-arm64                  single daemon-build target, overrides DAEMON_TARGETS'; \
-	echo '  CLIENT_TARGETS="web android"                space-separated client-build target list'; \
-	echo '  CLIENT_TARGET=ios                           single client-build target, overrides CLIENT_TARGETS'; \
-	echo '  GOFLAGS=-trimpath                           extra flags passed to go build'; \
-	echo '  DAEMON_INSTALL_DIR=/usr/local/bin            daemon-install/daemon-remove binary directory'; \
-	echo '  DAEMON_CONFIG_DIR=/etc/agenticremote          daemon-install/daemon-remove managed config directory'; \
-	echo; \
-	echo 'daemon-install always builds host-native (current OS/arch); cross targets stay in daemon-build.'; \
-	echo; \
-	echo 'Standard system-wide install:'; \
-	echo '  sudo make daemon-install'; \
-	echo '  sudo make daemon-remove'
+	echo '  test                  run backend and client tests'; \
+	echo '  lint                  run backend vet and client typecheck'; \
+	echo '  run-daemon            run daemon using examples/config.local.json'; \
+	echo '  run-client            start Expo client'
