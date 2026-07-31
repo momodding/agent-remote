@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/skip2/go-qrcode"
 )
 
 type PairingPayload struct {
@@ -23,32 +25,58 @@ type PairingPayload struct {
 	ExpiresAt                   time.Time `json:"expiresAt"`
 }
 
-// PairingSnapshot publishes the latest pairing payload for presentation without
-// exposing the mutable rotation state.
-type PairingSnapshot struct {
-	mu      sync.RWMutex
-	payload *PairingPayload
+// PairingPresentation publishes canonical rotating snapshot with JSON/QR/TTY derivatives.
+// All three representations (JSON, PNG QR, terminal QR) derive from the same
+// compact canonical JSON bytes, ensuring byte-for-byte consistency.
+type PairingPresentation struct {
+	Payload       *PairingPayload `json:"-"`
+	CanonicalJSON []byte          `json:"-"`
+	QRPng         []byte          `json:"-"`
+	QRTerminal    string          `json:"-"`
 }
 
-func (s *PairingSnapshot) Store(payload *PairingPayload) {
+// PairingSnapshot publishes the latest pairing presentation for web/console without
+// exposing the mutable rotation state. Load/Store deeply clone all byte slices.
+type PairingSnapshot struct {
+	mu           sync.RWMutex
+	presentation *PairingPresentation
+}
+
+func (s *PairingSnapshot) Store(presentation *PairingPresentation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if payload == nil {
-		s.payload = nil
+	if presentation == nil {
+		s.presentation = nil
 		return
 	}
-	clone := *payload
-	s.payload = &clone
+	clone := &PairingPresentation{
+		CanonicalJSON: append([]byte(nil), presentation.CanonicalJSON...),
+		QRPng:         append([]byte(nil), presentation.QRPng...),
+		QRTerminal:    presentation.QRTerminal,
+	}
+	if presentation.Payload != nil {
+		p := *presentation.Payload
+		clone.Payload = &p
+	}
+	s.presentation = clone
 }
 
-func (s *PairingSnapshot) Load() (*PairingPayload, bool) {
+func (s *PairingSnapshot) Load() (*PairingPresentation, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.payload == nil {
+	if s.presentation == nil {
 		return nil, false
 	}
-	clone := *s.payload
-	return &clone, true
+	clone := &PairingPresentation{
+		CanonicalJSON: append([]byte(nil), s.presentation.CanonicalJSON...),
+		QRPng:         append([]byte(nil), s.presentation.QRPng...),
+		QRTerminal:    s.presentation.QRTerminal,
+	}
+	if s.presentation.Payload != nil {
+		p := *s.presentation.Payload
+		clone.Payload = &p
+	}
+	return clone, true
 }
 
 type PairingRecord struct {
@@ -82,7 +110,10 @@ func LoadPairingStore(stateDir string) (*PairingStore, error) {
 	return store, nil
 }
 
-func (s *PairingStore) Create(endpoint, fingerprint string, skipFingerprintVerification bool, now time.Time) (*PairingPayload, error) {
+func (s *PairingStore) Create(endpoint, fingerprint string, skipFingerprintVerification bool, lifetime time.Duration, now time.Time) (*PairingPayload, error) {
+	if lifetime <= 0 {
+		return nil, fmt.Errorf("lifetime must be positive")
+	}
 	pairingID, err := randomEncoded(16)
 	if err != nil {
 		return nil, err
@@ -95,7 +126,7 @@ func (s *PairingStore) Create(endpoint, fingerprint string, skipFingerprintVerif
 	if _, err := rand.Read(saltRaw); err != nil {
 		return nil, err
 	}
-	expiresAt := now.UTC().Add(2 * time.Minute)
+	expiresAt := now.UTC().Add(lifetime)
 	verifier := deriveVerifier(token, saltRaw)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,4 +213,37 @@ func randomEncoded(size int) (string, error) {
 		return "", fmt.Errorf("random bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// BuildPresentation creates an immutable canonical presentation from a payload.
+// The canonical JSON is marshaled once; QR PNG and terminal renderings derive from it.
+// If any step fails, returns an error without creating a partial presentation.
+func BuildPresentation(payload *PairingPayload) (*PairingPresentation, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload required")
+	}
+	// Marshal once to canonical compact JSON
+	canonicalJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("canonical marshal: %w", err)
+	}
+	// Generate QR PNG from canonical bytes
+	qrPng, err := qrcode.Encode(string(canonicalJSON), qrcode.Medium, 384)
+	if err != nil {
+		return nil, fmt.Errorf("qr png: %w", err)
+	}
+	// Generate QR terminal rendering from canonical bytes
+	qrObj, err := qrcode.New(string(canonicalJSON), qrcode.Medium)
+	if err != nil {
+		return nil, fmt.Errorf("qr object: %w", err)
+	}
+	qrTerminal := qrObj.ToSmallString(false)
+	// Clone payload
+	payloadClone := *payload
+	return &PairingPresentation{
+		Payload:       &payloadClone,
+		CanonicalJSON: canonicalJSON,
+		QRPng:         qrPng,
+		QRTerminal:    qrTerminal,
+	}, nil
 }

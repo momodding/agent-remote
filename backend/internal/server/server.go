@@ -24,7 +24,6 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/coder/websocket"
-	qrcode "github.com/skip2/go-qrcode"
 )
 
 type SessionAPI interface {
@@ -336,7 +335,8 @@ func (s *Server) handlePairingCreate(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	payload, err := s.auth.NewPairing(s.cfg.PublicEndpoint, s.tls.Fingerprint, s.cfg.SkipFingerprintVerification, time.Now().UTC())
+	lifetime := time.Duration(s.cfg.PairingRotationSeconds)*time.Second + 5*time.Second
+	payload, err := s.auth.NewPairing(s.cfg.PublicEndpoint, s.tls.Fingerprint, s.cfg.SkipFingerprintVerification, lifetime, time.Now().UTC())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "pairing_failed", Message: err.Error()})
 		return
@@ -453,28 +453,16 @@ func (s *Server) handlePairingPage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	payload, ok := s.pairingSnapshot.Load()
+	presentation, ok := s.pairingSnapshot.Load()
 	if !ok {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = io.WriteString(w, pairingPageUnavailableHTML)
 		return
 	}
-	rawJSON, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("pairing page marshal failed: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	prettyJSON, err := json.MarshalIndent(payload, "", "  ")
+	prettyJSON, err := json.MarshalIndent(presentation.Payload, "", "  ")
 	if err != nil {
 		log.Printf("pairing page pretty marshal failed: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	png, err := qrcode.Encode(string(rawJSON), qrcode.Medium, 384)
-	if err != nil {
-		log.Printf("pairing page qr failed: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -486,10 +474,10 @@ func (s *Server) handlePairingPage(w http.ResponseWriter, r *http.Request) {
 		RawJSON    string
 		PrettyJSON string
 	}{
-		QRBase64:   base64.StdEncoding.EncodeToString(png),
-		Endpoint:   payload.Endpoint,
-		ExpiresAt:  payload.ExpiresAt.Format(time.RFC3339),
-		RawJSON:    string(rawJSON),
+		QRBase64:   base64.StdEncoding.EncodeToString(presentation.QRPng),
+		Endpoint:   presentation.Payload.Endpoint,
+		ExpiresAt:  presentation.Payload.ExpiresAt.Format(time.RFC3339),
+		RawJSON:    string(presentation.CanonicalJSON),
 		PrettyJSON: string(prettyJSON),
 	}); err != nil {
 		log.Printf("pairing page render failed: %v", err)

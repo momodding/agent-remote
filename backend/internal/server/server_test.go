@@ -268,7 +268,7 @@ func TestPairingCreateMintsIndependentDevice(t *testing.T) {
 
 func testBearerToken(t *testing.T, srv *Server, pairings *security.PairingStore) string {
 	t.Helper()
-	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
+	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 		t.Fatal(err)
 	}
 	auth := security.NewAuthService(pairings, sessions)
-	manager, err := session.NewManager(cfg.StateDir, cfg.WorkspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, nil)
+	manager, err := session.NewManager(cfg.WorkspaceRoot, cfg.StateDir, cfg.WorkspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func newPairingPageServer(t *testing.T) (*Server, *security.PairingSnapshot) {
 		t.Fatal(err)
 	}
 	auth := security.NewAuthService(pairings, sessions)
-	manager, err := session.NewManager(cfg.StateDir, cfg.WorkspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, nil)
+	manager, err := session.NewManager(cfg.WorkspaceRoot, cfg.StateDir, cfg.WorkspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,8 @@ func TestPairingPageRendersPublishedPayload(t *testing.T) {
 		Token:     "token-1",
 		ExpiresAt: time.Now().Add(2 * time.Minute).UTC(),
 	}
-	snapshot.Store(payload)
+	presentation, _ := security.BuildPresentation(payload)
+	snapshot.Store(presentation)
 
 	req := httptest.NewRequest(http.MethodGet, "/pairing", nil)
 	req.SetBasicAuth("pairing", "s3cret-pass")
@@ -449,15 +450,9 @@ func TestPairingPageRendersPublishedPayload(t *testing.T) {
 		t.Fatal("expected X-Content-Type-Options: nosniff")
 	}
 	body := resp.Body.String()
-	rawJSON, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal pairing payload: %v", err)
-	}
-	if !strings.Contains(body, `id="copy-btn"`) {
-		t.Fatal("expected copy button")
-	}
-	if !strings.Contains(body, `data-payload="`+html.EscapeString(string(rawJSON))+`"`) {
-		t.Fatal("expected compact JSON payload on copy button")
+	// Verify canonical JSON is used on copy button
+	if !strings.Contains(body, `data-payload="`+html.EscapeString(string(presentation.CanonicalJSON))+`"`) {
+		t.Fatal("expected canonical JSON payload on copy button")
 	}
 	if !strings.Contains(body, `<pre id="payload-json">`) {
 		t.Fatal("expected pretty JSON container")
@@ -478,7 +473,9 @@ func TestPairingPageRendersPublishedPayload(t *testing.T) {
 
 func TestPairingPageRejectsNonGET(t *testing.T) {
 	srv, snapshot := newPairingPageServer(t)
-	snapshot.Store(&security.PairingPayload{Version: 2, Endpoint: "https://127.0.0.1:8765"})
+	payload := &security.PairingPayload{Version: 2, Endpoint: "https://127.0.0.1:8765"}
+	presentation, _ := security.BuildPresentation(payload)
+	snapshot.Store(presentation)
 	req := httptest.NewRequest(http.MethodPost, "/pairing", nil)
 	req.SetBasicAuth("pairing", "s3cret-pass")
 	resp := httptest.NewRecorder()

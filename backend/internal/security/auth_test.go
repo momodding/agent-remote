@@ -15,7 +15,7 @@ func TestPairingStoreDoesNotPersistRawToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := store.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
+	payload, err := store.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestPairingPayloadCarriesFingerprintBypass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := store.Create("https://127.0.0.1:8765", "AA:BB", true, time.Now().UTC())
+	payload, err := store.Create("https://127.0.0.1:8765", "AA:BB", true, 2*time.Minute, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestValidProofPasses(t *testing.T) {
 	auth := NewAuthService(pairings, sessions)
 	now := time.Now().UTC()
 	auth.now = func() time.Time { return now }
-	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, now)
+	payload, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestWrongProofFails(t *testing.T) {
 	pairings, _ := LoadPairingStore(stateDir)
 	sessions, _ := LoadSessionStore(stateDir)
 	auth := NewAuthService(pairings, sessions)
-	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, time.Now().UTC())
+	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, time.Now().UTC())
 	challenge, _ := auth.Begin(HelloMessage{PairingID: payload.PairingID, ClientNonce: strings.Repeat("A", 43), ClientName: "phone"})
 	if _, err := auth.Complete(payload.PairingID, challenge.ChallengeID, strings.Repeat("B", 43)); err == nil {
 		t.Fatal("expected wrong proof to fail")
@@ -95,7 +95,7 @@ func TestExpiredPairingFails(t *testing.T) {
 	sessions, _ := LoadSessionStore(stateDir)
 	auth := NewAuthService(pairings, sessions)
 	now := time.Now().UTC()
-	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, now)
+	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, now)
 	auth.now = func() time.Time { return now.Add(20 * time.Minute) }
 	if _, err := auth.Begin(HelloMessage{PairingID: payload.PairingID, ClientNonce: strings.Repeat("A", 43), ClientName: "phone"}); err == nil {
 		t.Fatal("expected expired pairing to fail")
@@ -114,7 +114,7 @@ func TestClientNameValidationAndConsumption(t *testing.T) {
 	auth := NewAuthService(pairings, sessions)
 	now := time.Now().UTC()
 	auth.now = func() time.Time { return now }
-	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, now)
+	payload, _ := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, now)
 	if _, err := auth.Begin(HelloMessage{PairingID: payload.PairingID, ClientNonce: strings.Repeat("A", 43), ClientName: "   "}); err == nil {
 		t.Fatal("expected empty client name to fail")
 	}
@@ -145,7 +145,7 @@ func TestPairingCleanupDropsExpiredRecords(t *testing.T) {
 	stateDir := t.TempDir()
 	pairings, _ := LoadPairingStore(stateDir)
 	now := time.Now().UTC()
-	if _, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, now); err != nil {
+	if _, err := pairings.Create("https://127.0.0.1:8765", "AA:BB", false, 2*time.Minute, now); err != nil {
 		t.Fatal(err)
 	}
 	if len(pairings.Pairings) != 1 {

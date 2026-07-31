@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,7 +19,6 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/server"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
-	qrcode "github.com/skip2/go-qrcode"
 )
 
 const (
@@ -165,6 +163,14 @@ func serve(configPath string) error {
 	if err != nil {
 		return err
 	}
+	daemonHome, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot resolve daemon home: %w", err)
+	}
+	daemonHome = filepath.Clean(daemonHome)
+	if stat, err := os.Stat(daemonHome); err != nil || !stat.IsDir() {
+		return fmt.Errorf("daemon home is not a valid directory: %s", daemonHome)
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -197,7 +203,7 @@ func serve(configPath string) error {
 		default:
 		}
 	})
-	manager, err := session.NewManager(stateDir, workspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, &notify.Fanout{Log: &notify.LogNotifier{}, Expo: &notify.ExpoNotifier{Endpoint: cfg.ExpoPushEndpoint, Client: http.DefaultClient, Tokens: tokens}})
+	manager, err := session.NewManager(daemonHome, stateDir, workspaceRoot, cfg.MaxScrollbackBytes, cfg.ChannelBufferSize, &notify.Fanout{Log: &notify.LogNotifier{}, Expo: &notify.ExpoNotifier{Endpoint: cfg.ExpoPushEndpoint, Client: http.DefaultClient, Tokens: tokens}})
 	if err != nil {
 		return err
 	}
@@ -245,18 +251,25 @@ func rotatePairing(ctx context.Context, store *security.PairingStore, snapshot *
 		if err := store.Cleanup(now); err != nil {
 			log.Printf("pairing cleanup failed: %v", err)
 		}
-		payload, err := store.Create(cfg.PublicEndpoint, fingerprint, cfg.SkipFingerprintVerification, now)
+		lifetime := time.Duration(cfg.PairingRotationSeconds)*time.Second + 5*time.Second
+		payload, err := store.Create(cfg.PublicEndpoint, fingerprint, cfg.SkipFingerprintVerification, lifetime, now)
 		if err != nil {
 			log.Printf("pairing create failed: %v", err)
 		} else {
-			snapshot.Store(payload)
-			printPairing(payload)
-			if ready != nil {
-				select {
-				case ready <- struct{}{}:
-				default:
+			// Build canonical presentation from payload
+			presentation, err := security.BuildPresentation(payload)
+			if err != nil {
+				log.Printf("pairing presentation build failed: %v", err)
+			} else {
+				snapshot.Store(presentation)
+				printPresentation(presentation)
+				if ready != nil {
+					select {
+					case ready <- struct{}{}:
+					default:
+					}
+					ready = nil
 				}
-				ready = nil
 			}
 		}
 
@@ -276,20 +289,7 @@ func rotatePairing(ctx context.Context, store *security.PairingStore, snapshot *
 	}
 }
 
-func printPairing(payload *security.PairingPayload) {
-	data, err := qrcode.New(string(mustJSON(payload)), qrcode.Medium)
-	if err != nil {
-		log.Printf("pairing qr failed: %v", err)
-		return
-	}
-	fmt.Println(data.ToSmallString(false))
-	fmt.Println(string(mustJSON(payload)))
-}
-
-func mustJSON(v any) []byte {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return data
+func printPresentation(presentation *security.PairingPresentation) {
+	fmt.Println(presentation.QRTerminal)
+	fmt.Println(string(presentation.CanonicalJSON))
 }
