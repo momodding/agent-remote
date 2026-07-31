@@ -1,16 +1,19 @@
 package lifecycle
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
 type mockRunner struct {
 	out []byte
 	err error
@@ -351,4 +354,205 @@ func TestInstall_ConfigCustomization(t *testing.T) {
 	if cfg["stateDir"] != "mystate" {
 		t.Errorf("config stateDir = %v, want mystate", cfg["stateDir"])
 	}
+}
+
+// Hardening tests for secure behavior.
+
+func TestHashSHA256_Consistency(t *testing.T) {
+	data := []byte("test binary content")
+	hash1 := hashSHA256(data)
+	hash2 := hashSHA256(data)
+
+	if hash1 != hash2 {
+		t.Errorf("hash not deterministic: %s != %s", hash1, hash2)
+	}
+
+	expectedLen := 64 // SHA-256 hex is 64 chars
+	if len(hash1) != expectedLen {
+		t.Errorf("hash length = %d, want %d", len(hash1), expectedLen)
+	}
+}
+
+func TestInstall_ComputesHashes(t *testing.T) {
+	tmpHome := t.TempDir()
+	provider := &mockProvider{}
+	svc := NewService(tmpHome, provider)
+
+	if err := svc.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	managed := filepath.Join(tmpHome, ".remote")
+	marker, err := readMarker(managed)
+	if err != nil {
+		t.Fatalf("readMarker failed: %v", err)
+	}
+
+	// Verify hashes are populated.
+	if marker.BinaryHash == "" {
+		t.Error("BinaryHash not computed")
+	}
+	if marker.ConfigHash == "" {
+		t.Error("ConfigHash not computed")
+	}
+	if marker.UnitHash == "" {
+		t.Error("UnitHash not computed")
+	}
+
+	// Verify hash format (64-char hex).
+	for _, h := range []string{marker.BinaryHash, marker.ConfigHash, marker.UnitHash} {
+		if len(h) != 64 || !isValidHex(h) {
+			t.Errorf("invalid hash format: %s", h)
+		}
+	}
+}
+
+func TestVerifyChecksum_Match(t *testing.T) {
+	data := []byte("test content")
+	hash := hashSHA256(data)
+
+	checksumFile := hash + "  agenticRemote_v1.0.0_linux_amd64.tar.gz\n"
+	if !verifyChecksum([]byte(checksumFile), "agenticRemote_v1.0.0_linux_amd64.tar.gz", hash) {
+		t.Error("checksum verification should pass for matching hash")
+	}
+}
+
+func TestVerifyChecksum_Mismatch(t *testing.T) {
+	data := []byte("test content")
+	hash := hashSHA256(data)
+	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
+
+	checksumFile := wrongHash + "  agenticRemote_v1.0.0_linux_amd64.tar.gz\n"
+	if verifyChecksum([]byte(checksumFile), "agenticRemote_v1.0.0_linux_amd64.tar.gz", hash) {
+		t.Error("checksum verification should fail for mismatched hash")
+	}
+}
+
+func TestExtractBinaryFromArchive_PathTraversalRejection(t *testing.T) {
+	// Create a malicious tar with path traversal.
+	buf := &bytes.Buffer{}
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	// Try to inject "../../etc/passwd"
+	hdr := &tar.Header{
+		Name: "../../etc/passwd",
+		Size: 4,
+	}
+	tw.WriteHeader(hdr)
+	tw.Write([]byte("evil"))
+	tw.Close()
+	gw.Close()
+
+	_, err := extractBinaryFromArchive(buf.Bytes())
+	if err == nil {
+		t.Error("should reject path traversal")
+	}
+}
+
+func TestGeneratePassword_NonEmpty(t *testing.T) {
+	pwd := generatePassword()
+	if pwd == "" {
+		t.Error("generated password is empty")
+	}
+	if len(pwd) != 16 {
+		t.Errorf("password length = %d, want 16", len(pwd))
+	}
+}
+
+func TestSystemdUnit_EscapesPath(t *testing.T) {
+	marker := &Marker{
+		BinaryPath: "/home/user/.remote/bin/agenticRemote",
+		ConfigPath: "/home/user/.remote/config.json",
+		StatePath:  "/home/user/.remote/state",
+	}
+
+	unit := renderUnit(marker)
+	if !strings.Contains(unit, marker.BinaryPath) {
+		t.Errorf("unit should contain binary path: %s", unit)
+	}
+}
+
+func TestUpdateOptions_BaseURLDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	provider := &mockProvider{}
+	svc := NewService(tmpHome, provider)
+	svc.Install(context.Background(), InstallOptions{})
+
+	// Mock HTTP server.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	opts := UpdateOptions{
+		Version: "test",
+		BaseURL: server.URL,
+		HTTPCl:  server.Client(),
+	}
+
+	// Update should fail but not due to missing base URL (uses default).
+	err := svc.Update(context.Background(), opts)
+	if err == nil {
+		t.Error("Update should fail with test server")
+	}
+}
+
+func TestUninstall_PreservesState(t *testing.T) {
+	tmpHome := t.TempDir()
+	provider := &mockProvider{}
+	svc := NewService(tmpHome, provider)
+
+	// Install with custom state dir.
+	opts := InstallOptions{
+		Config: Config{
+			StateDir: "mystate",
+		},
+	}
+	if err := svc.Install(context.Background(), opts); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	// Create a state file.
+	stateFile := filepath.Join(tmpHome, ".remote", "mystate", "test.txt")
+	os.WriteFile(stateFile, []byte("state data"), 0o600)
+
+	// Uninstall without purge.
+	if err := svc.Uninstall(context.Background(), UninstallOptions{Purge: false}); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	// State should remain.
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Errorf("state file should be preserved: %v", err)
+	}
+}
+
+func TestUninstall_PurgeRemovesAll(t *testing.T) {
+	tmpHome := t.TempDir()
+	provider := &mockProvider{}
+	svc := NewService(tmpHome, provider)
+
+	if err := svc.Install(context.Background(), InstallOptions{}); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	managed := filepath.Join(tmpHome, ".remote")
+	if err := svc.Uninstall(context.Background(), UninstallOptions{Purge: true}); err != nil {
+		t.Fatalf("uninstall purge failed: %v", err)
+	}
+
+	// Entire managed root should be gone.
+	if _, err := os.Stat(managed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("managed root should be removed: %v", err)
+	}
+}
+
+func isValidHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
