@@ -4,13 +4,26 @@
 
 ```sh
 make backend-build
-builds/daemon/linux-amd64/agenticRemote config init --path examples/config.local.json
-builds/daemon/linux-amd64/agenticRemote serve --config examples/config.local.json
+./builds/daemon/linux-amd64/agenticRemote install
 ```
 
-`backend-build` (alias for `make daemon-build`) defaults to `DAEMON_TARGETS=linux-amd64`; override with `make backend-build DAEMON_TARGET=<os>-<arch>` (e.g. `darwin-arm64` on Apple Silicon macOS, `windows-amd64` on Windows) — the binary always lands at `builds/daemon/<target>/agenticRemote` (`.exe` on Windows).
+`agenticRemote install` creates a managed configuration under `~/.remote/config.json`, places the executable in `~/.remote/bin/agenticRemote`, and registers a Linux user systemd service.
 
-`serve` starts the HTTPS/WSS daemon, prints a terminal QR immediately, and rolls the QR every 45 seconds. Start the Expo client, then scan that daemon QR in the app or paste the printed raw JSON pairing payload if camera access is unavailable. When `pairingPageUsername`/`pairingPagePassword` are set, the daemon also serves the same rotating payload as a browser page at `/pairing` (Basic Auth-protected) for phones that can't run a terminal — see [`docs/android-daemon-connect.md`](docs/android-daemon-connect.md).
+You can also run directly from the compiled binary without installing:
+
+```sh
+./builds/daemon/linux-amd64/agenticRemote config init --path examples/config.local.json
+./builds/daemon/linux-amd64/agenticRemote serve --config examples/config.local.json
+```
+
+`backend-build` (alias for `make daemon-build`) defaults to `DAEMON_TARGETS=linux-amd64`; override with `make backend-build DAEMON_TARGET=<os>-<arch>` (e.g. `darwin-arm64` on Apple Silicon macOS, `windows-amd64` on Windows) — binary always lands at `builds/daemon/<target>/agenticRemote` (`.exe` on Windows).
+
+`serve` starts the HTTPS/WSS daemon, prints a terminal QR immediately, and rotates the pairing payload every 45 seconds. Start the Expo client, then scan that daemon QR in the app or paste the printed raw JSON payload if camera access is unavailable. The daemon also serves the same rotating payload as a browser page at `/pairing` (Basic Auth-protected) for phones that can't run a terminal. See [`docs/android-daemon-connect.md`](docs/android-daemon-connect.md).
+
+Commands to manage an installed daemon:
+- `agenticRemote update` – check for and patch in the latest stable version
+- `agenticRemote uninstall` – removes the systemd unit and binary (but preserves your config by default)
+- `agenticRemote uninstall --purge` – entirely deletes the `~/.remote` tree
 
 Expo client:
 
