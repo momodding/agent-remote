@@ -21,9 +21,18 @@ You can also run directly from the compiled binary without installing:
 `serve` starts the HTTPS/WSS daemon, prints a terminal QR immediately, and rotates the pairing payload every 45 seconds. Start the Expo client, then scan that daemon QR in the app or paste the printed raw JSON payload if camera access is unavailable. The daemon also serves the same rotating payload as a browser page at `/pairing` (Basic Auth-protected) for phones that can't run a terminal. See [`docs/android-daemon-connect.md`](docs/android-daemon-connect.md).
 
 Commands to manage an installed daemon:
-- `agenticRemote update` – check for and patch in the latest stable version
-- `agenticRemote uninstall` – removes the systemd unit and binary (but preserves your config by default)
-- `agenticRemote uninstall --purge` – entirely deletes the `~/.remote` tree
+- `agenticRemote install` – prepares managed layout under `~/.remote`, writes systemd user unit, enables/starts it. Supports flags: `--listen`, `--public-endpoint`, `--allowed-cidr`, `--workspace-root`, `--state-dir`.
+- `agenticRemote update` – pulls latest release archive, verifies SHA256 checksums, updates, restarts systemd service with health-check rollback.
+- `agenticRemote uninstall` – disables/removes systemd service and binary. Use `--purge` to delete the `~/.remote` tree.
+
+## Session CWD Defaults
+When the client requests a session with an empty workspace path `cwd: ''`, the daemon defaults the session shell directory to the daemon host account's `$HOME` folder. Explicit paths requested by clients are respected.
+
+## Android Pairing & Guarded Fallback
+Pairing uses a unified rotation mechanism generating synchronous terminal/page presentations:
+1. Android clients scan/paste a pairing payload with `skipFingerprintVerification: true`.
+2. Host resolver detects loopback/LAN hostnames and maps the connection protocol to unencrypted `http`/`ws` directly.
+3. Client probes `/healthz` before dialing WebSocket to surface network/CIDR blocks directly (e.g. `forbidden_source`).
 
 Expo client:
 
