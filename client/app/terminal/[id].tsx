@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 
 import { Terminal } from '../../src/components/Terminal';
+import { MultiTerminal } from '../../src/components/MultiTerminal';
+import { AddSessionFAB } from '../../src/components/AddSessionFAB';
 import { ShortcutKeyboard } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
 import { SessionSocket } from '../../src/lib/session-socket';
+import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
 
 export default function TerminalScreen() {
-  const { id, name, connectionEndpoint } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string }>();
+  const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
   const [output, setOutput] = useState('');
+  const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [connection, setConnection] = useState<Connection | null>(null);
   const socket = useRef<SessionSocket | undefined>(undefined);
   // Guards natural-exit and manual-Close from racing each other into a double
@@ -92,6 +97,106 @@ export default function TerminalScreen() {
     setOutput('');
     router.replace('/');
   }, []);
+
+  const isMultiMode = mode === 'multi';
+  const platformMax = getPlatformMax();
+
+  // Multi-window handlers
+  const handleAddSession = useCallback((sessionId: string, sessionName: string) => {
+    if (!connection) return;
+    const newSession: MultiSessionState = {
+      sessionId,
+      name: sessionName,
+      connectionEndpoint: connection.endpoint,
+      output: '',
+      minimized: false,
+    };
+    const sock = new SessionSocket(
+      connection,
+      sessionId,
+      (data) => setMultiSessions((prev) => updateOutput(prev, sessionId, prev[sessionId]?.output + data)),
+      (state) => {
+        if (state === 'exited') {
+          setMultiSessions((prev) => closeSession(prev, sessionId));
+        }
+      },
+      (message) => Alert.alert('Terminal', message),
+    );
+    sock.connect();
+    newSession.socket = sock;
+    setMultiSessions((prev) => addSession(prev, newSession));
+  }, [connection]);
+
+  const handleCloseSession = useCallback(async (sessionId: string) => {
+    const session = multiSessions[sessionId];
+    if (!session || !connection) return;
+    try {
+      await new AgenticRemoteAPI(connection).closeSession(sessionId);
+      session.socket?.close();
+      setMultiSessions((prev) => closeSession(prev, sessionId));
+    } catch (error) {
+      if (!(error instanceof APIError && error.status === 404)) {
+        Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
+      }
+    }
+  }, [multiSessions, connection]);
+
+  const handleMinimize = useCallback((sessionId: string) => {
+    setMultiSessions((prev) => toggleMinimize(prev, sessionId));
+  }, []);
+
+  const handleInput = useCallback((sessionId: string, data: string) => {
+    multiSessions[sessionId]?.socket?.input(data);
+  }, [multiSessions]);
+
+  const handleResize = useCallback((sessionId: string, cols: number, rows: number) => {
+    multiSessions[sessionId]?.socket?.resize(cols, rows);
+  }, [multiSessions]);
+
+  // Initialize first session in multi-mode
+  useEffect(() => {
+    if (isMultiMode && connection && id && Object.keys(multiSessions).length === 0) {
+      handleAddSession(id, name || 'Shell');
+    }
+  }, [isMultiMode, connection, id, name, multiSessions, handleAddSession]);
+
+  if (isMultiMode) {
+    return <SafeAreaView style={styles.screen}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={styles.header}>
+        <Pressable accessibilityLabel="Detach" onPress={detach}>
+          <Text style={styles.back}>‹ Sessions</Text>
+        </Pressable>
+        <Text style={styles.title}>Multi-Terminal</Text>
+        <View style={styles.actions}>
+          <Pressable accessibilityLabel="Close all" onPress={() => router.replace('/')}>
+            <Text style={styles.close}>Close All</Text>
+          </Pressable>
+        </View>
+      </View>
+      {connection ? (
+        <>
+          <MultiTerminal
+            sessions={multiSessions}
+            onInput={handleInput}
+            onResize={handleResize}
+            onMinimize={handleMinimize}
+            onClose={handleCloseSession}
+            isBroadcasting={isBroadcasting}
+            onBroadcastToggle={() => setIsBroadcasting((prev) => !prev)}
+            platformMax={platformMax}
+          />
+          <AddSessionFAB
+            api={new AgenticRemoteAPI(connection)}
+            onAdd={handleAddSession}
+            disabled={Object.keys(multiSessions).length >= platformMax}
+          />
+        </>
+      ) : (
+        <Text style={styles.connecting}>Connecting…</Text>
+      )}
+    </SafeAreaView>;
+  }
 
   return <SafeAreaView style={styles.screen}>
     <Stack.Screen options={{ headerShown: false }} />
