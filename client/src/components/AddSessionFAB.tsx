@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Alert, Modal, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AgenticRemoteAPI } from '../lib/api';
 
 type Props = {
@@ -9,6 +10,7 @@ type Props = {
 };
 
 export function AddSessionFAB({ api, onAdd, disabled }: Props) {
+  const insets = useSafeAreaInsets();
   const [visible, setVisible] = useState(false);
   const [name, setName] = useState('');
   const [command, setCommand] = useState('bash');
@@ -41,7 +43,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
     <Modal visible={visible} transparent animationType="fade" onRequestClose={() => setVisible(false)}>
       <Pressable style={styles.backdrop} onPress={() => setVisible(false)}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <SafeAreaView>
+          <View style={{ paddingTop: insets.top }}>
             <View style={styles.header}>
               <Text style={styles.title}>New Session</Text>
               <Pressable onPress={() => setVisible(false)}>
@@ -70,7 +72,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
                 <Text style={styles.createText}>Create</Text>
               </Pressable>
             </View>
-          </SafeAreaView>
+          </View>
         </Pressable>
       </Pressable>
     </Modal>

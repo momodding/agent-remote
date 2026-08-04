@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 type Modifier = 'ctrl' | 'alt';
 type Key = { label: string; data: string };
@@ -26,17 +26,26 @@ export function modifiedTerminalInput(data: string, modifier: Modifier | null): 
   return modifier === 'alt' && data.length === 1 ? `\x1b${data}` : data;
 }
 
-export function ShortcutKeyboard({ onInput }: { onInput: (data: string) => void }) {
+export function ShortcutKeyboard({ onInput, bottomInset = 0 }: { onInput: (data: string) => void; bottomInset?: number }) {
   const [collapsed, setCollapsed] = useState(false);
   const [modifier, setModifier] = useState<{ kind: Modifier; locked: boolean } | null>(null);
-  if (collapsed) return <Pressable style={styles.show} onPress={() => setCollapsed(false)}><Text style={styles.label}>⌨ Shortcuts</Text></Pressable>;
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  if (collapsed) return <Pressable style={[styles.show, { paddingBottom: keyboardVisible ? 0 : bottomInset }]} onPress={() => setCollapsed(false)}><Text style={styles.label}>⌨ Shortcuts</Text></Pressable>;
   const emit = (key: Key) => {
     onInput(modifiedTerminalInput(key.data, modifier?.kind ?? null));
     if (!modifier?.locked) setModifier(null);
   };
   const toggle = (kind: Modifier, locked = false) => setModifier((current) => current?.kind === kind && current.locked === locked ? null : { kind, locked });
   return (
-    <View style={styles.keyboard}>
+    <View style={[styles.keyboard, { paddingBottom: keyboardVisible ? 0 : bottomInset }]}>
       <View style={styles.toolbar}>
         <Pressable style={[styles.modifier, modifier?.kind === 'ctrl' && styles.active]} onPress={() => toggle('ctrl')} onLongPress={() => toggle('ctrl', true)}><Text style={styles.label}>Ctrl{modifier?.kind === 'ctrl' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
         <Pressable style={[styles.modifier, modifier?.kind === 'alt' && styles.active]} onPress={() => toggle('alt')} onLongPress={() => toggle('alt', true)}><Text style={styles.label}>Alt{modifier?.kind === 'alt' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
