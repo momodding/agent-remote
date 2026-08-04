@@ -26,7 +26,7 @@ export function modifiedTerminalInput(data: string, modifier: Modifier | null): 
   return modifier === 'alt' && data.length === 1 ? `\x1b${data}` : data;
 }
 
-export function ShortcutKeyboard({ onInput, bottomInset = 0 }: { onInput: (data: string) => void; bottomInset?: number }) {
+export function ShortcutKeyboard({ onInput, bottomInset = 0, onCopy, onPaste, onSelectAll }: { onInput: (data: string) => void; bottomInset?: number; onCopy?: () => void; onPaste?: () => void; onSelectAll?: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
   const [modifier, setModifier] = useState<{ kind: Modifier; locked: boolean } | null>(null);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -49,6 +49,9 @@ export function ShortcutKeyboard({ onInput, bottomInset = 0 }: { onInput: (data:
       <View style={styles.toolbar}>
         <Pressable style={[styles.modifier, modifier?.kind === 'ctrl' && styles.active]} onPress={() => toggle('ctrl')} onLongPress={() => toggle('ctrl', true)}><Text style={styles.label}>Ctrl{modifier?.kind === 'ctrl' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
         <Pressable style={[styles.modifier, modifier?.kind === 'alt' && styles.active]} onPress={() => toggle('alt')} onLongPress={() => toggle('alt', true)}><Text style={styles.label}>Alt{modifier?.kind === 'alt' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
+        {onCopy && <Pressable style={styles.modifier} onPress={onCopy}><Text style={styles.label}>Copy</Text></Pressable>}
+        {onPaste && <Pressable style={styles.modifier} onPress={onPaste}><Text style={styles.label}>Paste</Text></Pressable>}
+        {onSelectAll && <Pressable style={styles.modifier} onPress={onSelectAll}><Text style={styles.label}>SelAll</Text></Pressable>}
         <Pressable style={styles.hide} onPress={() => setCollapsed(true)}><Text style={styles.label}>⌄</Text></Pressable>
       </View>
       {terminalRows.map((row, index) => (

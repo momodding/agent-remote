@@ -3,7 +3,7 @@ import { Alert, AppState, KeyboardAvoidingView, Platform, Pressable, StyleSheet,
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Terminal } from '../../src/components/Terminal';
+import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
 import { MultiTerminal } from '../../src/components/MultiTerminal';
 import { AddSessionFAB } from '../../src/components/AddSessionFAB';
 import { ShortcutKeyboard } from '../../src/components/ShortcutKeyboard';
@@ -23,7 +23,7 @@ export default function TerminalScreen() {
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [connection, setConnection] = useState<Connection | null>(null);
-  const socket = useRef<SessionSocket | undefined>(undefined);
+  const terminalRef = useRef<TerminalHandle>(null);
   const isMultiModeCheck = mode === "multi";
   const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
   // Guards natural-exit and manual-Close from racing each other into a double
@@ -244,8 +244,8 @@ export default function TerminalScreen() {
   return <Wrapper {...wrapperProps}>
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}><Pressable accessibilityLabel="Detach" onPress={detach}><Text style={styles.back}>‹ Sessions</Text></Pressable><Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text><View style={styles.actions}><Pressable onPress={() => setOutput('')}><Text style={styles.clear}>Clear</Text></Pressable><Pressable accessibilityLabel="Close session" onPress={close}><Text style={styles.close}>Close</Text></Pressable></View></View>
-    <View style={styles.terminal}>{connection ? <Terminal output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}</View>
-    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} />
+    <View style={styles.terminal}>{connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}</View>
+    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} />
   </Wrapper>;
 }
 

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Terminal } from './Terminal';
+import { Terminal, type TerminalHandle } from './Terminal';
 import { ShortcutKeyboard } from './ShortcutKeyboard';
 import type { MultiSessionState } from '../lib/multi-session';
 
@@ -27,6 +27,11 @@ export function MultiTerminal({
   bottomInset = 0,
 }: Props) {
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
+  const terminalRefs = useRef<Record<string, TerminalHandle>>({});
+  const getFocused = () => {
+    const id = focusedSessionId ?? visibleSessions[0]?.sessionId;
+    return id ? terminalRefs.current[id] : undefined;
+  };
   const sessionList = Object.values(sessions);
   const visibleSessions = sessionList.filter((s) => !s.minimized);
   const minimizedSessions = sessionList.filter((s) => s.minimized);
@@ -81,6 +86,10 @@ export function MultiTerminal({
               onTouchStart={() => setFocusedSessionId(session.sessionId)}
             >
               <Terminal
+                ref={(handle) => {
+                  if (handle) terminalRefs.current[session.sessionId] = handle;
+                  else delete terminalRefs.current[session.sessionId];
+                }}
                 output={session.output}
                 onInput={(data) => handleInput(session.sessionId, data)}
                 onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
@@ -119,6 +128,9 @@ export function MultiTerminal({
           }
         }}
         bottomInset={bottomInset}
+        onCopy={() => getFocused()?.copy()}
+        onPaste={() => getFocused()?.paste()}
+        onSelectAll={() => getFocused()?.selectAll()}
       />
     </View>
   );
