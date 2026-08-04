@@ -13,6 +13,7 @@ type Props = {
   isBroadcasting: boolean;
   onBroadcastToggle: () => void;
   platformMax: number;
+  bottomInset?: number;
 };
 
 export function MultiTerminal({
@@ -23,6 +24,7 @@ export function MultiTerminal({
   onClose,
   isBroadcasting,
   onBroadcastToggle,
+  bottomInset = 0,
 }: Props) {
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
   const sessionList = Object.values(sessions);
@@ -116,6 +118,7 @@ export function MultiTerminal({
             handleInput(visibleSessions[0].sessionId, data);
           }
         }}
+        bottomInset={bottomInset}
       />
     </View>
   );

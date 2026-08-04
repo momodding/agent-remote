@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Terminal } from '../../src/components/Terminal';
 import { MultiTerminal } from '../../src/components/MultiTerminal';
@@ -12,6 +13,11 @@ import { SessionSocket } from '../../src/lib/session-socket';
 import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
 
 export default function TerminalScreen() {
+  const insets = useSafeAreaInsets();
+  const Wrapper = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
+  const wrapperProps = Platform.OS === 'ios'
+    ? { behavior: 'padding' as const, style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] }
+    : { style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
   const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
@@ -197,7 +203,7 @@ export default function TerminalScreen() {
   }, [isMultiModeCheck, connection, id, name, multiSessions, handleAddSession]);
 
   if (isMultiModeCheck) {
-    return <SafeAreaView style={styles.screen}>
+    return <Wrapper {...wrapperProps}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
         <Pressable accessibilityLabel="Detach" onPress={detach}>
@@ -221,6 +227,7 @@ export default function TerminalScreen() {
             isBroadcasting={isBroadcasting}
             onBroadcastToggle={() => setIsBroadcasting((prev) => !prev)}
             platformMax={platformMax}
+            bottomInset={insets.bottom}
           />
           <AddSessionFAB
             api={new AgenticRemoteAPI(connection)}
@@ -231,15 +238,15 @@ export default function TerminalScreen() {
       ) : (
         <Text style={styles.connecting}>Connecting…</Text>
       )}
-    </SafeAreaView>;
+    </Wrapper>;
   }
 
-  return <SafeAreaView style={styles.screen}>
+  return <Wrapper {...wrapperProps}>
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}><Pressable accessibilityLabel="Detach" onPress={detach}><Text style={styles.back}>‹ Sessions</Text></Pressable><Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text><View style={styles.actions}><Pressable onPress={() => setOutput('')}><Text style={styles.clear}>Clear</Text></Pressable><Pressable accessibilityLabel="Close session" onPress={close}><Text style={styles.close}>Close</Text></Pressable></View></View>
     <View style={styles.terminal}>{connection ? <Terminal output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}</View>
-    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} />
-  </SafeAreaView>;
+    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} />
+  </Wrapper>;
 }
 
 const styles = StyleSheet.create({
