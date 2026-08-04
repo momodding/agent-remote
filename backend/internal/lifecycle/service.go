@@ -361,9 +361,13 @@ func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
 }
 
 func (s *Service) systemctl(ctx context.Context, args ...string) error {
-	runner := s.RunnerProvider.Command(ctx, "systemctl", args...)
-	_, err := runner.CombinedOutput()
-	return err
+	fullArgs := append([]string{"--user"}, args...)
+	runner := s.RunnerProvider.Command(ctx, "systemctl", fullArgs...)
+	out, err := runner.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func systemdUnitPath(home string) string {

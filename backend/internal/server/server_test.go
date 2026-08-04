@@ -217,7 +217,7 @@ func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
 		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
 		if strings.Contains(preview, "agentic-remote-marker-123") {
 			var seeded string
-			err = srv.sessions.Subscribe(summary.ID, func(output protocol.PTYOutputEnvelope, _ protocol.SessionStateEnvelope) {
+			_, err = srv.sessions.Subscribe(summary.ID, func(output protocol.PTYOutputEnvelope, _ protocol.SessionStateEnvelope) {
 				if seeded != "" || output.Data == "" {
 					return
 				}

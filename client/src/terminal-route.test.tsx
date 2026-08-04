@@ -21,10 +21,12 @@ const mockConnection: Connection = {
 };
 const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
 
+let mockParams = { id: 'session', name: 'Shell', connectionEndpoint: mockConnection.endpoint, mode: 'default' };
+
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
-  router: { replace: jest.fn() },
-  useLocalSearchParams: () => ({ id: 'session', name: 'Shell', connectionEndpoint: mockConnection.endpoint }),
+  router: { replace: jest.fn(), push: jest.fn() },
+  useLocalSearchParams: () => mockParams,
 }));
 jest.mock('./lib/connection', () => ({
   loadConnections: jest.fn(async () => mockStore),
@@ -213,6 +215,33 @@ describe('terminal route detach', () => {
 
     expect(mockCloseSession).not.toHaveBeenCalled();
     expect(mockSocket.close).toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith('/');
+    act(() => tree.unmount());
+  });
+});
+
+describe('terminal route multi mode', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockParams.mode = 'multi';
+  });
+
+  afterEach(() => {
+    mockParams.mode = 'default';
+  });
+
+  it('tracks multiSocketsRef and closes legacy and new sockets on detach', async () => {
+    const tree = await renderScreen();
+    // simulate handleAddSession called by Effect
+    await act(async () => {
+      expect(mockSocket.connect).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await actionFor(tree, 'Close all')();
+    });
+    
+    expect(mockCloseSession).toHaveBeenCalledWith('session');
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });

@@ -10,13 +10,14 @@ jest.mock('./ShortcutKeyboard', () => ({
   ShortcutKeyboard: ({ onInput }: { onInput: (data: string) => void }) => null,
 }));
 
-jest.mock('react-native', () => {
-  const RN = jest.requireActual('react-native');
-  return {
-    ...RN,
-    ScrollView: ({ children }: { children: React.ReactNode }) => children,
-  };
-});
+jest.mock('react-native', () => ({
+  View: ({ children }: { children?: React.ReactNode }) => children,
+  Text: ({ children }: { children?: React.ReactNode }) => children,
+  Pressable: ({ children }: { children?: React.ReactNode }) => children,
+  ScrollView: ({ children }: { children?: React.ReactNode }) => children,
+  Platform: { OS: 'web', select: <T,>(specifics: { web?: T; default?: T }) => specifics.web ?? specifics.default },
+  StyleSheet: { create: <T,>(styles: T) => styles },
+}));
 
 describe('MultiTerminal', () => {
   const session1: MultiSessionState = {
@@ -60,11 +61,8 @@ describe('MultiTerminal', () => {
       );
     });
 
-    const panes = tree!.root.findAll((node) => node.props.style && JSON.stringify(node.props.style).includes('pane'));
-    expect(panes.length).toBeGreaterThan(0);
-
-    const minimized = tree!.root.findAll((node) => node.props.style && JSON.stringify(node.props.style).includes('minimizedItem'));
-    expect(minimized.length).toBe(1);
+    expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(2);
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Restore Shell 3' })).toBeDefined();
   });
 
   it('broadcasts input to all visible panes when enabled', () => {

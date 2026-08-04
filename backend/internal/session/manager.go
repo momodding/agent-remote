@@ -49,10 +49,17 @@ type CreateRequest struct {
 	Rows    int
 }
 
+type subscriber struct {
+	mu        sync.Mutex
+	fn        func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)
+	active    bool
+	replaySeq int64
+}
+
 type sessionRuntime struct {
 	meta       Session
 	detector   detect.Detector
-	subs       []func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)
+	subs       []*subscriber
 	seq        int64
 	scrollback string
 	plain      string
@@ -78,6 +85,7 @@ type Manager struct {
 	channelBufferSize  int
 	notifier           notify.Notifier
 }
+
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
 	m := &Manager{sessions: map[string]*sessionRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
@@ -160,19 +168,43 @@ func (m *Manager) List(_ context.Context) []protocol.SessionSummary {
 	}
 	return out
 }
-
-func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) error {
+func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	runtime, ok := m.sessions[id]
 	if !ok {
-		return errors.New("session not found")
+		m.mu.Unlock()
+		return nil, errors.New("session not found")
 	}
-	if data, err := os.ReadFile(runtime.scrollback); err == nil && len(data) > 0 {
-		fn(protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: runtime.seq}, protocol.SessionStateEnvelope{})
+	sub := &subscriber{fn: fn, active: true, replaySeq: runtime.seq}
+	runtime.subs = append(runtime.subs, sub)
+	scrollback := runtime.scrollback
+	m.mu.Unlock()
+
+	// Holding the individual subscriber lock makes replay complete before a
+	// concurrent forward can deliver newer frames to this subscriber.
+	sub.mu.Lock()
+	if data, err := os.ReadFile(scrollback); err == nil && len(data) > 0 && sub.active {
+		sub.fn(protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: sub.replaySeq}, protocol.SessionStateEnvelope{})
 	}
-	runtime.subs = append(runtime.subs, fn)
-	return nil
+	sub.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			for i, candidate := range runtime.subs {
+				if candidate == sub {
+					runtime.subs = append(runtime.subs[:i], runtime.subs[i+1:]...)
+					break
+				}
+			}
+			m.mu.Unlock()
+
+			sub.mu.Lock()
+			sub.active = false
+			sub.mu.Unlock()
+		})
+	}, nil
 }
 
 func (m *Manager) Input(id string, b []byte) error {
@@ -232,16 +264,23 @@ func (m *Manager) Close(id string) error {
 
 func (m *Manager) forward(runtime *sessionRuntime) {
 	for msg := range runtime.outbound {
-		for _, sub := range runtime.subs {
-			var output protocol.PTYOutputEnvelope
-			var state protocol.SessionStateEnvelope
-			if msg.output != nil {
-				output = *msg.output
+		m.mu.Lock()
+		subs := append([]*subscriber(nil), runtime.subs...)
+		m.mu.Unlock()
+		for _, sub := range subs {
+			sub.mu.Lock()
+			if sub.active && (msg.output == nil || msg.output.Seq > sub.replaySeq) {
+				var output protocol.PTYOutputEnvelope
+				var state protocol.SessionStateEnvelope
+				if msg.output != nil {
+					output = *msg.output
+				}
+				if msg.state != nil {
+					state = *msg.state
+				}
+				sub.fn(output, state)
 			}
-			if msg.state != nil {
-				state = *msg.state
-			}
-			sub(output, state)
+			sub.mu.Unlock()
 		}
 	}
 }

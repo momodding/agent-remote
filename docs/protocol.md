@@ -9,7 +9,7 @@
 3. Pairing tokens are single-use. The server persists only `pairingId`, `salt`, `verifier`, and `expiresAt`; never the raw `token`. A successful proof consumes the pairing and immediately triggers the daemon to print the next QR.
 4. Client opens `/v1/ws/sessions/bootstrap` without a bearer token and sends `auth.hello` with `pairingId`, a base64url 32-byte `clientNonce`, and `clientName`.
 5. Server trims `clientName`, rejects empty names and names over 64 Unicode code points, then responds with `auth.challenge` carrying `serverNonce`, `challengeId`, and the stored `salt`.
-6. Client derives `verifier = Argon2id(token, salt, time=3, memory=64 MiB, threads=1, keyLen=32)` and sends `auth.proof = HMAC-SHA256(verifier, "agenticRemote-auth-v2" || pairingId || clientNonce || serverNonce || challengeId)`.
+6. Client derives `verifier = HMAC-SHA256(key=token, message=salt)` and sends `auth.proof = HMAC-SHA256(verifier, "agenticRemote-auth-v2" || pairingId || clientNonce || serverNonce || challengeId)`.
 7. Server verifies the proof and returns `auth.ok` with a bearer `sessionToken`. The server stores only `sha256(sessionToken)` and the accepted `clientName` at rest.
 8. Bootstrap WebSocket accepts only auth frames until `auth.ok`. All REST filesystem/session endpoints, and non-bootstrap session WebSockets, require `Authorization: Bearer <sessionToken>`.
 

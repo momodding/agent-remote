@@ -1,7 +1,9 @@
 package security
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,8 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 
 	"github.com/skip2/go-qrcode"
 )
@@ -204,7 +204,9 @@ func (s *PairingStore) saveLocked() error {
 }
 
 func deriveVerifier(token string, salt []byte) []byte {
-	return argon2.IDKey([]byte(token), salt, 3, 64*1024, 1, 32)
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write(salt)
+	return mac.Sum(nil)
 }
 
 func randomEncoded(size int) (string, error) {

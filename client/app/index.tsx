@@ -60,10 +60,14 @@ export default function Dashboard() {
     return () => listener.remove();
   }, [refresh]);
 
-  const connect = async (payload: PairingPayload, clientName: string) => {
+  const connect = async (payload: PairingPayload, clientName: string, onStage?: (message: string) => void) => {
     setDiagnostics([]);
     try {
-      const paired = await authenticatePairing(payload, clientName, (message) => setDiagnostics((items) => [...items, message]));
+      const paired = await authenticatePairing(payload, clientName, (message) => {
+        console.log('[pairing]', message);
+        setDiagnostics((items) => [...items, message]);
+        onStage?.(message);
+      });
       const name = getConnection(store, paired.endpoint)?.name ?? new URL(paired.endpoint).host;
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);

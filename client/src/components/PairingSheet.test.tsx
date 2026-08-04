@@ -7,11 +7,13 @@ let mockPermission: { granted: boolean; canAskAgain: boolean } | null = null;
 const mockRequestPermission = jest.fn();
 let mockIsAvailable: () => Promise<boolean> = async () => true;
 let mockMountError: (() => void) | undefined;
+let mockScanned: ((event: { data: string }) => void) | undefined;
 
 jest.mock('expo-camera', () => ({
   useCameraPermissions: () => [mockPermission, mockRequestPermission, jest.fn()],
   CameraView: Object.assign(
-    (props: { onMountError?: () => void }) => {
+    (props: { onBarcodeScanned?: (event: { data: string }) => void; onMountError?: () => void }) => {
+      mockScanned = props.onBarcodeScanned;
       mockMountError = props.onMountError;
       return null;
     },
@@ -76,6 +78,7 @@ beforeEach(() => {
   mockPermission = null;
   mockIsAvailable = async () => true;
   mockMountError = undefined;
+  mockScanned = undefined;
 });
 
 afterEach(() => {
@@ -143,6 +146,65 @@ describe('PairingSheet camera states', () => {
     const tree = await renderSheet();
     act(() => pressableWithText(tree, 'Scan QR code').props.onPress());
     expect(has(tree, 'use-pasted-json')).toBe(true);
+  });
+
+  it('shows reported stage text while connecting from a scan', async () => {
+    mockPermission = { granted: true, canAskAgain: true };
+    const completion = Promise.withResolvers<void>();
+    const onConnect = jest.fn().mockImplementation(async (_payload, _name, onStage) => {
+      onStage('Resolving endpoint...');
+      await completion.promise;
+    });
+    const tree = await renderSheet(onConnect);
+
+    await act(async () => {
+      pressableWithText(tree, 'Scan QR code').props.onPress();
+      await flush();
+    });
+    await act(async () => {
+      mockScanned?.({ data: validPayload });
+      await flush();
+    });
+
+    expect(onConnect).toHaveBeenCalledWith(expect.any(Object), 'phone', expect.any(Function));
+    expect(byLabel(tree, 'camera-connecting').props.children).toBe('Resolving endpoint...');
+
+    expect(byLabel(tree, 'cancel-pairing').props.disabled).toBe(true);
+    expect(byLabel(tree, 'use-pasted-json').props.disabled).toBe(true);
+    act(() => byLabel(tree, 'use-pasted-json').props.onPress());
+    expect(has(tree, 'camera-connecting')).toBe(true);
+
+    await act(async () => {
+      completion.resolve();
+      await flush();
+    });
+  });
+
+  it('shows reported stage text while connecting pasted JSON', async () => {
+    const completion = Promise.withResolvers<void>();
+    const onConnect = jest.fn().mockImplementation(async (_payload, _name, onStage) => {
+      onStage('Executing Auth-v2 Challenge...');
+      await completion.promise;
+    });
+    const tree = await renderSheet(onConnect);
+    act(() => payloadInput(tree).props.onChangeText(validPayload));
+
+    await act(async () => {
+      pressableWithText(tree, 'Connect').props.onPress();
+      await flush();
+    });
+
+    expect(onConnect).toHaveBeenCalledWith(expect.any(Object), 'phone', expect.any(Function));
+    expect(byLabel(tree, 'paste-connecting').props.children).toBe('Executing Auth-v2 Challenge...');
+
+    expect(byLabel(tree, 'cancel-pairing').props.disabled).toBe(true);
+    expect(payloadInput(tree).props.editable).toBe(false);
+    expect(pressableWithText(tree, 'Scan QR code').props.disabled).toBe(true);
+
+    await act(async () => {
+      completion.resolve();
+      await flush();
+    });
   });
 });
 

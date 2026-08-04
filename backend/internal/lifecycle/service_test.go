@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 )
+
 type mockRunner struct {
 	out []byte
 	err error
@@ -28,12 +29,17 @@ func (m *mockRunner) CombinedOutput() ([]byte, error) {
 }
 
 type mockProvider struct {
-	failBinary bool
-	commands   []string
+	failBinary   bool
+	commands     []string
+	systemctlOut []byte
+	systemctlErr error
 }
 
 func (p *mockProvider) Command(ctx context.Context, name string, args ...string) Runner {
 	p.commands = append(p.commands, name+" "+strings.Join(args, " "))
+	if name == "systemctl" && p.systemctlErr != nil {
+		return &mockRunner{out: p.systemctlOut, err: p.systemctlErr}
+	}
 	if strings.Contains(name, "agenticRemote") && len(args) > 0 && args[0] == "version" {
 		if p.failBinary {
 			return &mockRunner{err: errors.New("version failed")}
@@ -68,6 +74,22 @@ func TestInstall_Success(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(managed, "config.json")); err != nil {
 		t.Errorf("config not written: %v", err)
+	}
+}
+
+func TestSystemctlUsesUserManagerAndSurfacesOutput(t *testing.T) {
+	provider := &mockProvider{
+		systemctlOut: []byte("Failed to connect to bus: No medium found\n"),
+		systemctlErr: errors.New("exit status 1"),
+	}
+	svc := NewService(t.TempDir(), provider)
+
+	err := svc.systemctl(context.Background(), "enable", "--now", "agenticremote.service")
+	if err == nil || !strings.Contains(err.Error(), "Failed to connect to bus") {
+		t.Fatalf("systemctl error should include output: %v", err)
+	}
+	if len(provider.commands) != 1 || provider.commands[0] != "systemctl --user enable --now agenticremote.service" {
+		t.Fatalf("systemctl command = %v, want user-manager invocation", provider.commands)
 	}
 }
 
@@ -300,9 +322,9 @@ func TestConfig_JSONSerialization(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "config.json")
 
 	cfg := map[string]interface{}{
-		"listenAddr":                "127.0.0.1:8765",
-		"allowedCidrs":              []string{"127.0.0.0/8"},
-		"pairingRotationSeconds":    45,
+		"listenAddr":             "127.0.0.1:8765",
+		"allowedCidrs":           []string{"127.0.0.0/8"},
+		"pairingRotationSeconds": 45,
 	}
 
 	if err := writeConfig(tmpFile, cfg); err != nil {
@@ -332,9 +354,9 @@ func TestInstall_ConfigCustomization(t *testing.T) {
 
 	opts := InstallOptions{
 		Config: Config{
-			Listen:        "0.0.0.0:8765",
-			AllowedCIDRs:  []string{"10.0.0.0/8"},
-			StateDir:      "mystate",
+			Listen:       "0.0.0.0:8765",
+			AllowedCIDRs: []string{"10.0.0.0/8"},
+			StateDir:     "mystate",
 		},
 	}
 

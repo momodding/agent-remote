@@ -18,6 +18,8 @@ export default function TerminalScreen() {
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [connection, setConnection] = useState<Connection | null>(null);
   const socket = useRef<SessionSocket | undefined>(undefined);
+  const isMultiModeCheck = mode === "multi";
+  const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
   // Guards natural-exit and manual-Close from racing each other into a double
   // REST close / double navigation (closing triggers the daemon's own `exited` frame).
   const finishingRef = useRef(false);
@@ -60,14 +62,20 @@ export default function TerminalScreen() {
         return;
       }
       setConnection(resolved);
-      connect(resolved);
+      if (!isMultiModeCheck) connect(resolved);
     });
     return () => socket.current?.close();
   }, [connect, connectionEndpoint]);
   useEffect(() => {
     const listener = AppState.addEventListener('change', (state) => {
       if (state === 'active' && connection) connect(connection);
-      if (state !== 'active') socket.current?.close();
+      if (state === 'active' && connection) {
+        if (!isMultiModeCheck) connect(connection);
+        Object.values(multiSocketsRef.current).forEach((s) => s.connect());
+      } else if (state === 'background') {
+        socket.current?.close();
+        Object.values(multiSocketsRef.current).forEach((s) => s.close());
+      }
     });
     return () => listener.remove();
   }, [connection, connect]);
@@ -98,12 +106,32 @@ export default function TerminalScreen() {
     router.replace('/');
   }, []);
 
-  const isMultiMode = mode === 'multi';
+  const handleCloseAll = useCallback(async () => {
+    socket.current?.close();
+    if (connection) {
+      const restApi = new AgenticRemoteAPI(connection);
+      for (const sessionId of Object.keys(multiSocketsRef.current)) {
+        const s = multiSocketsRef.current[sessionId];
+        if (s) s.close();
+        try {
+          await restApi.closeSession(sessionId);
+        } catch (error) {
+          if (!(error instanceof APIError && error.status === 404)) console.warn(error);
+        }
+      }
+    }
+    Object.values(multiSocketsRef.current).forEach((s) => s.close());
+    multiSocketsRef.current = {};
+    setMultiSessions({});
+    router.replace('/');
+  }, [connection]);
+
+
   const platformMax = getPlatformMax();
 
   // Multi-window handlers
   const handleAddSession = useCallback((sessionId: string, sessionName: string) => {
-    if (!connection) return;
+    if (!connection || multiSocketsRef.current[sessionId]) return;
     const newSession: MultiSessionState = {
       sessionId,
       name: sessionName,
@@ -111,56 +139,64 @@ export default function TerminalScreen() {
       output: '',
       minimized: false,
     };
-    const sock = new SessionSocket(
+    const newSocket = new SessionSocket(
       connection,
       sessionId,
       (data) => setMultiSessions((prev) => updateOutput(prev, sessionId, prev[sessionId]?.output + data)),
       (state) => {
         if (state === 'exited') {
+          multiSocketsRef.current[sessionId]?.close();
+          delete multiSocketsRef.current[sessionId];
           setMultiSessions((prev) => closeSession(prev, sessionId));
         }
       },
       (message) => Alert.alert('Terminal', message),
     );
-    sock.connect();
-    newSession.socket = sock;
+    newSocket.connect();
+    newSession.socket = newSocket;
+    multiSocketsRef.current[sessionId] = newSocket;
     setMultiSessions((prev) => addSession(prev, newSession));
   }, [connection]);
 
   const handleCloseSession = useCallback(async (sessionId: string) => {
-    const session = multiSessions[sessionId];
-    if (!session || !connection) return;
+    const s = multiSocketsRef.current[sessionId];
+    if (!s || !connection) return;
+    s.close();
+    delete multiSocketsRef.current[sessionId];
+    setMultiSessions((prev) => closeSession(prev, sessionId));
     try {
       await new AgenticRemoteAPI(connection).closeSession(sessionId);
-      session.socket?.close();
-      setMultiSessions((prev) => closeSession(prev, sessionId));
     } catch (error) {
       if (!(error instanceof APIError && error.status === 404)) {
         Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
       }
     }
-  }, [multiSessions, connection]);
+  }, [connection]);
 
   const handleMinimize = useCallback((sessionId: string) => {
     setMultiSessions((prev) => toggleMinimize(prev, sessionId));
   }, []);
 
   const handleInput = useCallback((sessionId: string, data: string) => {
-    multiSessions[sessionId]?.socket?.input(data);
-  }, [multiSessions]);
+    if (isBroadcasting) {
+      Object.values(multiSocketsRef.current).forEach((s) => s.input(data));
+    } else {
+      multiSocketsRef.current[sessionId]?.input(data);
+    }
+  }, [isBroadcasting]);
 
   const handleResize = useCallback((sessionId: string, cols: number, rows: number) => {
-    multiSessions[sessionId]?.socket?.resize(cols, rows);
-  }, [multiSessions]);
+    multiSocketsRef.current[sessionId]?.resize(cols, rows);
+  }, []);
 
   // Initialize first session in multi-mode
   useEffect(() => {
-    if (isMultiMode && connection && id && Object.keys(multiSessions).length === 0) {
+    if (isMultiModeCheck && connection && id && Object.keys(multiSessions).length === 0) {
       handleAddSession(id, name || 'Shell');
     }
-  }, [isMultiMode, connection, id, name, multiSessions, handleAddSession]);
+  }, [isMultiModeCheck, connection, id, name, multiSessions, handleAddSession]);
 
-  if (isMultiMode) {
+  if (isMultiModeCheck) {
     return <SafeAreaView style={styles.screen}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
@@ -169,7 +205,7 @@ export default function TerminalScreen() {
         </Pressable>
         <Text style={styles.title}>Multi-Terminal</Text>
         <View style={styles.actions}>
-          <Pressable accessibilityLabel="Close all" onPress={() => router.replace('/')}>
+          <Pressable accessibilityLabel="Close all" onPress={handleCloseAll}>
             <Text style={styles.close}>Close All</Text>
           </Pressable>
         </View>

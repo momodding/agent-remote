@@ -4,7 +4,7 @@ type ApiModule = typeof import('./api');
 
 let mockPlatform = 'web';
 jest.mock('react-native', () => ({ Platform: { OS: mockPlatform } }));
-// Real clientProof runs Argon2id (~seconds); mock it so fallback tests stay fast and deterministic.
+// clientProof is mocked to keep auth-flow tests independent of the real crypto path.
 jest.mock('./auth', () => ({
   clientProof: jest.fn(async () => 'mock-proof'),
   newClientNonce: jest.fn(() => 'mock-nonce'),
@@ -256,6 +256,117 @@ describe('authenticatePairing Android resolution & fallback', () => {
     MockWebSocket.instances[0].fail();
     await expect(promise).rejects.toThrow();
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+});
+describe('authenticatePairing timeouts and terminal races', () => {
+  let mockFetch: jest.Mock;
+
+  beforeEach(() => {
+    mockFetch = jest.fn().mockResolvedValue({ ok: true } as Response);
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).fetch;
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it('aborts a stuck health probe after 5 seconds', async () => {
+    const response = Promise.withResolvers<Response>();
+    let signal: AbortSignal | undefined;
+    mockFetch.mockImplementation((_url, init: RequestInit) => {
+      signal = init.signal ?? undefined;
+      signal?.addEventListener('abort', () => response.reject(new DOMException('Aborted', 'AbortError')));
+      return response.promise;
+    });
+    const { authenticatePairing } = loadModule();
+    const promise = authenticatePairing(payload, 'phone', jest.fn());
+    await flush();
+
+    expect(signal?.aborted).toBe(false);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(signal?.aborted).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    MockWebSocket.instances[0].fail();
+    await expect(promise).rejects.toThrow('Connection failed');
+  });
+
+  it('rejects when no WebSocket connection opens within 8 seconds', async () => {
+    const { authenticatePairing } = loadModule();
+    const promise = authenticatePairing(payload, 'phone', jest.fn());
+    await flush();
+
+    const socket = MockWebSocket.instances[0];
+    const rejected = expect(promise).rejects.toThrow('Connection timed out');
+    await jest.advanceTimersByTimeAsync(8000);
+
+    await rejected;
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the handshake deadline after auth.challenge', async () => {
+    const { authenticatePairing } = loadModule();
+    const promise = authenticatePairing(payload, 'phone', jest.fn());
+    await flush();
+
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    await jest.advanceTimersByTimeAsync(7000);
+    socket.message({ type: 'auth.challenge', salt: 'c2FsdA', serverNonce: 'server', challengeId: 'chal-1' });
+    await flush();
+
+    const rejected = expect(promise).rejects.toThrow('Connection timed out');
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    await rejected;
+  });
+
+  it('settles once when an error is followed by close and later frames', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation();
+    const { authenticatePairing } = loadModule();
+    const promise = authenticatePairing(payload, 'phone', jest.fn());
+    await flush();
+
+    const socket = MockWebSocket.instances[0];
+    socket.fail();
+    socket.closeAbnormally();
+    socket.message({ type: 'auth.ok', sessionToken: 'late-token' });
+
+    await expect(promise).rejects.toThrow('Connection failed');
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('does not send a proof that resolves after the auth timeout', async () => {
+    const proof = Promise.withResolvers<string>();
+    const mockedClientProof = require('./auth').clientProof as jest.Mock;
+    mockedClientProof.mockImplementationOnce(() => proof.promise);
+    const { authenticatePairing } = loadModule();
+    const promise = authenticatePairing(payload, 'phone', jest.fn());
+    await flush();
+
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({ type: 'auth.challenge', salt: 'c2FsdA', serverNonce: 'server', challengeId: 'chal-1' });
+    await flush();
+    const rejected = expect(promise).rejects.toThrow('Connection timed out');
+    await jest.advanceTimersByTimeAsync(8000);
+    await rejected;
+
+    proof.resolve('late-proof');
+    await flush();
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.sent[0]).toContain('auth.hello');
   });
 });
 

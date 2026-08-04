@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/config"
@@ -32,7 +33,7 @@ type SessionAPI interface {
 	Resize(string, int, int) error
 	Input(string, []byte) error
 	Close(string) error
-	Subscribe(string, func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) error
+	Subscribe(string, func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
 type NotifyAPI interface {
@@ -508,17 +509,20 @@ func (s *Server) handleBootstrapWS(ctx context.Context, conn *websocket.Conn) {
 	for {
 		var frame map[string]any
 		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			log.Printf("bootstrap auth: read frame: %v", err)
 			return
 		}
 		switch frame["type"] {
 		case "auth.hello":
 			var hello protocol.AuthHello
 			if err := mapToStruct(frame, &hello); err != nil {
+				log.Printf("bootstrap auth: invalid hello frame: %v", err)
 				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid auth hello"})
 				return
 			}
 			challenge, err := s.auth.Begin(security.HelloMessage{PairingID: hello.PairingID, ClientNonce: hello.ClientNonce, ClientName: hello.ClientName})
 			if err != nil {
+				log.Printf("bootstrap auth: hello rejected for pairingId=%s: %v", hello.PairingID, err)
 				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
 				return
 			}
@@ -526,17 +530,21 @@ func (s *Server) handleBootstrapWS(ctx context.Context, conn *websocket.Conn) {
 		case "auth.proof":
 			var proof protocol.AuthProof
 			if err := mapToStruct(frame, &proof); err != nil {
+				log.Printf("bootstrap auth: invalid proof frame: %v", err)
 				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid auth proof"})
 				return
 			}
 			token, err := s.auth.Complete(proof.PairingID, proof.ChallengeID, proof.Proof)
 			if err != nil {
+				log.Printf("bootstrap auth: proof rejected for pairingId=%s: %v", proof.PairingID, err)
 				_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: err.Error()})
 				return
 			}
+			log.Printf("bootstrap auth: pairing succeeded for pairingId=%s", proof.PairingID)
 			_ = wsWriteJSON(ctx, conn, protocol.AuthOK{Type: "auth.ok", SessionToken: token})
 			return
 		default:
+			log.Printf("bootstrap auth: unsupported frame type=%q", frame["type"])
 			_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
 			return
 		}
@@ -549,17 +557,25 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 		_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
 		return
 	}
-	if err := s.sessions.Subscribe(sessionID, func(output protocol.PTYOutputEnvelope, state protocol.SessionStateEnvelope) {
+	var writeMu sync.Mutex
+	write := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return wsWriteJSON(ctx, conn, v)
+	}
+	unsubscribe, err := s.sessions.Subscribe(sessionID, func(output protocol.PTYOutputEnvelope, state protocol.SessionStateEnvelope) {
 		if output.Type != "" {
-			_ = wsWriteJSON(ctx, conn, output)
+			_ = write(output)
 		}
 		if state.Type != "" {
-			_ = wsWriteJSON(ctx, conn, state)
+			_ = write(state)
 		}
-	}); err != nil {
-		_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "session_not_found", Message: err.Error()})
+	})
+	if err != nil {
+		_ = write(protocol.ErrorEnvelope{Type: "error", Code: "session_not_found", Message: err.Error()})
 		return
 	}
+	defer unsubscribe()
 	for {
 		var frame map[string]any
 		if err := wsReadJSON(ctx, conn, &frame); err != nil {
@@ -571,7 +587,7 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 			if err := mapToStruct(frame, &env); err == nil {
 				data, err := base64.StdEncoding.DecodeString(env.Data)
 				if err != nil {
-					_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
+					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
 					continue
 				}
 				_ = s.sessions.Input(sessionID, data)
@@ -582,7 +598,7 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 				_ = s.sessions.Resize(sessionID, env.Cols, env.Rows)
 			}
 		default:
-			_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})
+			_ = write(protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})
 		}
 	}
 }

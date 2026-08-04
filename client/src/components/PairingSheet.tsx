@@ -5,7 +5,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { parsePairingPayload } from '../lib/auth';
 import type { PairingPayload } from '../protocol';
 
-type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: PairingPayload, clientName: string) => Promise<void> };
+type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: PairingPayload, clientName: string, onStage: (message: string) => void) => Promise<void> };
 
 // Camera readiness beyond the OS permission grant: unknown while checking, then available/unavailable.
 type Availability = 'checking' | 'available' | 'unavailable';
@@ -17,6 +17,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const [skip, setSkip] = useState(false);
   const [availability, setAvailability] = useState<Availability>('checking');
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState('');
   const [permission, requestPermission] = useCameraPermissions();
   const scanLock = useRef(false);
 
@@ -35,15 +36,32 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     if (!visible) { setScan(false); setAvailability('checking'); scanLock.current = false; }
   }, [visible]);
 
-  const openScan = () => { setAvailability('checking'); scanLock.current = false; setScan(true); };
+  const openScan = () => {
+    if (busy) return;
+    setAvailability('checking');
+    scanLock.current = false;
+    setScan(true);
+  };
+
+  const usePastedJSON = () => {
+    if (!busy) setScan(false);
+  };
+
+  const dismiss = () => {
+    if (!busy) onDismiss();
+  };
+
 
   const connect = async (raw: string): Promise<boolean> => {
     try {
       const payload = parsePairingPayload(raw);
-      await onConnect({ ...payload, skipFingerprintVerification: skip || payload.skipFingerprintVerification }, name);
+      setStage('Starting…');
+      await onConnect({ ...payload, skipFingerprintVerification: skip || payload.skipFingerprintVerification }, name, setStage);
       onDismiss();
       return true;
     } catch (error) {
+      setStage('');
+      console.error('[pairing] connect failed:', error);
       Alert.alert('Pairing failed', error instanceof Error ? error.message : 'Invalid pairing data');
       return false;
     }
@@ -60,6 +78,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   };
 
   const onPaste = () => {
+    if (busy) return;
     setBusy(true);
     void connect(payloadText).finally(() => setBusy(false));
   };
@@ -101,7 +120,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       );
     }
     if (busy) {
-      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-connecting">Connecting…</Text></View>;
+      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-connecting">{stage || 'Connecting…'}</Text></View>;
     }
     return (
       <View style={styles.camera}>
@@ -116,23 +135,27 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   };
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onDismiss}>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
       <View style={styles.sheet}>
-        <View style={styles.header}><Text style={styles.title}>Connect a daemon</Text><Pressable onPress={onDismiss}><Text style={styles.cancel}>Cancel</Text></Pressable></View>
+        <View style={styles.header}><Text style={styles.title}>Connect a daemon</Text><Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={styles.cancel}>Cancel</Text></Pressable></View>
         <Text style={styles.hint}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" />
-        <View style={styles.row}><Text style={styles.label}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} /></View>
+        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
+        <View style={styles.row}><Text style={styles.label}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
         <Text style={styles.warning}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
         {scan ? (
           <>
             {renderCamera()}
-            <Pressable style={styles.secondary} accessibilityLabel="use-pasted-json" onPress={() => setScan(false)}><Text style={styles.primaryText}>Use pasted JSON</Text></Pressable>
+            <Pressable style={styles.secondary} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={styles.primaryText}>Use pasted JSON</Text></Pressable>
           </>
-        ) : <>
-          <Pressable style={styles.secondary} onPress={openScan}><Text style={styles.primaryText}>Scan QR code</Text></Pressable>
-          <TextInput style={[styles.input, styles.payload]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" />
-          <Pressable style={styles.primary} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>
-        </>}
+        ) : (
+          <>
+            <Pressable style={styles.secondary} disabled={busy} onPress={openScan}><Text style={styles.primaryText}>Scan QR code</Text></Pressable>
+            <TextInput style={[styles.input, styles.payload]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
+            {busy
+              ? <View style={styles.status}><Text style={styles.cameraStatus} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
+              : <Pressable style={styles.primary} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
+          </>
+        )}
       </View>
     </Modal>
   );
@@ -153,5 +176,6 @@ const styles = StyleSheet.create({
   secondary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#264E54' },
   primaryText: { color: '#0A0A0A', fontWeight: '700' },
   camera: { minHeight: 320, overflow: 'hidden', borderRadius: 10, backgroundColor: '#181818', justifyContent: 'center', alignItems: 'center', gap: 12, padding: 20 },
+  status: { minHeight: 48, borderRadius: 8, backgroundColor: '#181818', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
   cameraStatus: { color: '#B8B8B8', textAlign: 'center', lineHeight: 20 },
 });

@@ -116,10 +116,13 @@ export function resolveAuthEndpoint(
 
 // Health probe before WebSocket auth. Detects forbidden_source and other structured errors.
 async function probeHealth(endpoint: string): Promise<null | { code: string; message: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await fetch(apiURL(endpoint, '/healthz'), {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
     });
     if (response.ok) return null;
     const body = await response.json() as unknown;
@@ -127,55 +130,73 @@ async function probeHealth(endpoint: string): Promise<null | { code: string; mes
       return { code: (body as Record<string, string>).code, message: (body as Record<string, string>).message };
     }
     return null;
-  } catch {
-    // Network failure: let it propagate as TransportError in attemptAuth
+  } catch (error) {
+    console.error('[pairing] health probe failed:', error);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function attemptAuth(endpoint: string, payload: PairingPayload, clientName: string): Promise<string> {
   const clientNonce = newClientNonce();
-  return new Promise<string>((resolve, reject) => {
-    let frameReceived = false;
-    const socket = new WebSocket(wsURL(endpoint, '/v1/ws/sessions/bootstrap'));
-    const fail = (error: unknown, retryable: boolean) => {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  let frameReceived = false;
+  let settled = false;
+  let timeoutTimer = 0;
+  const socket = new WebSocket(wsURL(endpoint, '/v1/ws/sessions/bootstrap'));
+  const settle = (fn: () => void) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutTimer);
+    fn();
+  };
+  const fail = (error: unknown, retryable: boolean) => {
+    const message = error instanceof Error ? error.message : 'Connection failed';
+    settle(() => {
       socket.close();
-      const message = error instanceof Error ? error.message : 'Connection failed';
+      console.error('[pairing] attemptAuth failed:', message, 'retryable:', retryable);
       reject(retryable ? new TransportError(message) : new Error(message));
-    };
-    socket.onerror = () => fail(new Error('Connection failed'), !frameReceived);
-    socket.onclose = () => {
-      if (!frameReceived) fail(new Error('Connection closed'), true);
-    };
-    socket.onopen = () => socket.send(JSON.stringify({ type: 'auth.hello', pairingId: payload.pairingId, clientNonce, clientName }));
-    socket.onmessage = async ({ data }) => {
-      let frame: Record<string, string>;
-      try {
-        frame = JSON.parse(String(data)) as Record<string, string>;
-      } catch (error) {
-        fail(error, false);
-        return;
-      }
-      frameReceived = true;
-      try {
-        if (frame.type === 'auth.challenge') {
+    });
+  };
+
+  timeoutTimer = setTimeout(() => fail(new Error('Connection timed out'), true), 8000);
+  socket.onerror = () => fail(new Error('Connection failed'), !frameReceived);
+  socket.onclose = () => fail(new Error('Connection closed'), !frameReceived);
+  socket.onopen = () => {
+    if (!settled) socket.send(JSON.stringify({ type: 'auth.hello', pairingId: payload.pairingId, clientNonce, clientName }));
+  };
+  socket.onmessage = async ({ data }) => {
+    if (settled) return;
+    frameReceived = true;
+    let frame: Record<string, string>;
+    try {
+      frame = JSON.parse(String(data)) as Record<string, string>;
+    } catch (error) {
+      fail(error, false);
+      return;
+    }
+    try {
+      if (frame.type === 'auth.challenge') {
+        const proof = await clientProof(payload.token, payload.pairingId, frame.salt, clientNonce, frame.serverNonce, frame.challengeId);
+        if (!settled) {
           socket.send(JSON.stringify({
             type: 'auth.proof',
             pairingId: payload.pairingId,
             challengeId: frame.challengeId,
-            proof: await clientProof(payload.token, payload.pairingId, frame.salt, clientNonce, frame.serverNonce, frame.challengeId),
+            proof,
           }));
-        } else if (frame.type === 'auth.ok') {
-          socket.close();
-          resolve(frame.sessionToken);
-        } else if (frame.type === 'error') {
-          fail(new Error(frame.message || 'Authentication failed'), false);
         }
-      } catch (error) {
-        fail(error, false);
+      } else if (frame.type === 'auth.ok') {
+        settle(() => { socket.close(); resolve(frame.sessionToken); });
+      } else if (frame.type === 'error') {
+        fail(new Error(frame.message || 'Authentication failed'), false);
       }
-    };
-  });
+    } catch (error) {
+      fail(error, false);
+    }
+  };
+  return promise;
 }
 
 export async function authenticatePairing(payload: PairingPayload, rawClientName: string, diagnostic: Diagnostics): Promise<PairedConnection> {

@@ -1,5 +1,4 @@
 import * as Crypto from 'expo-crypto';
-import { argon2idAsync } from '@noble/hashes/argon2.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 
@@ -44,12 +43,6 @@ export async function clientProof(
   serverNonce: string,
   challengeId: string,
 ): Promise<string> {
-  const verifier = await argon2idAsync(utf8(token), decodeBase64Url(salt), {
-    t: 3,
-    m: 64 * 1024,
-    p: 1,
-    dkLen: 32,
-    asyncTick: 16,
-  });
+  const verifier = hmac(sha256, utf8(token), decodeBase64Url(salt));
   return base64Url(hmac(sha256, verifier, utf8(AUTH_CONTEXT + pairingId + clientNonce + serverNonce + challengeId)));
 }
