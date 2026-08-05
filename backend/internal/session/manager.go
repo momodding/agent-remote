@@ -488,6 +488,38 @@ func defaultShell() string {
 	return "/bin/sh"
 }
 
+func AvailableShells() []string {
+	if runtime.GOOS == "windows" {
+		var shells []string
+		for _, candidate := range []string{"cmd.exe", "powershell.exe", "pwsh.exe"} {
+			if _, err := exec.LookPath(candidate); err == nil {
+				shells = append(shells, candidate)
+			}
+		}
+		if len(shells) == 0 {
+			shells = []string{defaultShell()}
+		}
+		return shells
+	}
+	data, err := os.ReadFile("/etc/shells")
+	if err != nil {
+		return []string{defaultShell()}
+	}
+	var shells []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		shells = append(shells, line)
+	}
+	if len(shells) == 0 {
+		// ponytail: /etc/shells missing entries on minimal containers — fall back rather than return empty.
+		return []string{defaultShell()}
+	}
+	return shells
+}
+
 func protocolWait(wait *detect.WaitState) *protocol.WaitState {
 	if wait == nil {
 		return nil

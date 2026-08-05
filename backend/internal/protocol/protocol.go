@@ -150,5 +150,9 @@ type GitEntry struct {
 
 type NotifyRegisterRequest struct {
 	Provider string `json:"provider"`
-	Token    string `json:"token"`
+	Token string `json:"token"`
+}
+
+type ListShellsResponse struct {
+	Shells []string `json:"shells"`
 }
