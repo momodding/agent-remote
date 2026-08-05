@@ -35,13 +35,8 @@ export function MultiTerminal({
   const sessionList = Object.values(sessions);
   const visibleSessions = sessionList.filter((s) => !s.minimized);
   const minimizedSessions = sessionList.filter((s) => s.minimized);
-
   const handleInput = (sessionId: string, data: string) => {
-    if (isBroadcasting) {
-      visibleSessions.forEach((s) => onInput(s.sessionId, data));
-    } else {
-      onInput(sessionId, data);
-    }
+    onInput(sessionId, data);
   };
 
   return (
@@ -119,7 +114,7 @@ export function MultiTerminal({
         </ScrollView>
       )}
 
-      <ShortcutKeyboard
+        <ShortcutKeyboard
         onInput={(data) => {
           if (focusedSessionId) {
             handleInput(focusedSessionId, data);
@@ -131,7 +126,9 @@ export function MultiTerminal({
         onCopy={() => getFocused()?.copy()}
         onPaste={() => getFocused()?.paste()}
         onSelectAll={() => getFocused()?.selectAll()}
-      />
+          onExpand={() => getFocused()?.blur()}
+          onCollapse={() => getFocused()?.focus()}
+        />
     </View>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Linking, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
@@ -138,7 +138,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
-      <View style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
         <View style={styles.header}><Text style={styles.title}>Connect a daemon</Text><Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={styles.cancel}>Cancel</Text></Pressable></View>
         <Text style={styles.hint}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
         <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
@@ -158,7 +158,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
               : <Pressable style={styles.primary} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
           </>
         )}
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

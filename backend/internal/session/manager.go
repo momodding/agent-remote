@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -471,6 +472,18 @@ func defaultShell() string {
 	}
 	if shell := os.Getenv("SHELL"); shell != "" {
 		return shell
+	}
+	if u, err := user.Current(); err == nil && runtime.GOOS != "windows" {
+		if data, err := os.ReadFile("/etc/passwd"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 7 && parts[0] == u.Username {
+					if parts[6] != "" {
+						return parts[6]
+					}
+				}
+			}
+		}
 	}
 	return "/bin/sh"
 }

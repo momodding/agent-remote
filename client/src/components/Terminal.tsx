@@ -15,6 +15,8 @@ export type TerminalHandle = {
   copy: () => void;
   paste: () => void;
   selectAll: () => void;
+  blur: () => void;
+  focus: () => void;
 };
 
 type Props = {
@@ -74,16 +76,20 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ on
     selectAll: () => {
       web.current?.injectJavaScript(`terminal.selectAll();true;`);
     },
+    blur: () => web.current?.injectJavaScript('if(typeof terminal !== "undefined") terminal.blur(); document.activeElement && document.activeElement.blur(); true;'),
+    focus: () => web.current?.injectJavaScript('if(typeof terminal !== "undefined") terminal.focus(); true;'),
   }));
 
   if (Platform.OS === 'web') return <View style={styles.unavailable} />;
-  return <WebView ref={web} source={{ html: terminalHTML }} onLoadEnd={() => {
-    lastOutput.current = '';
-    if (currentOutput.current) {
-      injectMessage({ type: 'output', data: currentOutput.current });
-      lastOutput.current = currentOutput.current;
-    }
-  }} onMessage={onMessage} originWhitelist={['*']} style={styles.webview} />;
+
+  return (
+    <WebView ref={web} source={{ html: terminalHTML }} onLoadEnd={() => {
+      lastOutput.current = '';
+      if (currentOutput.current) {
+        injectMessage({ type: 'output', data: currentOutput.current });
+      }
+    }} onMessage={onMessage} originWhitelist={['*']} style={styles.webview} />
+  );
 });
 
 const styles = StyleSheet.create({

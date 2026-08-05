@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -14,14 +14,14 @@ import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput,
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
-  const Wrapper = Platform.OS === 'web' ? View : KeyboardAvoidingView;
-  const wrapperProps = Platform.OS === 'web'
-    ? { style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] }
-    : { behavior: (Platform.OS === 'ios' ? 'padding' : 'height') as 'padding' | 'height', style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
+  const Wrapper = View;
   const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
+
+  const wrapperProps = { style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
+
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
   const socket = useRef<SessionSocket | undefined>(undefined);
@@ -192,6 +192,8 @@ export default function TerminalScreen() {
     }
   }, [isBroadcasting]);
 
+
+
   const handleResize = useCallback((sessionId: string, cols: number, rows: number) => {
     multiSocketsRef.current[sessionId]?.resize(cols, rows);
   }, []);
@@ -228,7 +230,6 @@ export default function TerminalScreen() {
             isBroadcasting={isBroadcasting}
             onBroadcastToggle={() => setIsBroadcasting((prev) => !prev)}
             platformMax={platformMax}
-            bottomInset={insets.bottom}
           />
           <AddSessionFAB
             api={new AgenticRemoteAPI(connection)}
@@ -244,9 +245,18 @@ export default function TerminalScreen() {
 
   return <Wrapper {...wrapperProps}>
     <Stack.Screen options={{ headerShown: false }} />
-    <View style={styles.header}><Pressable accessibilityLabel="Detach" onPress={detach}><Text style={styles.back}>‹ Sessions</Text></Pressable><Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text><View style={styles.actions}><Pressable onPress={() => setOutput('')}><Text style={styles.clear}>Clear</Text></Pressable><Pressable accessibilityLabel="Close session" onPress={close}><Text style={styles.close}>Close</Text></Pressable></View></View>
-    <View style={styles.terminal}>{connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}</View>
-    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} />
+    <View style={styles.header}>
+      <Pressable accessibilityLabel="Detach" onPress={detach}><Text style={styles.back}>‹ Sessions</Text></Pressable>
+      <Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text>
+      <View style={styles.actions}>
+        <Pressable onPress={() => setOutput('')}><Text style={styles.clear}>Clear</Text></Pressable>
+        <Pressable accessibilityLabel="Close session" onPress={close}><Text style={styles.close}>Close</Text></Pressable>
+      </View>
+    </View>
+    <View style={styles.terminal}>
+      {connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}
+    </View>
+    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
   </Wrapper>;
 }
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AgenticRemoteAPI } from '../lib/api';
 
@@ -13,7 +13,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
   const insets = useSafeAreaInsets();
   const [visible, setVisible] = useState(false);
   const [name, setName] = useState('');
-  const [command, setCommand] = useState('bash');
+  const [command, setCommand] = useState('');
 
   const create = async () => {
     if (!name.trim()) {
@@ -42,7 +42,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
     </Pressable>
     <Modal visible={visible} transparent animationType="fade" onRequestClose={() => setVisible(false)}>
       <Pressable style={styles.backdrop} onPress={() => setVisible(false)}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.sheet} onTouchStart={(e) => e.stopPropagation()}>
           <View style={{ paddingTop: insets.top }}>
             <View style={styles.header}>
               <Text style={styles.title}>New Session</Text>
@@ -64,8 +64,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
               <TextInput
                 style={styles.input}
                 value={command}
-                onChangeText={setCommand}
-                placeholder="bash"
+                placeholder="Default shell"
                 placeholderTextColor="#666"
               />
               <Pressable style={styles.create} onPress={create}>
@@ -73,7 +72,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
               </Pressable>
             </View>
           </View>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Pressable>
     </Modal>
   </>;
