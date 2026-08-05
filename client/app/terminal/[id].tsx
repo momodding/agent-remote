@@ -17,7 +17,7 @@ export default function TerminalScreen() {
   const Wrapper = Platform.OS === 'web' ? View : KeyboardAvoidingView;
   const wrapperProps = Platform.OS === 'web'
     ? { style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] }
-    : { behavior: (Platform.OS === 'ios' ? 'padding' : 'height') as const, style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
+    : { behavior: (Platform.OS === 'ios' ? 'padding' : 'height') as 'padding' | 'height', style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
   const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
