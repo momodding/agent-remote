@@ -52,4 +52,6 @@ export type GitStatus = {
   entries: Array<{ code: string; path: string }>;
 };
 
+export type ListShellsResponse = { shells: string[] };
+
 export type ErrorEnvelope = { type: 'error'; code: string; message: string };

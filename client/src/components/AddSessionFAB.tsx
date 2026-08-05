@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AgenticRemoteAPI } from '../lib/api';
 
@@ -14,6 +14,14 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
   const [visible, setVisible] = useState(false);
   const [name, setName] = useState('');
   const [command, setCommand] = useState('');
+  const [shells, setShells] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (visible) {
+      api.shells().then(setShells).catch(() => setShells([]));
+    }
+  }, [visible, api]);
+
 
   const create = async () => {
     if (!name.trim()) {
@@ -41,8 +49,8 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
       <Text style={styles.fabText}>+</Text>
     </Pressable>
     <Modal visible={visible} transparent animationType="fade" onRequestClose={() => setVisible(false)}>
-      <Pressable style={styles.backdrop} onPress={() => setVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.sheet} onTouchStart={(e) => e.stopPropagation()}>
+      <Pressable style={styles.backdrop} onPress={() => setVisible(false)} />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.sheet}>
           <View style={{ paddingTop: insets.top }}>
             <View style={styles.header}>
               <Text style={styles.title}>New Session</Text>
@@ -50,7 +58,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
                 <Text style={styles.cancel}>Cancel</Text>
               </Pressable>
             </View>
-            <View style={styles.form}>
+            <ScrollView style={styles.formScroll} contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
               <Text style={styles.label}>Name</Text>
               <TextInput
                 style={styles.input}
@@ -61,19 +69,33 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
                 autoFocus
               />
               <Text style={styles.label}>Command</Text>
-              <TextInput
-                style={styles.input}
-                value={command}
-                placeholder="Default shell"
-                placeholderTextColor="#666"
-              />
+              <ScrollView style={styles.radioList} nestedScrollEnabled>
+                <Pressable
+                  style={styles.radioRow}
+                  onPress={() => setCommand('')}
+                  accessibilityLabel="Default shell"
+                >
+                  <View style={styles.radioOuter}>{command === '' && <View style={styles.radioInner} />}</View>
+                  <Text style={styles.radioLabel}>Default shell</Text>
+                </Pressable>
+                {shells.map((shell) => (
+                  <Pressable
+                    key={shell}
+                    style={styles.radioRow}
+                    onPress={() => setCommand(shell)}
+                    accessibilityLabel={shell}
+                  >
+                    <View style={styles.radioOuter}>{command === shell && <View style={styles.radioInner} />}</View>
+                    <Text style={styles.radioLabel}>{shell}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
               <Pressable style={styles.create} onPress={create}>
                 <Text style={styles.createText}>Create</Text>
               </Pressable>
-            </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
-      </Pressable>
     </Modal>
   </>;
 }
@@ -104,11 +126,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   backdrop: {
-    flex: 1,
+    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
     backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
   },
   sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '85%',
     backgroundColor: '#181818',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
@@ -131,6 +153,7 @@ const styles = StyleSheet.create({
     color: '#46B8C4',
     fontSize: 16,
   },
+  formScroll: { maxHeight: '100%' },
   form: {
     padding: 16,
     gap: 12,
@@ -148,6 +171,11 @@ const styles = StyleSheet.create({
     color: '#F0F0F0',
     padding: 12,
   },
+  radioList: { maxHeight: 180 },
+  radioRow: { flexDirection: 'row', alignItems: 'center', minHeight: 46, paddingVertical: 8, gap: 12 },
+  radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#46B8C4', alignItems: 'center', justifyContent: 'center' },
+  radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#46B8C4' },
+  radioLabel: { color: '#F0F0F0', fontSize: 16 },
   create: {
     minHeight: 48,
     borderRadius: 8,
