@@ -24,6 +24,7 @@ export default function TerminalScreen() {
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
+  const socket = useRef<SessionSocket | undefined>(undefined);
   const isMultiModeCheck = mode === "multi";
   const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
   // Guards natural-exit and manual-Close from racing each other into a double
