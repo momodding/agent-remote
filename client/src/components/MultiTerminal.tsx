@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Terminal, type TerminalHandle } from './Terminal';
+import Feather from '@expo/vector-icons/Feather';
 import { ShortcutKeyboard } from './ShortcutKeyboard';
 import type { MultiSessionState } from '../lib/multi-session';
 
@@ -43,12 +44,14 @@ export function MultiTerminal({
     <View style={styles.container}>
       <View style={styles.toolbar}>
         <Pressable
-          style={[styles.broadcastButton, isBroadcasting && styles.broadcastActive]}
+          android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
+          style={({ pressed }) => [styles.broadcastButton, isBroadcasting && styles.broadcastActive, pressed && styles.pressed]}
           onPress={onBroadcastToggle}
           accessibilityLabel={isBroadcasting ? 'Disable broadcast' : 'Enable broadcast'}
         >
+          <Feather name="zap" size={14} color={isBroadcasting ? '#0A0A0A' : '#46B8C4'} />
           <Text style={[styles.broadcastText, isBroadcasting && styles.broadcastTextActive]}>
-            {isBroadcasting ? '⚡ Broadcasting' : 'Broadcast Input'}
+            {isBroadcasting ? 'Broadcasting' : 'Broadcast Input'}
           </Text>
         </Pressable>
       </View>
@@ -63,16 +66,20 @@ export function MultiTerminal({
               {isBroadcasting && <Text style={styles.broadcastBadge}>⚡</Text>}
               <View style={styles.paneActions}>
                 <Pressable
+                  android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
+                  style={({ pressed }) => [pressed && styles.pressed]}
                   onPress={() => onMinimize(session.sessionId)}
                   accessibilityLabel={`Minimize ${session.name}`}
                 >
-                  <Text style={styles.paneAction}>−</Text>
+                  <Feather name="minimize-2" size={14} color="#B8B8B8" style={styles.paneIcon} />
                 </Pressable>
                 <Pressable
+                  android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
+                  style={({ pressed }) => [pressed && styles.pressed]}
                   onPress={() => onClose(session.sessionId)}
                   accessibilityLabel={`Close ${session.name}`}
                 >
-                  <Text style={styles.paneClose}>✕</Text>
+                  <Feather name="x" size={14} color="#EF6666" style={styles.paneIcon} />
                 </Pressable>
               </View>
             </View>
@@ -136,8 +143,9 @@ export function MultiTerminal({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
   },
+  pressed: { opacity: 0.6 },
+  paneIcon: { paddingHorizontal: 4 },
   toolbar: {
     flexDirection: 'row',
     padding: 10,

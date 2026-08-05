@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Feather from '@expo/vector-icons/Feather';
 
 type Modifier = 'ctrl' | 'alt';
 type Key = { label: string; data: string };
@@ -54,10 +55,10 @@ export function ShortcutKeyboard({ onInput, bottomInset = 0, onCopy, onPaste, on
       <View style={styles.toolbar}>
         <Pressable style={[styles.modifier, modifier?.kind === 'ctrl' && styles.active]} onPress={() => toggle('ctrl')} onLongPress={() => toggle('ctrl', true)}><Text style={styles.label}>Ctrl{modifier?.kind === 'ctrl' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
         <Pressable style={[styles.modifier, modifier?.kind === 'alt' && styles.active]} onPress={() => toggle('alt')} onLongPress={() => toggle('alt', true)}><Text style={styles.label}>Alt{modifier?.kind === 'alt' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>
-        {onCopy && <Pressable style={styles.modifier} onPress={onCopy}><Text style={styles.label}>Copy</Text></Pressable>}
-        {onPaste && <Pressable style={styles.modifier} onPress={onPaste}><Text style={styles.label}>Paste</Text></Pressable>}
-        {onSelectAll && <Pressable style={styles.modifier} onPress={onSelectAll}><Text style={styles.label}>SelAll</Text></Pressable>}
-        <Pressable style={styles.hide} onPress={() => { onCollapse?.(); setCollapsed(true); }}><Text style={styles.label}>⌄</Text></Pressable>
+        {onCopy && <Pressable accessibilityLabel="Copy" android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.modifier, pressed && styles.pressed]} onPress={onCopy}><Feather name="copy" size={16} color="#F0F0F0" /></Pressable>}
+        {onPaste && <Pressable accessibilityLabel="Paste" android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.modifier, pressed && styles.pressed]} onPress={onPaste}><Feather name="clipboard" size={16} color="#F0F0F0" /></Pressable>}
+        {onSelectAll && <Pressable accessibilityLabel="SelAll" android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.modifier, pressed && styles.pressed]} onPress={onSelectAll}><Feather name="check-square" size={16} color="#F0F0F0" /></Pressable>}
+        <Pressable accessibilityLabel="⌄" android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.hide, pressed && styles.pressed]} onPress={() => { onCollapse?.(); setCollapsed(true); }}><Feather name="chevron-down" size={20} color="#F0F0F0" /></Pressable>
       </View>
       {terminalRows.map((row, index) => (
         <ScrollView key={index} horizontal contentContainerStyle={styles.row} showsHorizontalScrollIndicator={false}>
@@ -80,4 +81,5 @@ const styles = StyleSheet.create({
   hide: { marginLeft: 'auto', minWidth: 48, alignItems: 'center', justifyContent: 'center' },
   show: { borderTopWidth: 1, borderColor: '#262626', padding: 9, backgroundColor: '#181818' },
   label: { color: '#F0F0F0', fontSize: 13, fontWeight: '600' },
+  pressed: { opacity: 0.6 },
 });

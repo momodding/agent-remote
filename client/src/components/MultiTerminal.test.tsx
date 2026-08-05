@@ -1,5 +1,16 @@
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import Feather from '@expo/vector-icons/Feather';
+
+jest.mock('@expo/vector-icons/Feather', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => React.createElement(View, { 'data-testid': 'feather-mock', ...props })
+  };
+});
+
 import { MultiTerminal } from './MultiTerminal';
 import type { MultiSessionState } from '../lib/multi-session';
 
