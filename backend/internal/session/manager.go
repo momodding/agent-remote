@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -472,7 +473,51 @@ func defaultShell() string {
 	if shell := os.Getenv("SHELL"); shell != "" {
 		return shell
 	}
+	if u, err := user.Current(); err == nil && runtime.GOOS != "windows" {
+		if data, err := os.ReadFile("/etc/passwd"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 7 && parts[0] == u.Username {
+					if parts[6] != "" {
+						return parts[6]
+					}
+				}
+			}
+		}
+	}
 	return "/bin/sh"
+}
+
+func AvailableShells() []string {
+	if runtime.GOOS == "windows" {
+		var shells []string
+		for _, candidate := range []string{"cmd.exe", "powershell.exe", "pwsh.exe"} {
+			if _, err := exec.LookPath(candidate); err == nil {
+				shells = append(shells, candidate)
+			}
+		}
+		if len(shells) == 0 {
+			shells = []string{defaultShell()}
+		}
+		return shells
+	}
+	data, err := os.ReadFile("/etc/shells")
+	if err != nil {
+		return []string{defaultShell()}
+	}
+	var shells []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		shells = append(shells, line)
+	}
+	if len(shells) == 0 {
+		// ponytail: /etc/shells missing entries on minimal containers — fall back rather than return empty.
+		return []string{defaultShell()}
+	}
+	return shells
 }
 
 func protocolWait(wait *detect.WaitState) *protocol.WaitState {

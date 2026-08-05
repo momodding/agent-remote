@@ -1,6 +1,8 @@
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, Linking } from 'react-native';
 
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { PairingSheet } from './PairingSheet';
 
 let mockPermission: { granted: boolean; canAskAgain: boolean } | null = null;

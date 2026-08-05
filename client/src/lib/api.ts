@@ -3,6 +3,7 @@ import type {
   ErrorEnvelope,
   FileEntry,
   GitStatus,
+  ListShellsResponse,
   PairingPayload,
   ReadFileResponse,
   SessionSummary,
@@ -52,6 +53,10 @@ export class AgenticRemoteAPI {
 
   async gitStatus(path = ''): Promise<GitStatus> {
     return this.request(`/v1/git/status?path=${encodeURIComponent(path)}`);
+  }
+
+  async shells(): Promise<string[]> {
+    return (await this.request<ListShellsResponse>('/v1/shells')).shells;
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

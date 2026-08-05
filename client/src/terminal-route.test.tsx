@@ -1,6 +1,11 @@
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, type AlertButton } from 'react-native';
 import { router } from 'expo-router';
+
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 import TerminalScreen from '../app/terminal/[id]';
 import type { Connection, ConnectionStore } from './lib/connection';

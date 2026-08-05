@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Connection, ConnectionStore } from '../lib/connection';
@@ -29,7 +29,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
         <View style={styles.header}><Text style={styles.title}>Daemon connections</Text><Pressable accessibilityLabel="Done" onPress={close}><Text style={styles.cancel}>Done</Text></Pressable></View>
         {editing ? (
           <Editor
@@ -65,7 +65,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
             <Pressable accessibilityLabel="Add daemon" style={styles.primary} onPress={add}><Text style={styles.primaryText}>Add daemon</Text></Pressable>
           </>
         )}
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

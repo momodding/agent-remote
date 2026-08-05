@@ -1,4 +1,16 @@
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import Feather from '@expo/vector-icons/Feather';
+
+jest.mock('@expo/vector-icons/Feather', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => React.createElement(View, { 'data-testid': 'feather-mock', ...props })
+  };
+});
+
 import { MultiTerminal } from './MultiTerminal';
 import type { MultiSessionState } from '../lib/multi-session';
 
@@ -65,7 +77,7 @@ describe('MultiTerminal', () => {
     expect(tree!.root.findByProps({ accessibilityLabel: 'Restore Shell 3' })).toBeDefined();
   });
 
-  it('broadcasts input to all visible panes when enabled', () => {
+  it('delegates broadcast routing up and emits only for the originating pane when broadcast enabled', () => {
     const onInput = jest.fn();
     let tree: ReactTestRenderer;
     act(() => {
@@ -87,9 +99,9 @@ describe('MultiTerminal', () => {
     expect(terminals.length).toBe(2); // s1 and s2 visible
 
     act(() => terminals[0].props.onInput('test'));
-    expect(onInput).toHaveBeenCalledTimes(2);
+    // It should ONLY call onInput once for the originating terminal, because the parent screen ([id].tsx) will handle broadcasting it.
+    expect(onInput).toHaveBeenCalledTimes(1);
     expect(onInput).toHaveBeenCalledWith('s1', 'test');
-    expect(onInput).toHaveBeenCalledWith('s2', 'test');
   });
 
   it('sends input to single session when broadcast disabled', () => {

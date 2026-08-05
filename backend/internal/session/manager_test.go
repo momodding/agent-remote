@@ -102,3 +102,15 @@ func TestManagerInvalidDefaultHomeDeterministicError(t *testing.T) {
 		t.Error("expected Create to fail with invalid default home, got nil")
 	}
 }
+
+func TestAvailableShellsNonEmpty(t *testing.T) {
+	shells := AvailableShells()
+	if len(shells) == 0 {
+		t.Fatal("AvailableShells returned empty list")
+	}
+	for i, shell := range shells {
+		if shell == "" {
+			t.Errorf("shell at index %d is empty string", i)
+		}
+	}
+}

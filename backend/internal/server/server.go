@@ -24,6 +24,7 @@ import (
 	fsservice "github.com/agenticremote/agenticremote/backend/internal/fs"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
+	"github.com/agenticremote/agenticremote/backend/internal/session"
 	"github.com/coder/websocket"
 )
 
@@ -64,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/v1/sessions", s.withAuth(s.handleSessions))
+	mux.HandleFunc("/v1/shells", s.withAuth(s.handleShells))
 	mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
 	mux.HandleFunc("/v1/pairing", s.withAuth(s.handlePairingCreate))
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
@@ -200,6 +202,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleShells(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListShellsResponse{Shells: session.AvailableShells()})
 }
 
 func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {

@@ -43,6 +43,30 @@ func TestSessionsRequiresBearer(t *testing.T) {
 	}
 }
 
+func TestHandleShellsRequiresBearerAndReturnsList(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/shells", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/shells", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	var out protocol.ListShellsResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &out); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(out.Shells) == 0 {
+		t.Fatalf("expected shells list to be non-empty")
+	}
+}
+
 func TestSessionCloseRemovesFromList(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "test"})
