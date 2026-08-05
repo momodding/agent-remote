@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Connection, ConnectionStore } from '../lib/connection';
 
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, onDelete, onAdd }: Props) {
+  const insets = useSafeAreaInsets();
   const [editing, setEditing] = useState<Connection | null>(null);
 
   const close = () => { setEditing(null); onDismiss(); };
@@ -27,7 +29,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
         <View style={styles.header}><Text style={styles.title}>Daemon connections</Text><Pressable accessibilityLabel="Done" onPress={close}><Text style={styles.cancel}>Done</Text></Pressable></View>
         {editing ? (
           <Editor

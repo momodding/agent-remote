@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
@@ -11,6 +12,7 @@ type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: Pai
 type Availability = 'checking' | 'available' | 'unavailable';
 
 export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState('phone');
   const [payloadText, setPayloadText] = useState('');
   const [scan, setScan] = useState(false);
@@ -136,7 +138,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
         <View style={styles.header}><Text style={styles.title}>Connect a daemon</Text><Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={styles.cancel}>Cancel</Text></Pressable></View>
         <Text style={styles.hint}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
         <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
