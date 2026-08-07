@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Alert, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Pressable } from 'react-native-gesture-handler';
 import { BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import type { AgenticRemoteAPI } from '../lib/api';
 import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';

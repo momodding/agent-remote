@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Switch, Text, useColorScheme, View } from 'react-native';
+import { Alert, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Pressable, Switch } from 'react-native-gesture-handler';
 import { BottomSheetScrollView, BottomSheetTextInput, BottomSheetView } from '@gorhom/bottom-sheet';
 
 import type { Connection, ConnectionStore } from '../lib/connection';
