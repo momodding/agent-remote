@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Linking, Platform, Pressable, StyleSheet, Switch, Text, useColorScheme, View } from 'react-native';
+import { Alert, Linking, Platform, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Pressable, Switch } from 'react-native-gesture-handler';
 import { BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
