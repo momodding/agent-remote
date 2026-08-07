@@ -1,18 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert, Linking, Platform, Pressable, StyleSheet, Switch, Text, useColorScheme, View } from 'react-native';
+import { BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
 import type { PairingPayload } from '../protocol';
+import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';
 
 type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: PairingPayload, clientName: string, onStage: (message: string) => void) => Promise<void> };
 
 // Camera readiness beyond the OS permission grant: unknown while checking, then available/unavailable.
 type Availability = 'checking' | 'available' | 'unavailable';
 
+type Palette = { text: string; textSecondary: string; border: string; accent: string; warning: string; surface: string };
+
+function usePalette(): Palette {
+  const colorScheme = useColorScheme();
+  return colorScheme === 'dark'
+    ? { text: '#F0F0F0', textSecondary: '#B8B8B8', border: '#3A3A3A', accent: '#264E54', warning: '#D19A2C', surface: '#181818' }
+    : { text: '#1A1A1A', textSecondary: '#5A5A5A', border: '#D0D0D0', accent: '#B7D8DB', warning: '#8A5B10', surface: '#EDEDED' };
+}
+
 export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
-  const insets = useSafeAreaInsets();
+  const palette = usePalette();
+  const sheetRef = useRef<GlassBottomSheetHandle>(null);
   const [name, setName] = useState('phone');
   const [payloadText, setPayloadText] = useState('');
   const [scan, setScan] = useState(false);
@@ -22,6 +33,11 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const [stage, setStage] = useState('');
   const [permission, requestPermission] = useCameraPermissions();
   const scanLock = useRef(false);
+
+  useEffect(() => {
+    if (visible) sheetRef.current?.present();
+    else sheetRef.current?.dismiss();
+  }, [visible]);
 
   useEffect(() => {
     if (!scan || !permission?.granted) return;
@@ -52,7 +68,6 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const dismiss = () => {
     if (!busy) onDismiss();
   };
-
 
   const connect = async (raw: string): Promise<boolean> => {
     try {
@@ -87,12 +102,12 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
 
   const renderCamera = () => {
     if (permission === null) {
-      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-loading">Checking camera permission…</Text></View>;
+      return <View style={[styles.camera, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="camera-loading">Checking camera permission…</Text></View>;
     }
     if (!permission.granted && permission.canAskAgain) {
       return (
-        <View style={styles.camera}>
-          <Pressable style={styles.primary} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
+        <View style={[styles.camera, { backgroundColor: palette.surface }]}>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
             <Text style={styles.primaryText}>Allow camera</Text>
           </Pressable>
         </View>
@@ -100,32 +115,32 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     }
     if (!permission.granted) {
       return (
-        <View style={styles.camera}>
-          <Text style={styles.cameraStatus}>Camera access was denied. Enable it in system settings to scan.</Text>
-          <Pressable style={styles.primary} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
+        <View style={[styles.camera, { backgroundColor: palette.surface }]}>
+          <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera access was denied. Enable it in system settings to scan.</Text>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
             <Text style={styles.primaryText}>Open camera settings</Text>
           </Pressable>
         </View>
       );
     }
     if (availability === 'checking') {
-      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-checking">Checking camera availability…</Text></View>;
+      return <View style={[styles.camera, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="camera-checking">Checking camera availability…</Text></View>;
     }
     if (availability === 'unavailable') {
       return (
-        <View style={styles.camera}>
-          <Text style={styles.cameraStatus}>Camera is unavailable right now.</Text>
-          <Pressable style={styles.primary} accessibilityLabel="retry-camera" onPress={openScan}>
+        <View style={[styles.camera, { backgroundColor: palette.surface }]}>
+          <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera is unavailable right now.</Text>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
             <Text style={styles.primaryText}>Retry camera</Text>
           </Pressable>
         </View>
       );
     }
     if (busy) {
-      return <View style={styles.camera}><Text style={styles.cameraStatus} accessibilityLabel="camera-connecting">{stage || 'Connecting…'}</Text></View>;
+      return <View style={[styles.camera, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="camera-connecting">{stage || 'Connecting…'}</Text></View>;
     }
     return (
-      <View style={styles.camera}>
+      <View style={[styles.camera, { backgroundColor: palette.surface }]}>
         <CameraView
           style={StyleSheet.absoluteFill}
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
@@ -137,47 +152,48 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   };
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.sheet, { paddingTop: Math.max(insets.top, 20) }]}>
-        <View style={styles.header}><Text style={styles.title}>Connect a daemon</Text><Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={styles.cancel}>Cancel</Text></Pressable></View>
-        <Text style={styles.hint}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
-        <View style={styles.row}><Text style={styles.label}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
-        <Text style={styles.warning}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
+    <GlassBottomSheet title="Connect a daemon" onDismiss={dismiss} ref={sheetRef}>
+      <BottomSheetScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
+        <View style={styles.header}>
+          <Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></Pressable>
+        </View>
+        <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
+        <BottomSheetTextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
+        <View style={styles.row}><Text style={[styles.label, { color: palette.text }]}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
+        <Text style={[styles.warning, { color: palette.warning }]}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
         {scan ? (
           <>
             {renderCamera()}
-            <Pressable style={styles.secondary} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={styles.primaryText}>Use pasted JSON</Text></Pressable>
+            <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></Pressable>
           </>
         ) : (
           <>
-            <Pressable style={styles.secondary} disabled={busy} onPress={openScan}><Text style={styles.primaryText}>Scan QR code</Text></Pressable>
-            <TextInput style={[styles.input, styles.payload]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
+            <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></Pressable>
+            <BottomSheetTextInput style={[styles.input, styles.payload, { color: palette.text, borderColor: palette.border }]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
             {busy
-              ? <View style={styles.status}><Text style={styles.cameraStatus} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
-              : <Pressable style={styles.primary} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
+              ? <View style={[styles.status, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
+              : <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
           </>
         )}
-      </KeyboardAvoidingView>
-    </Modal>
+      </BottomSheetScrollView>
+    </GlassBottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  sheet: { flex: 1, gap: 14, padding: 20, backgroundColor: '#0A0A0A' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  title: { color: '#F0F0F0', fontSize: 22, fontWeight: '700' },
-  cancel: { color: '#46B8C4', fontSize: 16 },
-  hint: { color: '#B8B8B8', lineHeight: 20 },
-  input: { minHeight: 48, borderWidth: 1, borderColor: '#3A3A3A', borderRadius: 8, color: '#F0F0F0', padding: 12 },
+  form: { paddingHorizontal: 20, paddingBottom: 24, gap: 14 },
+  header: { flexDirection: 'row', justifyContent: 'flex-end' },
+  cancel: { fontSize: 16 },
+  hint: { lineHeight: 20 },
+  input: { minHeight: 48, borderWidth: 1, borderRadius: 8, padding: 12 },
   payload: { minHeight: 140, textAlignVertical: 'top', fontFamily: 'monospace' },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  label: { color: '#F0F0F0', fontWeight: '600' },
-  warning: { color: '#D19A2C', lineHeight: 19 },
-  primary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#D19A2C' },
-  secondary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#264E54' },
+  label: { fontWeight: '600' },
+  warning: { lineHeight: 19 },
+  primary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8 },
+  secondary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8 },
   primaryText: { color: '#0A0A0A', fontWeight: '700' },
-  camera: { minHeight: 320, overflow: 'hidden', borderRadius: 10, backgroundColor: '#181818', justifyContent: 'center', alignItems: 'center', gap: 12, padding: 20 },
-  status: { minHeight: 48, borderRadius: 8, backgroundColor: '#181818', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
-  cameraStatus: { color: '#B8B8B8', textAlign: 'center', lineHeight: 20 },
+  camera: { minHeight: 320, overflow: 'hidden', borderRadius: 10, justifyContent: 'center', alignItems: 'center', gap: 12, padding: 20 },
+  status: { minHeight: 48, borderRadius: 8, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
+  cameraStatus: { textAlign: 'center', lineHeight: 20 },
 });
