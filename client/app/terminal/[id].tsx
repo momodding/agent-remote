@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, StyleSheet, Text, View } from 'react-native';
+import { Pressable } from 'react-native-gesture-handler';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';

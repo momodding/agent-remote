@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, FlatList, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { Pressable } from 'react-native-gesture-handler';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -162,7 +163,7 @@ function SessionCard({ session, api, connectionEndpoint, onClose }: { session: S
     <Text style={styles.command} numberOfLines={1}>{session.command}</Text>
     <Text style={styles.preview} numberOfLines={5}>{session.preview.join('\n') || 'No output yet'}</Text>
     {session.waitState && <Text style={styles.wait}>{session.waitState.label}</Text>}
-    <View style={styles.cardActions}><Pressable style={styles.open} onPress={open}><Text style={styles.openText}>Open</Text></Pressable><Pressable accessibilityLabel={`Close ${session.name}`} style={styles.close} onPress={(event) => { event.stopPropagation(); void api.closeSession(session.id).then(onClose); }}><Text style={styles.closeText}>Close</Text></Pressable></View>
+    <View style={styles.cardActions}><Pressable style={styles.open} onPress={open}><Text style={styles.openText}>Open</Text></Pressable><Pressable accessibilityLabel={`Close ${session.name}`} style={styles.close} onPress={() => { void api.closeSession(session.id).then(onClose); }}><Text style={styles.closeText}>Close</Text></Pressable></View>
   </Pressable>;
 }
 
