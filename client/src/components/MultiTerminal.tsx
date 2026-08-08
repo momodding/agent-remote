@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable } from 'react-native-gesture-handler';
 import { Terminal, type TerminalHandle } from './Terminal';
 import Feather from '@expo/vector-icons/Feather';
 import { ShortcutKeyboard } from './ShortcutKeyboard';
