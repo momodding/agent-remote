@@ -5,7 +5,7 @@
 ## Context
 Bug report (Moto G45): (1) buttons not clickable, (2) no padding on Android.
 
-(1) already fixed, commit `202e9b8` (`android-sheet-touch-fix`): Pressable/Switch → `react-native-gesture-handler` variants in `PairingSheet.tsx`, `ConnectionSheet.tsx`, `AddSessionFAB.tsx`. No action needed.
+(1) partially fixed by commit `202e9b8` (`android-sheet-touch-fix`): Pressable/Switch → `react-native-gesture-handler` variants in `PairingSheet.tsx`, `ConnectionSheet.tsx`, `AddSessionFAB.tsx` only. User reported still-broken touch after that fix — root cause: `_layout.tsx` wraps the whole app in `GestureHandlerRootView`, and with `newArchEnabled: true` that makes RNGH the app-wide gesture arbiter. Any screen still using plain `react-native` `Pressable` loses touch arbitration to RNGH, not just the 3 already-fixed components. 5 more files had plain RN `Pressable`: `ShortcutKeyboard.tsx`, `MultiTerminal.tsx`, `app/terminal/[id].tsx`, `app/index.tsx`, `app/files.tsx` — swapped all to the RNGH import (commit `7f1a7b0`). Also dropped `event.stopPropagation()` in `SessionCard`'s Close button (`app/index.tsx`): RNGH's `PressableEvent` has no `stopPropagation`, and isn't needed — RNGH gesture exclusivity already gives the inner Pressable priority over the outer card Pressable. Updated `MultiTerminal.test.tsx`'s manual mock to mock `Pressable` from `react-native-gesture-handler` instead of `react-native`, matching the new import source.
 
 (2) root cause: `useSafeAreaInsets()` (used in `client/app/index.tsx:145-148` and `client/app/terminal/[id].tsx`) resolves top/bottom/left/right to 0 on-device, so content sits flush under status bar / behind nav bar.
 
@@ -28,5 +28,6 @@ Installed: `react-native@0.86.0`, `expo@57.0.7`, `react-native-safe-area-context
 - No adb/emulator in this environment — cannot reproduce on-device here.
 - Run `make client-build-web` (or equivalent lint/typecheck) to confirm the bump doesn't break the build.
 - User rebuilds dev client / EAS build and confirms on the Moto G45 that top/bottom/left/right padding now renders.
+- Re-ran full suite after touch fix: `bun run typecheck` clean, `bun run test` 113/113 passed (12/12 suites, including `MultiTerminal.test.tsx` after mock fix).
 
 <!-- ponytail: ceiling — if 5.8.1 still reports 0 insets on that exact device/OS build, escalate by filing against upstream `react-native-safe-area-context` (RN 0.86 + 5.8.1 repro), not by adding a config-plugin path; that surface is already ruled out. -->
