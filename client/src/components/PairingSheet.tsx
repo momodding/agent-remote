@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Platform, StyleSheet, Text, useColorScheme, View } from 'react-native';
-import { Pressable, Switch } from 'react-native-gesture-handler';
-import { BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
+import { Switch } from 'react-native-gesture-handler';
+import { BottomSheetScrollView, BottomSheetTextInput, TouchableOpacity } from '@gorhom/bottom-sheet';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
@@ -108,9 +108,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     if (!permission.granted && permission.canAskAgain) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
-          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
+          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
             <Text style={styles.primaryText}>Allow camera</Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -118,9 +118,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera access was denied. Enable it in system settings to scan.</Text>
-          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
+          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
             <Text style={styles.primaryText}>Open camera settings</Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -131,9 +131,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera is unavailable right now.</Text>
-          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
+          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
             <Text style={styles.primaryText}>Retry camera</Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -156,7 +156,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     <GlassBottomSheet title="Connect a daemon" onDismiss={dismiss} ref={sheetRef}>
       <BottomSheetScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></Pressable>
+          <TouchableOpacity accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></TouchableOpacity>
         </View>
         <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
         <BottomSheetTextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
@@ -165,15 +165,15 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
         {scan ? (
           <>
             {renderCamera()}
-            <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></Pressable>
+            <TouchableOpacity style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></TouchableOpacity>
           </>
         ) : (
           <>
-            <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></Pressable>
+            <TouchableOpacity style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></TouchableOpacity>
             <BottomSheetTextInput style={[styles.input, styles.payload, { color: palette.text, borderColor: palette.border }]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
             {busy
               ? <View style={[styles.status, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
-              : <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
+              : <TouchableOpacity accessibilityLabel="Connect" style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></TouchableOpacity>}
           </>
         )}
       </BottomSheetScrollView>

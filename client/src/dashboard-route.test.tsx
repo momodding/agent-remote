@@ -1,4 +1,4 @@
-jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock("react-native-safe-area-context", () => ({ ...jest.requireActual("react-native-safe-area-context"), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, type AlertButton, TextInput } from 'react-native';
 import { router } from 'expo-router';
@@ -116,6 +116,18 @@ beforeEach(() => {
     token: 'renewed-token',
     clientName: 'renewed-client',
   } satisfies PairedConnection);
+});
+
+describe('dashboard empty state', () => {
+  it('opens the pairing sheet when no daemon is saved yet', async () => {
+    mockLoadConnections.mockResolvedValue({ connections: [], selectedEndpoint: null });
+    const tree = await renderDashboard();
+
+    expect(mockPairingProps!.visible).toBe(false);
+    act(() => actionFor(tree, 'Connect daemon')());
+    expect(mockPairingProps!.visible).toBe(true);
+    act(() => tree.unmount());
+  });
 });
 
 afterEach(() => {

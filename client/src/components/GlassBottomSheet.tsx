@@ -38,7 +38,9 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
     <BottomSheetModal
       ref={sheetRef}
       enableDynamicSizing
-      maxDynamicContentSize={screenHeight - insets.top - 24}
+      topInset={insets.top}
+      bottomInset={insets.bottom}
+      maxDynamicContentSize={screenHeight - insets.top - insets.bottom - 24}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
