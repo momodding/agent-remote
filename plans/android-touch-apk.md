@@ -66,3 +66,16 @@ Not completed (blocked, not skipped):
 - `adb install`/`pm clear`/launch on a real device.
 - `uiautomator` tap-sequence proof (`Connect daemon` → `Connect`/`cancel-pairing` → `Scan QR code`).
 - Screenshot + hierarchy-bounds check against status/navigation bars.
+
+## Result (native pairing modal revision)
+User reported the first-page `Connect daemon` control still appeared inert with the prior APK. JS tracing showed the RN `Pressable` handler updates `pairingOpen`, but the dashboard test mocked `PairingSheet` to `null`, so it never exercised `BottomSheetModal.present()`. The first pairing surface now uses React Native's native `Modal`, `Pressable`, `ScrollView`, `TextInput`, and `Switch`, removing Reanimated, portal, and gesture-handler presentation from the only path needed to leave the first page. Existing `@gorhom/bottom-sheet` components remain unchanged for post-pairing flows.
+
+Observed:
+- `bun run typecheck` exits zero.
+- `bunx jest src/dashboard-route.test.tsx --runInBand`: 8/8 passing, exit zero.
+- `bunx jest src/components/PairingSheet.test.tsx --runInBand`: 11/11 passing, exit zero.
+- Required full command `bun run test -- --runInBand` reports 12/12 suites and 114/114 tests passing, but exits 1 because `jest-expo`'s lazy `fetch` getter asynchronously logs `ExpoModulesCoreJSLogger` after tests finish. This remains unresolved; no `--forceExit` result is treated as proof.
+- Fresh final APK: `builds/client-android.apk`, timestamp `2026-08-10 06:50:18 +0700`, package `com.paperplain.agenticremote`, `versionCode='7'`, `targetSdkVersion='36'`, SHA-256 `50de72d176b317c2b772e2f9b1a1bf530c63503568863985a63c579a2723f377`.
+
+Still blocked:
+- No device appears in `adb devices -l`; install, `uiautomator` transition proof, and system-bar bounds verification remain incomplete.

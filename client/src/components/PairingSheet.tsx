@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Linking, Platform, StyleSheet, Text, useColorScheme, View } from 'react-native';
-import { Switch } from 'react-native-gesture-handler';
-import { BottomSheetScrollView, BottomSheetTextInput, TouchableOpacity } from '@gorhom/bottom-sheet';
+import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useColorScheme, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { parsePairingPayload } from '../lib/auth';
 import type { PairingPayload } from '../protocol';
-import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';
 
 type Props = { visible: boolean; onDismiss: () => void; onConnect: (payload: PairingPayload, clientName: string, onStage: (message: string) => void) => Promise<void> };
 
@@ -24,7 +22,7 @@ function usePalette(): Palette {
 
 export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const palette = usePalette();
-  const sheetRef = useRef<GlassBottomSheetHandle>(null);
+  const wasVisible = useRef(false);
   const [name, setName] = useState('phone');
   const [payloadText, setPayloadText] = useState('');
   const [scan, setScan] = useState(false);
@@ -36,8 +34,12 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   const scanLock = useRef(false);
 
   useEffect(() => {
-    if (visible) sheetRef.current?.present();
-    else sheetRef.current?.dismiss();
+    if (wasVisible.current && !visible) {
+      setScan(false);
+      setAvailability('checking');
+      scanLock.current = false;
+    }
+    wasVisible.current = visible;
   }, [visible]);
 
   useEffect(() => {
@@ -51,9 +53,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     return () => { cancelled = true; };
   }, [scan, permission?.granted]);
 
-  useEffect(() => {
-    if (!visible) { setScan(false); setAvailability('checking'); scanLock.current = false; }
-  }, [visible]);
+  
 
   const openScan = () => {
     if (busy) return;
@@ -108,9 +108,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
     if (!permission.granted && permission.canAskAgain) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
-          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
             <Text style={styles.primaryText}>Allow camera</Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
       );
     }
@@ -118,9 +118,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera access was denied. Enable it in system settings to scan.</Text>
-          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
             <Text style={styles.primaryText}>Open camera settings</Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
       );
     }
@@ -131,9 +131,9 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera is unavailable right now.</Text>
-          <TouchableOpacity style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
+          <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
             <Text style={styles.primaryText}>Retry camera</Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
       );
     }
@@ -153,37 +153,44 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   };
 
   return (
-    <GlassBottomSheet title="Connect a daemon" onDismiss={dismiss} ref={sheetRef}>
-      <BottomSheetScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-        <View style={styles.header}>
-          <TouchableOpacity accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></TouchableOpacity>
-        </View>
-        <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
-        <BottomSheetTextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
-        <View style={styles.row}><Text style={[styles.label, { color: palette.text }]}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
-        <Text style={[styles.warning, { color: palette.warning }]}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
-        {scan ? (
-          <>
-            {renderCamera()}
-            <TouchableOpacity style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <TouchableOpacity style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></TouchableOpacity>
-            <BottomSheetTextInput style={[styles.input, styles.payload, { color: palette.text, borderColor: palette.border }]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
-            {busy
-              ? <View style={[styles.status, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
-              : <TouchableOpacity accessibilityLabel="Connect" style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></TouchableOpacity>}
-          </>
-        )}
-      </BottomSheetScrollView>
-    </GlassBottomSheet>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
+      <SafeAreaView style={[styles.sheet, { backgroundColor: palette.surface }]}>
+        <KeyboardAvoidingView style={styles.sheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
+            <View style={styles.titleRow}>
+              <Text style={[styles.title, { color: palette.text }]}>Connect a daemon</Text>
+              <Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></Pressable>
+            </View>
+            <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
+            <TextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
+            <View style={styles.row}><Text style={[styles.label, { color: palette.text }]}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
+            <Text style={[styles.warning, { color: palette.warning }]}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
+            {scan ? (
+              <>
+                {renderCamera()}
+                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></Pressable>
+                <TextInput style={[styles.input, styles.payload, { color: palette.text, borderColor: palette.border }]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
+                {busy
+                  ? <View style={[styles.status, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
+                  : <Pressable accessibilityLabel="Connect" style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
+              </>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  form: { paddingHorizontal: 20, paddingBottom: 24, gap: 14 },
-  header: { flexDirection: 'row', justifyContent: 'flex-end' },
+  sheet: { flex: 1 },
+  form: { flexGrow: 1, padding: 20, gap: 14 },
+  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  title: { fontSize: 20, fontWeight: '700' },
   cancel: { fontSize: 16 },
   hint: { lineHeight: 20 },
   input: { minHeight: 48, borderWidth: 1, borderRadius: 8, padding: 12 },
