@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, StyleSheet, Text, useColorScheme, View } from 'react-native';
-import { Pressable } from 'react-native-gesture-handler';
-import { BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
+import { Alert, Pressable, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { BottomSheetScrollView, BottomSheetTextInput, TouchableOpacity } from '@gorhom/bottom-sheet';
 import type { AgenticRemoteAPI } from '../lib/api';
 import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';
 
@@ -9,9 +8,10 @@ type Props = {
   api: AgenticRemoteAPI;
   onAdd: (sessionId: string, name: string) => void;
   disabled: boolean;
+  bottomInset: number;
 };
 
-export function AddSessionFAB({ api, onAdd, disabled }: Props) {
+export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
   const colorScheme = useColorScheme();
   const palette = colorScheme === 'dark'
     ? { text: '#F0F0F0', border: '#3A3A3A', accent: '#46B8C4' }
@@ -46,7 +46,7 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
 
   return <>
     <Pressable
-      style={[styles.fab, disabled && styles.fabDisabled]}
+      style={[styles.fab, disabled && styles.fabDisabled, { bottom: 20 + bottomInset }]}
       onPress={() => { setVisible(true); sheetRef.current?.present(); }}
       disabled={disabled}
       accessibilityLabel="Add session"
@@ -66,29 +66,31 @@ export function AddSessionFAB({ api, onAdd, disabled }: Props) {
         />
         <Text style={[styles.label, { color: palette.text }]}>Command</Text>
         <View style={styles.radioList}>
-          <Pressable
+          <TouchableOpacity
             style={styles.radioRow}
             onPress={() => setCommand('')}
             accessibilityLabel="Default shell"
+            activeOpacity={0.7}
           >
             <View style={[styles.radioOuter, { borderColor: palette.accent }]}>{command === '' && <View style={[styles.radioInner, { backgroundColor: palette.accent }]} />}</View>
             <Text style={[styles.radioLabel, { color: palette.text }]}>Default shell</Text>
-          </Pressable>
+          </TouchableOpacity>
           {shells.map((shell) => (
-            <Pressable
+            <TouchableOpacity
               key={shell}
               style={styles.radioRow}
               onPress={() => setCommand(shell)}
               accessibilityLabel={shell}
+              activeOpacity={0.7}
             >
               <View style={[styles.radioOuter, { borderColor: palette.accent }]}>{command === shell && <View style={[styles.radioInner, { backgroundColor: palette.accent }]} />}</View>
               <Text style={[styles.radioLabel, { color: palette.text }]}>{shell}</Text>
-            </Pressable>
+            </TouchableOpacity>
           ))}
         </View>
-        <Pressable style={[styles.create, { backgroundColor: palette.accent }]} onPress={create}>
+        <TouchableOpacity style={[styles.create, { backgroundColor: palette.accent }]} onPress={create} accessibilityLabel="Create" activeOpacity={0.7}>
           <Text style={styles.createText}>Create</Text>
-        </Pressable>
+        </TouchableOpacity>
       </BottomSheetScrollView>
     </GlassBottomSheet>
   </>;

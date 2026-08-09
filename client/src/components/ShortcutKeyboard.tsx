@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Keyboard, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Pressable } from 'react-native-gesture-handler';
+import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Feather from '@expo/vector-icons/Feather';
 
 type Modifier = 'ctrl' | 'alt';

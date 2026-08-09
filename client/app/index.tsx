@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { Pressable } from 'react-native-gesture-handler';
+import { ActivityIndicator, Alert, AppState, FlatList, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AgenticRemoteAPI, APIError, authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, selectConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
@@ -13,7 +12,6 @@ import { ConnectionSheet } from '../src/components/ConnectionSheet';
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
 export default function Dashboard() {
-  const insets = useSafeAreaInsets();
   const [store, setStore] = useState<ConnectionStore>({ connections: [], selectedEndpoint: null });
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [query, setQuery] = useState('');
@@ -143,17 +141,17 @@ export default function Dashboard() {
   const visibleSessions = sessions
     .filter((session) => session.state !== 'exited')
     .filter((session) => `${session.name} ${session.command}`.toLowerCase().includes(query.trim().toLowerCase()));
-  if (loading) return <View style={[styles.loading, { paddingTop: insets.top }]}><ActivityIndicator color="#D19A2C" /></View>;
-  if (!connection) return <><View style={[styles.empty, { paddingTop: insets.top, paddingBottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right }]}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable style={styles.primary} onPress={() => setPairingOpen(true)}><Text style={styles.primaryText}>Connect daemon</Text></Pressable></View><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
+  if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
+  if (!connection) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
 
-  return <View style={[styles.screen, { paddingTop: insets.top, paddingBottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right }]}>
+  return <SafeAreaView style={styles.screen}>
   <View style={styles.topbar}><View><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.endpoint}>{new URL(connection.endpoint).host}</Text></View><View style={styles.actions}><Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}><Text style={styles.actionText}>Refresh</Text></Pressable><Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { connectionEndpoint: connection.endpoint } })}><Text style={styles.actionText}>Files</Text></Pressable><Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}><Text style={styles.actionText}>Daemons</Text></Pressable></View></View>
   <View style={styles.controls}><TextInput style={styles.search} value={query} onChangeText={setQuery} placeholder="Search sessions" placeholderTextColor="#888" /><View style={styles.createButtons}><Pressable accessibilityLabel="New shell" style={styles.primary} onPress={() => void create()}><Text style={styles.primaryText}>New shell</Text></Pressable><Pressable accessibilityLabel="New multi-session window" style={styles.secondary} onPress={() => void createMulti()}><Text style={styles.secondaryText}>Multi</Text></Pressable></View></View>
     <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} connectionEndpoint={connection.endpoint} onClose={() => void refresh()} /> : null} />
     {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
     <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
     <ConnectionSheet visible={daemonsOpen} store={store} onDismiss={() => setDaemonsOpen(false)} onSelect={selectDaemon} onSave={saveEdit} onDelete={removeDaemon} onAdd={addDaemon} />
-  </View>;
+  </SafeAreaView>;
 }
 
 function SessionCard({ session, api, connectionEndpoint, onClose }: { session: SessionSummary; api: AgenticRemoteAPI; connectionEndpoint: string; onClose: () => void }) {

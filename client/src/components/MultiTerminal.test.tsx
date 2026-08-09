@@ -26,12 +26,9 @@ jest.mock('react-native', () => ({
   View: ({ children }: { children?: React.ReactNode }) => children,
   Text: ({ children }: { children?: React.ReactNode }) => children,
   ScrollView: ({ children }: { children?: React.ReactNode }) => children,
+  Pressable: ({ children }: { children?: React.ReactNode }) => children,
   Platform: { OS: 'web', select: <T,>(specifics: { web?: T; default?: T }) => specifics.web ?? specifics.default },
   StyleSheet: { create: <T,>(styles: T) => styles },
-}));
-
-jest.mock('react-native-gesture-handler', () => ({
-  Pressable: ({ children }: { children?: React.ReactNode }) => children,
 }));
 
 describe('MultiTerminal', () => {

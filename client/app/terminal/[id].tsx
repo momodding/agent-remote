@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, StyleSheet, Text, View } from 'react-native';
-import { Pressable } from 'react-native-gesture-handler';
+import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 
 
@@ -17,13 +16,13 @@ import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput,
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
-  const Wrapper = View;
+  const Wrapper = SafeAreaView;
   const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
-  const wrapperProps = { style: [styles.screen, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }] };
+  const wrapperProps = { style: styles.screen, edges: ['top', 'left', 'right'] as const };
 
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
@@ -233,11 +232,13 @@ export default function TerminalScreen() {
             isBroadcasting={isBroadcasting}
             onBroadcastToggle={() => setIsBroadcasting((prev) => !prev)}
             platformMax={platformMax}
+            bottomInset={insets.bottom}
           />
           <AddSessionFAB
             api={new AgenticRemoteAPI(connection)}
             onAdd={handleAddSession}
             disabled={Object.keys(multiSessions).length >= platformMax}
+            bottomInset={insets.bottom}
           />
         </>
       ) : (
