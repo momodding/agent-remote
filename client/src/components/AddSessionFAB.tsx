@@ -44,11 +44,12 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
       Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error');
     }
   };
-
   return <>
-    <Pressable
-      style={[styles.fab, disabled && styles.fabDisabled, { bottom: 20 + bottomInset }]}
-      onPress={() => { setVisible(true); sheetRef.current?.present(); }}
+    <View style={[styles.fab, disabled && styles.fabDisabled, { bottom: 16 + bottomInset }]}>
+      <Pressable accessibilityLabel="+" style={styles.fabBtn} disabled={disabled} onPress={() => setVisible(true)}>
+        <Feather name="plus" size={24} color={disabled ? '#888' : '#0A0A0A'} />
+      </Pressable>
+    </View>
       disabled={disabled}
       accessibilityLabel="Add session"
     >
@@ -78,16 +79,16 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
           </TouchableOpacity>
           {shells.map((shell) => (
             <TouchableOpacity
-              key={shell}
-              style={styles.radioRow}
-              onPress={() => setCommand(shell)}
-              accessibilityLabel={shell}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.radioOuter, { borderColor: palette.accent }]}>{command === shell && <View style={[styles.radioInner, { backgroundColor: palette.accent }]} />}</View>
-              <Text style={[styles.radioLabel, { color: palette.text }]}>{shell}</Text>
-            </TouchableOpacity>
-          ))}
+          <TouchableOpacity
+            accessibilityLabel="Create"
+            style={[styles.create, disabled && styles.fabDisabled]}
+            disabled={disabled}
+            onPress={() => void create()}
+          >
+            <Feather name="check" size={24} color={disabled ? '#888' : '#0A0A0A'} />
+          </TouchableOpacity>
+        </BottomSheetScrollView>
+      </GlassBottomSheet>
         </View>
         <TouchableOpacity style={[styles.create, { backgroundColor: palette.accent }]} onPress={create} accessibilityLabel="Create" activeOpacity={0.7}>
           <Feather name="check" size={22} color="#0A0A0A" />
@@ -100,10 +101,20 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
 const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
-    right: 20,
-    bottom: 20,
+    right: 16,
     width: 56,
     height: 56,
+    borderRadius: 28,
+    backgroundColor: '#D19A2C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  fabBtn: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center' },
     borderRadius: 28,
     backgroundColor: '#46B8C4',
     alignItems: 'center',
