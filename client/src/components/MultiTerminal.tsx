@@ -58,6 +58,7 @@ function Draggable({
 
   const reset = () => {
     'worklet';
+    currentSide.value = null;
     translateX.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
     translateY.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
     scale.value = reducedMotion ? 1 : withTiming(1, { duration: 180 });
@@ -85,7 +86,6 @@ function Draggable({
         runOnJS(onPlace)(event.absoluteX < rectX.value + rectWidth.value / 2 ? 'left' : 'right');
       }
       reset();
-      runOnJS(onDragState)(false, null);
     })
     .onFinalize(() => {
       reset();
@@ -189,8 +189,8 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
         </View>
       </Draggable>)}
       {dragging && <View pointerEvents="none" style={styles.dropZones}>
-        <View style={[styles.dropZone, dropSide === 'left' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Left</Text></View>
-        <View style={[styles.dropZone, dropSide === 'right' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Right</Text></View>
+        <View testID="drop-zone-left" style={[styles.dropZone, dropSide === 'left' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Left</Text></View>
+        <View testID="drop-zone-right" style={[styles.dropZone, dropSide === 'right' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Right</Text></View>
       </View>}
     </View>
     <ShortcutKeyboard
