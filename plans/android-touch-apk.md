@@ -81,7 +81,7 @@ HTTPS-only correction:
 - Removed Android cleartext manifest opt-in and all automatic HTTPS→HTTP / WSS→WS pairing downgrade behavior.
 - Pairing and saved connections now require HTTPS; Android platform TLS trust remains mandatory even when `skipFingerprintVerification` is set.
 - `bun run typecheck` exits zero; `bun run test -- --runInBand`: 12/12 suites and 82/82 tests passing, exit zero.
-- Rebuilt final APK: `builds/client-android.apk`, timestamp `2026-08-10 11:39:30 +0700`, size `51606110`, package `com.paperplain.agenticremote`, `versionCode='7'`, `versionName='1.0.0'`, `minSdkVersion='24'`, `targetSdkVersion='36'`, SHA-256 `30ae94d2392d17083a3c36383243f551333e33326ee4304eb13eeb9e5375a45e`.
+- Rebuilt final APK: `builds/client-android.apk`, timestamp `2026-08-10 11:47:34 +0700`, size `51606118`, package `com.paperplain.agenticremote`, `versionCode='8'`, `versionName='1.0.0'`, `minSdkVersion='24'`, `targetSdkVersion='36'`, SHA-256 `eb0e33736051be3220600c6594f667822fb54a88d1ff234153ed300369d2125c`.
 
 Still blocked:
 - No device appears in `adb devices -l`; install, `uiautomator` transition proof, and system-bar bounds verification remain incomplete.
