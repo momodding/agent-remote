@@ -10,7 +10,7 @@ const first: Connection = {
   skipFingerprintVerification: true, token: 'first-token', clientName: 'test-client',
 };
 const second: Connection = {
-  name: 'Backup daemon', endpoint: 'http://127.0.0.1:8766', fingerprint: '',
+  name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', fingerprint: '',
   skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
 const store: ConnectionStore = { connections: [first, second], selectedEndpoint: first.endpoint };

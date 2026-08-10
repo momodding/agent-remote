@@ -31,7 +31,7 @@ function normalizeEndpoint(value: unknown): string {
   } catch {
     throw new Error('Endpoint must be a valid URL');
   }
-  if (!['http:', 'https:'].includes(url.protocol) || !url.host) throw new Error('Endpoint must use http or https and include a host');
+  if (url.protocol !== 'https:' || !url.host) throw new Error('Endpoint must use https and include a host');
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Endpoint cannot include credentials, a path, query, or fragment');
   return url.origin;
 }

@@ -74,8 +74,14 @@ Observed:
 - `bun run typecheck` exits zero.
 - `bunx jest src/dashboard-route.test.tsx --runInBand`: 8/8 passing, exit zero.
 - `bunx jest src/components/PairingSheet.test.tsx --runInBand`: 11/11 passing, exit zero.
-- Required full command `bun run test -- --runInBand` reports 12/12 suites and 114/114 tests passing, but exits 1 because `jest-expo`'s lazy `fetch` getter asynchronously logs `ExpoModulesCoreJSLogger` after tests finish. This remains unresolved; no `--forceExit` result is treated as proof.
-- Fresh final APK: `builds/client-android.apk`, timestamp `2026-08-10 06:50:18 +0700`, package `com.paperplain.agenticremote`, `versionCode='7'`, `targetSdkVersion='36'`, SHA-256 `50de72d176b317c2b772e2f9b1a1bf530c63503568863985a63c579a2723f377`.
+- Required full command `bun run test -- --runInBand`: 12/12 suites and 114/114 tests passing, exit zero. Jest setup installs a stable mocked `fetch` after `jest-expo` setup, preventing Expo's lazy native fetch getter from loading after suite teardown.
+- Superseded pre-HTTPS-policy APK: SHA-256 `50de72d176b317c2b772e2f9b1a1bf530c63503568863985a63c579a2723f377`.
+
+HTTPS-only correction:
+- Removed Android cleartext manifest opt-in and all automatic HTTPS→HTTP / WSS→WS pairing downgrade behavior.
+- Pairing and saved connections now require HTTPS; Android platform TLS trust remains mandatory even when `skipFingerprintVerification` is set.
+- `bun run typecheck` exits zero; `bun run test -- --runInBand`: 12/12 suites and 82/82 tests passing, exit zero.
+- Rebuilt final APK: `builds/client-android.apk`, timestamp `2026-08-10 11:39:30 +0700`, size `51606110`, package `com.paperplain.agenticremote`, `versionCode='7'`, `versionName='1.0.0'`, `minSdkVersion='24'`, `targetSdkVersion='36'`, SHA-256 `30ae94d2392d17083a3c36383243f551333e33326ee4304eb13eeb9e5375a45e`.
 
 Still blocked:
 - No device appears in `adb devices -l`; install, `uiautomator` transition proof, and system-bar bounds verification remain incomplete.

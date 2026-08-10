@@ -33,14 +33,7 @@
       "expo-router",
       "expo-camera",
       "expo-secure-store",
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesCleartextTraffic": true
-          }
-        }
-      ]
+      "expo-build-properties"
     ],
     "extra": {
       "router": {},
