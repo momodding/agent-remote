@@ -69,12 +69,20 @@ describe('MultiTerminal', () => {
     expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
   });
 
-  it('swaps visible panes when a pane is dragged across', () => {
-    const tree = render({ s1: session('s1'), s2: session('s2') });
+  it('keeps five tabs while replacing only target pane', () => {
+    const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3'), s4: session('s4'), s5: session('s5') });
     act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
-    act(() => { mockGestures['tab-s2']._onBegin(); mockGestures['tab-s2']._onUpdate({ absoluteX: 100, absoluteY: 50, translationX: 100, translationY: 0 }); mockGestures['tab-s2']._onEnd({ absoluteX: 100, absoluteY: 50 }); });
-    act(() => { mockGestures['terminal-pane-s1']._onBegin(); mockGestures['terminal-pane-s1']._onUpdate({ absoluteX: 100, absoluteY: 50, translationX: 100, translationY: 0 }); mockGestures['terminal-pane-s1']._onEnd({ absoluteX: 100, absoluteY: 50 }); });
-    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s2', 'output-s1']);
+    const dragTo = (testID: string, absoluteX: number) => act(() => {
+      mockGestures[testID]._onBegin();
+      mockGestures[testID]._onUpdate({ absoluteX, absoluteY: 50, translationX: absoluteX, translationY: 0 });
+      mockGestures[testID]._onEnd({ absoluteX, absoluteY: 50 });
+    });
+    dragTo('tab-s2', 0);
+    dragTo('tab-s3', 100);
+    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s2', 'output-s3']);
+    for (const sessionId of ['s1', 's2', 's3', 's4', 's5']) expect(tree.root.findByProps({ testID: `tab-${sessionId}` })).toBeDefined();
+    dragTo('terminal-pane-s2', 100);
+    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s3', 'output-s2']);
   });
 
   it('closes sessions from tab controls', () => {
