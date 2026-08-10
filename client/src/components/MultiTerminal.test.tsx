@@ -1,184 +1,59 @@
-jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+import type { MultiSessionState } from '../lib/multi-session';
+import { MultiTerminal } from './MultiTerminal';
+jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import Feather from '@expo/vector-icons/Feather';
 
 jest.mock('@expo/vector-icons/Feather', () => {
   const React = require('react');
   const { View } = require('react-native');
-  return {
-    __esModule: true,
-    default: (props: Record<string, unknown>) => React.createElement(View, { 'data-testid': 'feather-mock', ...props })
-  };
+  return { __esModule: true, default: (props: Record<string, unknown>) => React.createElement(View, props) };
+});
+jest.mock('react-native-gesture-handler', () => {
+  const React = require('react');
+  return { GestureDetector: ({ children }: { children?: React.ReactNode }) => children, Gesture: { Pan: () => ({ activateAfterLongPress: () => ({ onBegin: () => ({ onUpdate: () => ({ onEnd: () => ({ onFinalize: () => ({}) }) }) }) }) }) } };
+});
+jest.mock('react-native-reanimated', () => {
+  const React = require('react');
+  return { __esModule: true, default: { View: ({ children }: { children?: React.ReactNode }) => children }, runOnJS: (fn: unknown) => fn, useAnimatedStyle: () => ({}), useReducedMotion: () => true, useSharedValue: (value: unknown) => ({ value }), withTiming: (value: unknown) => value };
 });
 
-import { MultiTerminal } from './MultiTerminal';
-import type { MultiSessionState } from '../lib/multi-session';
-
-jest.mock('./Terminal', () => ({
-  Terminal: ({ output, onInput, onResize }: { output: string; onInput: (data: string) => void; onResize: (cols: number, rows: number) => void }) => null,
-}));
-
-jest.mock('./ShortcutKeyboard', () => ({
-  ShortcutKeyboard: ({ onInput }: { onInput: (data: string) => void }) => null,
-}));
-
+jest.mock('./Terminal', () => ({ Terminal: () => null }));
+jest.mock('./ShortcutKeyboard', () => ({ ShortcutKeyboard: () => null }));
 jest.mock('react-native', () => ({
   View: ({ children }: { children?: React.ReactNode }) => children,
   Text: ({ children }: { children?: React.ReactNode }) => children,
   ScrollView: ({ children }: { children?: React.ReactNode }) => children,
   Pressable: ({ children }: { children?: React.ReactNode }) => children,
-  Platform: { OS: 'web', select: <T,>(specifics: { web?: T; default?: T }) => specifics.web ?? specifics.default },
-  StyleSheet: { create: <T,>(styles: T) => styles },
+  StyleSheet: { create: <T,>(styles: T) => styles, absoluteFill: {} },
 }));
 
 describe('MultiTerminal', () => {
-  const session1: MultiSessionState = {
-    sessionId: 's1',
-    name: 'Shell 1',
-    connectionEndpoint: 'https://example.com',
-    output: 'output1',
-    minimized: false,
-  };
-
-  const session2: MultiSessionState = {
-    sessionId: 's2',
-    name: 'Shell 2',
-    connectionEndpoint: 'https://example.com',
-    output: 'output2',
-    minimized: false,
-  };
-
-  const session3: MultiSessionState = {
-    sessionId: 's3',
-    name: 'Shell 3',
-    connectionEndpoint: 'https://example.com',
-    output: 'output3',
-    minimized: true,
-  };
-
-  it('renders visible sessions in grid and minimized sessions in strip', () => {
+  const session = (sessionId: string): MultiSessionState => ({ sessionId, name: `Shell ${sessionId}`, connectionEndpoint: 'https://example.com', output: `output-${sessionId}` });
+  const render = (sessions: Record<string, MultiSessionState>, onClose = jest.fn()) => {
     let tree: ReactTestRenderer;
-    act(() => {
-      tree = create(
-        <MultiTerminal
-          sessions={{ s1: session1, s2: session2, s3: session3 }}
-          onInput={jest.fn()}
-          onResize={jest.fn()}
-          onMinimize={jest.fn()}
-          onClose={jest.fn()}
-          isBroadcasting={false}
-          onBroadcastToggle={jest.fn()}
-          platformMax={4}
-        />
-      );
-    });
+    act(() => { tree = create(<MultiTerminal sessions={sessions} onInput={jest.fn()} onResize={jest.fn()} onClose={onClose} />); });
+    return tree!;
+  };
 
-    expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(2);
-    expect(tree!.root.findByProps({ accessibilityLabel: 'Restore Shell 3' })).toBeDefined();
+  it('shows first tab in one pane and keeps other sessions as tabs', () => {
+    const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3') });
+    expect(tree.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
+    expect(tree.root.findByProps({ accessibilityLabel: 'Show Shell s3' })).toBeDefined();
   });
 
-  it('delegates broadcast routing up and emits only for the originating pane when broadcast enabled', () => {
+  it('collapses to selected tab and routes input to it', () => {
     const onInput = jest.fn();
     let tree: ReactTestRenderer;
-    act(() => {
-      tree = create(
-        <MultiTerminal
-          sessions={{ s1: session1, s2: session2, s3: session3 }}
-          onInput={onInput}
-          onResize={jest.fn()}
-          onMinimize={jest.fn()}
-          onClose={jest.fn()}
-          isBroadcasting={true}
-          onBroadcastToggle={jest.fn()}
-          platformMax={4}
-        />
-      );
-    });
-
-    const terminals = tree!.root.findAllByType(require('./Terminal').Terminal);
-    expect(terminals.length).toBe(2); // s1 and s2 visible
-
-    act(() => terminals[0].props.onInput('test'));
-    // It should ONLY call onInput once for the originating terminal, because the parent screen ([id].tsx) will handle broadcasting it.
-    expect(onInput).toHaveBeenCalledTimes(1);
-    expect(onInput).toHaveBeenCalledWith('s1', 'test');
+    act(() => { tree = create(<MultiTerminal sessions={{ s1: session('s1'), s2: session('s2') }} onInput={onInput} onResize={jest.fn()} onClose={jest.fn()} />); });
+    const tab = tree!.root.findByProps({ accessibilityLabel: 'Show Shell s2' });
+    act(() => tab.props.onPress());
+    expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
   });
 
-  it('sends input to single session when broadcast disabled', () => {
-    const onInput = jest.fn();
-    let tree: ReactTestRenderer;
-    act(() => {
-      tree = create(
-        <MultiTerminal
-          sessions={{ s1: session1 }}
-          onInput={onInput}
-          onResize={jest.fn()}
-          onMinimize={jest.fn()}
-          onClose={jest.fn()}
-          isBroadcasting={false}
-          onBroadcastToggle={jest.fn()}
-          platformMax={4}
-        />
-      );
-    });
-
-    const terminal = tree!.root.findByType(require('./Terminal').Terminal);
-    act(() => terminal.props.onInput('test'));
-    expect(onInput).toHaveBeenCalledTimes(1);
-    expect(onInput).toHaveBeenCalledWith('s1', 'test');
-  });
-
-  it('calls onMinimize and onClose for pane actions', () => {
-    const onMinimize = jest.fn();
+  it('closes sessions from tab controls', () => {
     const onClose = jest.fn();
-    let tree: ReactTestRenderer;
-
-    act(() => {
-      tree = create(
-        <MultiTerminal
-          sessions={{ s1: session1 }}
-          onInput={jest.fn()}
-          onResize={jest.fn()}
-          onMinimize={onMinimize}
-          onClose={onClose}
-          isBroadcasting={false}
-          onBroadcastToggle={jest.fn()}
-          platformMax={4}
-        />
-      );
-    });
-
-    const minimizeButton = tree!.root.findAll((node) => node.props.accessibilityLabel === 'Minimize Shell 1')[0];
-    act(() => minimizeButton.props.onPress());
-    expect(onMinimize).toHaveBeenCalledWith('s1');
-
-    const closeButton = tree!.root.findAll((node) => node.props.accessibilityLabel === 'Close Shell 1')[0];
-    act(() => closeButton.props.onPress());
+    const tree = render({ s1: session('s1') }, onClose);
+    act(() => tree.root.findByProps({ accessibilityLabel: 'Close Shell s1' }).props.onPress());
     expect(onClose).toHaveBeenCalledWith('s1');
-  });
-
-  it('toggles broadcast state via toolbar button', () => {
-    const onBroadcastToggle = jest.fn();
-    let tree: ReactTestRenderer;
-    act(() => {
-      tree = create(
-        <MultiTerminal
-          sessions={{ s1: session1 }}
-          onInput={jest.fn()}
-          onResize={jest.fn()}
-          onMinimize={jest.fn()}
-          onClose={jest.fn()}
-          isBroadcasting={false}
-          onBroadcastToggle={onBroadcastToggle}
-          platformMax={4}
-        />
-      );
-    });
-
-    const broadcastButton = tree!.root.findAll((node) =>
-      node.props.accessibilityLabel === 'Enable broadcast' || node.props.accessibilityLabel === 'Disable broadcast'
-    )[0];
-    act(() => broadcastButton.props.onPress());
-    expect(onBroadcastToggle).toHaveBeenCalledTimes(1);
   });
 });

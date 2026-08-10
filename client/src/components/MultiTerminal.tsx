@@ -1,253 +1,204 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Terminal, type TerminalHandle } from './Terminal';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import Feather from '@expo/vector-icons/Feather';
+import { Terminal, type TerminalHandle } from './Terminal';
 import { ShortcutKeyboard } from './ShortcutKeyboard';
-import type { MultiSessionState } from '../lib/multi-session';
+import { placeInSplit, reconcileSplit, type MultiSessionState, type SplitLayout, type SplitSide } from '../lib/multi-session';
 
 type Props = {
   sessions: Record<string, MultiSessionState>;
   onInput: (sessionId: string, data: string) => void;
   onResize: (sessionId: string, cols: number, rows: number) => void;
-  onMinimize: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
-  isBroadcasting: boolean;
-  onBroadcastToggle: () => void;
-  platformMax: number;
   bottomInset?: number;
 };
 
-export function MultiTerminal({
-  sessions,
-  onInput,
-  onResize,
-  onMinimize,
+type DropRect = { x: number; y: number; width: number; height: number };
+
+function DraggableTab({
+  session,
+  active,
+  dropRect,
+  onSelect,
+  onPlace,
+  onDragState,
   onClose,
-  isBroadcasting,
-  onBroadcastToggle,
-  bottomInset = 0,
-}: Props) {
-  const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
+}: {
+  session: MultiSessionState;
+  active: boolean;
+  dropRect: DropRect | null;
+  onSelect: () => void;
+  onPlace: (side: SplitSide) => void;
+  onDragState: (dragging: boolean, side: SplitSide | null) => void;
+  onClose: () => void;
+}) {
+  const reducedMotion = useReducedMotion();
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const opacity = useSharedValue(1);
+  const rectX = useSharedValue(0);
+  const rectY = useSharedValue(0);
+  const rectWidth = useSharedValue(0);
+  const rectHeight = useSharedValue(0);
+  const hasDropRect = useSharedValue(false);
+  const currentSide = useSharedValue<SplitSide | null>(null);
+
+  useEffect(() => {
+    if (!dropRect) {
+      hasDropRect.value = false;
+      return;
+    }
+    rectX.value = dropRect.x;
+    rectY.value = dropRect.y;
+    rectWidth.value = dropRect.width;
+    rectHeight.value = dropRect.height;
+    hasDropRect.value = true;
+  }, [dropRect, hasDropRect, rectHeight, rectWidth, rectX, rectY]);
+
+  const reset = () => {
+    'worklet';
+    translateX.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
+    translateY.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
+    scale.value = reducedMotion ? 1 : withTiming(1, { duration: 180 });
+    opacity.value = reducedMotion ? 1 : withTiming(1, { duration: 180 });
+  };
+  const pan = Gesture.Pan()
+    .activateAfterLongPress(250)
+    .onBegin(() => {
+      scale.value = reducedMotion ? 1.04 : withTiming(1.04, { duration: 180 });
+      opacity.value = reducedMotion ? 1 : withTiming(0.9, { duration: 180 });
+      runOnJS(onDragState)(true, null);
+    })
+    .onUpdate((event) => {
+      translateX.value = event.translationX;
+      translateY.value = event.translationY;
+      const inside = hasDropRect.value && event.absoluteX >= rectX.value && event.absoluteX <= rectX.value + rectWidth.value && event.absoluteY >= rectY.value && event.absoluteY <= rectY.value + rectHeight.value;
+      const side = inside ? (event.absoluteX < rectX.value + rectWidth.value / 2 ? 'left' : 'right') : null;
+      if (side !== currentSide.value) {
+        currentSide.value = side;
+        runOnJS(onDragState)(true, side);
+      }
+    })
+    .onEnd((event) => {
+      if (hasDropRect.value && event.absoluteX >= rectX.value && event.absoluteX <= rectX.value + rectWidth.value && event.absoluteY >= rectY.value && event.absoluteY <= rectY.value + rectHeight.value) {
+        runOnJS(onPlace)(event.absoluteX < rectX.value + rectWidth.value / 2 ? 'left' : 'right');
+      }
+      reset();
+      runOnJS(onDragState)(false, null);
+    })
+    .onFinalize(() => {
+      reset();
+      runOnJS(onDragState)(false, null);
+    });
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ translateX: translateX.value }, { translateY: translateY.value }, { scale: scale.value }],
+  }));
+
+  return <GestureDetector gesture={pan}>
+    <Animated.View style={[styles.tab, active && styles.tabActive, animatedStyle]}>
+      <Pressable onPress={onSelect} accessibilityLabel={`Show ${session.name}`} style={styles.tabSelect}>
+        <Text style={[styles.tabName, active && styles.tabNameActive]} numberOfLines={1}>{session.name}</Text>
+      </Pressable>
+      <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} hitSlop={8} style={styles.tabClose}>
+        <Feather name="x" size={14} color="#B8B8B8" />
+      </Pressable>
+    </Animated.View>
+  </GestureDetector>;
+}
+
+export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInset = 0 }: Props) {
+  const sessionList = Object.values(sessions);
+  const sessionIds = sessionList.map(({ sessionId }) => sessionId);
+  const [layout, setLayout] = useState<SplitLayout>(() => ({ left: sessionIds[0] ?? null, right: null }));
+  const [focusedSessionId, setFocusedSessionId] = useState<string | null>(sessionIds[0] ?? null);
+  const [dragging, setDragging] = useState(false);
+  const [dropSide, setDropSide] = useState<SplitSide | null>(null);
   const terminalRefs = useRef<Record<string, TerminalHandle>>({});
+  const terminalRegionRef = useRef<View>(null);
+  const [dropRect, setDropRect] = useState<DropRect | null>(null);
+
+  useEffect(() => {
+    setLayout((current) => reconcileSplit(current, sessionIds));
+    setFocusedSessionId((current) => (current && sessionIds.includes(current) ? current : sessionIds[0] ?? null));
+  }, [sessions]);
+
+  const measureTerminalRegion = () => {
+    terminalRegionRef.current?.measureInWindow((x, y, width, height) => setDropRect({ x, y, width, height }));
+  };
+  const selectTab = (sessionId: string) => {
+    setLayout({ left: sessionId, right: null });
+    setFocusedSessionId(sessionId);
+  };
+  const placeTab = (sessionId: string, side: SplitSide) => {
+    setLayout((current) => placeInSplit(current, sessionId, side));
+    setFocusedSessionId(sessionId);
+  };
+  const visibleSessions = [layout.left, layout.right]
+    .filter((id): id is string => id !== null)
+    .map((id) => sessions[id])
+    .filter((session): session is MultiSessionState => Boolean(session));
   const getFocused = () => {
     const id = focusedSessionId ?? visibleSessions[0]?.sessionId;
     return id ? terminalRefs.current[id] : undefined;
   };
-  const sessionList = Object.values(sessions);
-  const visibleSessions = sessionList.filter((s) => !s.minimized);
-  const minimizedSessions = sessionList.filter((s) => s.minimized);
-  const handleInput = (sessionId: string, data: string) => {
-    onInput(sessionId, data);
-  };
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.toolbar}>
-        <Pressable
-          android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
-          style={({ pressed }) => [styles.broadcastButton, isBroadcasting && styles.broadcastActive, pressed && styles.pressed]}
-          onPress={onBroadcastToggle}
-          accessibilityLabel={isBroadcasting ? 'Disable broadcast' : 'Enable broadcast'}
-        >
-          <Feather name="zap" size={14} color={isBroadcasting ? '#0A0A0A' : '#46B8C4'} />
-          <Text style={[styles.broadcastText, isBroadcasting && styles.broadcastTextActive]}>
-            {isBroadcasting ? 'Broadcasting' : 'Broadcast Input'}
-          </Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.grid}>
-        {visibleSessions.map((session) => (
-          <View key={session.sessionId} style={styles.pane}>
-            <View style={styles.paneHeader}>
-              <Text style={styles.paneName} numberOfLines={1}>
-                {session.name}
-              </Text>
-              {isBroadcasting && <Text style={styles.broadcastBadge}>⚡</Text>}
-              <View style={styles.paneActions}>
-                <Pressable
-                  android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
-                  style={({ pressed }) => [pressed && styles.pressed]}
-                  onPress={() => onMinimize(session.sessionId)}
-                  accessibilityLabel={`Minimize ${session.name}`}
-                >
-                  <Feather name="minimize-2" size={14} color="#B8B8B8" style={styles.paneIcon} />
-                </Pressable>
-                <Pressable
-                  android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
-                  style={({ pressed }) => [pressed && styles.pressed]}
-                  onPress={() => onClose(session.sessionId)}
-                  accessibilityLabel={`Close ${session.name}`}
-                >
-                  <Feather name="x" size={14} color="#EF6666" style={styles.paneIcon} />
-                </Pressable>
-              </View>
-            </View>
-            <View
-              style={styles.paneTerminal}
-              onTouchStart={() => setFocusedSessionId(session.sessionId)}
-            >
-              <Terminal
-                ref={(handle) => {
-                  if (handle) terminalRefs.current[session.sessionId] = handle;
-                  else delete terminalRefs.current[session.sessionId];
-                }}
-                output={session.output}
-                onInput={(data) => handleInput(session.sessionId, data)}
-                onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
-              />
-            </View>
-          </View>
-        ))}
-      </View>
-
-      {minimizedSessions.length > 0 && (
-        <ScrollView horizontal style={styles.minimizedStrip} contentContainerStyle={styles.minimizedContent}>
-          {minimizedSessions.map((session) => (
-            <Pressable
-              key={session.sessionId}
-              style={styles.minimizedItem}
-              onPress={() => onMinimize(session.sessionId)}
-              accessibilityLabel={`Restore ${session.name}`}
-            >
-              <Text style={styles.minimizedName} numberOfLines={1}>
-                {session.name}
-              </Text>
-              <Text style={styles.minimizedPreview} numberOfLines={1}>
-                {session.output.slice(-50) || '(no output)'}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-      )}
-
-        <ShortcutKeyboard
-        onInput={(data) => {
-          if (focusedSessionId) {
-            handleInput(focusedSessionId, data);
-          } else if (visibleSessions.length > 0) {
-            handleInput(visibleSessions[0].sessionId, data);
-          }
-        }}
-        bottomInset={bottomInset}
-        onCopy={() => getFocused()?.copy()}
-        onPaste={() => getFocused()?.paste()}
-        onSelectAll={() => getFocused()?.selectAll()}
-          onExpand={() => getFocused()?.blur()}
-          onCollapse={() => getFocused()?.focus()}
+  return <View style={styles.container}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabs} contentContainerStyle={styles.tabsContent}>
+      {sessionList.map((session) => <DraggableTab
+        key={session.sessionId}
+        session={session}
+        active={layout.left === session.sessionId || layout.right === session.sessionId}
+        dropRect={dropRect}
+        onSelect={() => selectTab(session.sessionId)}
+        onPlace={(side) => placeTab(session.sessionId, side)}
+        onDragState={(isDragging, side) => { setDragging(isDragging); setDropSide(side); }}
+        onClose={() => onClose(session.sessionId)}
+      />)}
+    </ScrollView>
+    <View ref={terminalRegionRef} onLayout={measureTerminalRegion} style={styles.terminalRegion}>
+      {visibleSessions.map((session) => <View key={session.sessionId} style={styles.pane} onTouchStart={() => setFocusedSessionId(session.sessionId)}>
+        <Terminal
+          ref={(handle) => { if (handle) terminalRefs.current[session.sessionId] = handle; else delete terminalRefs.current[session.sessionId]; }}
+          output={session.output}
+          onInput={(data) => onInput(session.sessionId, data)}
+          onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
         />
+      </View>)}
+      {dragging && <View pointerEvents="none" style={styles.dropZones}>
+        <View style={[styles.dropZone, dropSide === 'left' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Left</Text></View>
+        <View style={[styles.dropZone, dropSide === 'right' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Right</Text></View>
+      </View>}
     </View>
-  );
+    <ShortcutKeyboard
+      onInput={(data) => { const id = focusedSessionId ?? visibleSessions[0]?.sessionId; if (id) onInput(id, data); }}
+      bottomInset={bottomInset}
+      onCopy={() => getFocused()?.copy()}
+      onPaste={() => getFocused()?.paste()}
+      onSelectAll={() => getFocused()?.selectAll()}
+      onExpand={() => getFocused()?.blur()}
+      onCollapse={() => getFocused()?.focus()}
+    />
+  </View>;
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  pressed: { opacity: 0.6 },
-  paneIcon: { paddingHorizontal: 4 },
-  toolbar: {
-    flexDirection: 'row',
-    padding: 10,
-    borderBottomWidth: 1,
-    borderColor: '#262626',
-    backgroundColor: '#181818',
-  },
-  broadcastButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#3A3A3A',
-  },
-  broadcastActive: {
-    backgroundColor: '#264E54',
-    borderColor: '#46B8C4',
-  },
-  broadcastText: {
-    color: '#B8B8B8',
-    fontWeight: '600',
-  },
-  broadcastTextActive: {
-    color: '#46B8C4',
-  },
-  grid: {
-    flex: 1,
-    gap: 12,
-    padding: 10,
-  },
-  pane: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#262626',
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: '#0A0A0A',
-  },
-  paneHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 10,
-    backgroundColor: '#181818',
-    borderBottomWidth: 1,
-    borderColor: '#262626',
-    gap: 8,
-  },
-  paneName: {
-    flex: 1,
-    color: '#F0F0F0',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  broadcastBadge: {
-    color: '#46B8C4',
-    fontSize: 12,
-  },
-  paneActions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  paneAction: {
-    color: '#B8B8B8',
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  paneClose: {
-    color: '#EF6666',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  paneTerminal: {
-    flex: 1,
-  },
-  minimizedStrip: {
-    maxHeight: 60,
-    borderTopWidth: 1,
-    borderColor: '#262626',
-    backgroundColor: '#181818',
-  },
-  minimizedContent: {
-    padding: 8,
-    gap: 8,
-  },
-  minimizedItem: {
-    minWidth: 120,
-    maxWidth: 200,
-    padding: 8,
-    borderRadius: 6,
-    backgroundColor: '#0A0A0A',
-    borderWidth: 1,
-    borderColor: '#3A3A3A',
-  },
-  minimizedName: {
-    color: '#F0F0F0',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 2,
-  },
-  minimizedPreview: {
-    color: '#666',
-    fontSize: 10,
-    fontFamily: 'monospace',
-  },
+  container: { flex: 1 },
+  tabs: { maxHeight: 56, borderBottomWidth: 1, borderColor: '#262626', backgroundColor: '#181818' },
+  tabsContent: { paddingHorizontal: 8, alignItems: 'center', gap: 8 },
+  tab: { height: 40, maxWidth: 180, flexDirection: 'row', alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#0A0A0A' },
+  tabActive: { borderColor: '#46B8C4', backgroundColor: '#264E54' },
+  tabSelect: { minWidth: 88, minHeight: 40, flex: 1, justifyContent: 'center', paddingLeft: 12 },
+  tabName: { color: '#B8B8B8', fontSize: 13, fontWeight: '700' },
+  tabNameActive: { color: '#F0F0F0' },
+  tabClose: { width: 40, minHeight: 40, alignItems: 'center', justifyContent: 'center' },
+  terminalRegion: { flex: 1, flexDirection: 'row', gap: 1, backgroundColor: '#262626' },
+  pane: { flex: 1, backgroundColor: '#0A0A0A' },
+  dropZones: { ...StyleSheet.absoluteFill, flexDirection: 'row', padding: 12, gap: 12, backgroundColor: 'rgba(10,10,10,0.62)' },
+  dropZone: { flex: 1, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#666', borderRadius: 8, backgroundColor: 'rgba(24,24,24,0.9)' },
+  dropZoneActive: { borderColor: '#46B8C4', backgroundColor: 'rgba(38,78,84,0.95)' },
+  dropZoneText: { color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
 });

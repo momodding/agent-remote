@@ -225,23 +225,22 @@ describe('terminal route multi mode', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockParams.mode = 'multi';
+    jest.spyOn(Alert, 'alert');
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     mockParams.mode = 'default';
   });
 
-  it('tracks multiSocketsRef and closes legacy and new sockets on detach', async () => {
+  it('confirms before closing all multi-session sockets', async () => {
     const tree = await renderScreen();
-    // simulate handleAddSession called by Effect
-    await act(async () => {
-      expect(mockSocket.connect).toHaveBeenCalled();
-    });
+    expect(mockSocket.connect).toHaveBeenCalled();
 
-    await act(async () => {
-      await actionFor(tree, 'Close all')();
-    });
-    
+    act(() => actionFor(tree, 'Close all')());
+    expect(Alert.alert).toHaveBeenCalledWith('Close all sessions?', expect.any(String), expect.any(Array));
+    await act(async () => { await (confirmation()[1].onPress?.() as unknown as Promise<void> | undefined); });
+
     expect(mockCloseSession).toHaveBeenCalledWith('session');
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());

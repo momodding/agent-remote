@@ -1,5 +1,5 @@
-import { forwardRef, useImperativeHandle, useRef } from 'react';
-import { StyleSheet, Text, useColorScheme, useWindowDimensions } from 'react-native';
+import { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
+import { StyleSheet, Text, useColorScheme } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   BottomSheetBackdrop,
@@ -18,7 +18,7 @@ type Props = {
   children: React.ReactNode; // caller supplies BottomSheetScrollView content
 };
 
-const GLASS_BLUR_INTENSITY = 60;
+const GLASS_BLUR_INTENSITY = 90;
 
 export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(function GlassBottomSheet(
   { title, onDismiss, children },
@@ -26,7 +26,7 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
 ) {
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
-  const { height: screenHeight } = useWindowDimensions();
+  const snapPoints = useMemo(() => ['55%', '100%'], []);
   const sheetRef = useRef<BottomSheetModal>(null);
 
   useImperativeHandle(ref, () => ({
@@ -37,10 +37,10 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
   return (
     <BottomSheetModal
       ref={sheetRef}
-      enableDynamicSizing
+      enableDynamicSizing={false}
+      snapPoints={snapPoints}
       topInset={insets.top}
       bottomInset={insets.bottom}
-      maxDynamicContentSize={screenHeight - insets.top - insets.bottom - 24}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
@@ -53,7 +53,7 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
         <BlurView
           intensity={GLASS_BLUR_INTENSITY}
           tint={colorScheme === 'dark' ? 'dark' : 'light'}
-          style={[styles.glassBackground, style]}
+          style={[styles.glassBackground, { backgroundColor: colorScheme === 'dark' ? 'rgba(10,10,10,0.82)' : 'rgba(250,250,250,0.86)' }, style]}
         />
       )}
     >

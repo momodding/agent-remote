@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import Feather from '@expo/vector-icons/Feather';
 import { Alert, Pressable, StyleSheet, Text, useColorScheme, View } from 'react-native';
 import { BottomSheetScrollView, BottomSheetTextInput, TouchableOpacity } from '@gorhom/bottom-sheet';
 import type { AgenticRemoteAPI } from '../lib/api';
@@ -51,10 +52,10 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
       disabled={disabled}
       accessibilityLabel="Add session"
     >
-      <Text style={styles.fabText}>+</Text>
+      <Feather name="plus" size={28} color="#0A0A0A" />
     </Pressable>
     <GlassBottomSheet title="New Session" onDismiss={() => setVisible(false)} ref={sheetRef}>
-      <BottomSheetScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
+      <BottomSheetScrollView style={{ flex: 1 }} contentContainerStyle={[styles.form, { paddingBottom: bottomInset + 24 }]} keyboardShouldPersistTaps="handled">
         <Text style={[styles.label, { color: palette.text }]}>Name</Text>
         <BottomSheetTextInput
           style={[styles.input, { color: palette.text, borderColor: palette.border }]}
@@ -89,7 +90,7 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
           ))}
         </View>
         <TouchableOpacity style={[styles.create, { backgroundColor: palette.accent }]} onPress={create} accessibilityLabel="Create" activeOpacity={0.7}>
-          <Text style={styles.createText}>Create</Text>
+          <Feather name="check" size={22} color="#0A0A0A" />
         </TouchableOpacity>
       </BottomSheetScrollView>
     </GlassBottomSheet>
@@ -115,11 +116,6 @@ const styles = StyleSheet.create({
   },
   fabDisabled: {
     backgroundColor: '#3A3A3A',
-  },
-  fabText: {
-    color: '#0A0A0A',
-    fontSize: 32,
-    fontWeight: '700',
   },
   form: {
     paddingHorizontal: 20,
@@ -148,9 +144,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 8,
-  },
-  createText: {
-    color: '#0A0A0A',
-    fontWeight: '800',
   },
 });

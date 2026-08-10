@@ -60,14 +60,8 @@ function byLabel(tree: ReactTestRenderer, label: string) {
   return first;
 }
 
-// Buttons without an accessibilityLabel are located by their visible text: find the
-// Text node carrying that literal string, then walk up to the nearest onPress owner.
 function pressableWithText(tree: ReactTestRenderer, text: string) {
-  const textNode = tree.root.findByProps({ children: text });
-  let node = textNode.parent;
-  while (node && typeof node.props.onPress !== 'function') node = node.parent;
-  if (!node) throw new Error(`no pressable ancestor for text "${text}"`);
-  return node;
+  return byLabel(tree, text);
 }
 
 function payloadInput(tree: ReactTestRenderer) {
