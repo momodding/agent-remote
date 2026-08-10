@@ -17,22 +17,20 @@ type Props = {
 
 type DropRect = { x: number; y: number; width: number; height: number };
 
-function DraggableTab({
-  session,
-  active,
+function Draggable({
+  children,
   dropRect,
-  onSelect,
   onPlace,
   onDragState,
-  onClose,
+  style,
+  testID,
 }: {
-  session: MultiSessionState;
-  active: boolean;
+  children: React.ReactNode;
   dropRect: DropRect | null;
-  onSelect: () => void;
   onPlace: (side: SplitSide) => void;
   onDragState: (dragging: boolean, side: SplitSide | null) => void;
-  onClose: () => void;
+  style: object;
+  testID: string;
 }) {
   const reducedMotion = useReducedMotion();
   const translateX = useSharedValue(0);
@@ -99,15 +97,35 @@ function DraggableTab({
   }));
 
   return <GestureDetector gesture={pan}>
-    <Animated.View style={[styles.tab, active && styles.tabActive, animatedStyle]}>
-      <Pressable onPress={onSelect} accessibilityLabel={`Show ${session.name}`} style={styles.tabSelect}>
-        <Text style={[styles.tabName, active && styles.tabNameActive]} numberOfLines={1}>{session.name}</Text>
-      </Pressable>
-      <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} hitSlop={8} style={styles.tabClose}>
-        <Feather name="x" size={14} color="#B8B8B8" />
-      </Pressable>
-    </Animated.View>
+    <Animated.View testID={testID} style={[style, animatedStyle]}>{children}</Animated.View>
   </GestureDetector>;
+}
+
+function DraggableTab({
+  session,
+  active,
+  dropRect,
+  onSelect,
+  onPlace,
+  onDragState,
+  onClose,
+}: {
+  session: MultiSessionState;
+  active: boolean;
+  dropRect: DropRect | null;
+  onSelect: () => void;
+  onPlace: (side: SplitSide) => void;
+  onDragState: (dragging: boolean, side: SplitSide | null) => void;
+  onClose: () => void;
+}) {
+  return <Draggable dropRect={dropRect} onPlace={onPlace} onDragState={onDragState} style={[styles.tab, active && styles.tabActive]} testID={`tab-${session.sessionId}`}>
+    <Pressable onPress={onSelect} accessibilityLabel={`Show ${session.name}`} style={styles.tabSelect}>
+      <Text style={[styles.tabName, active && styles.tabNameActive]} numberOfLines={1}>{session.name}</Text>
+    </Pressable>
+    <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} hitSlop={8} style={styles.tabClose}>
+      <Feather name="x" size={14} color="#B8B8B8" />
+    </Pressable>
+  </Draggable>;
 }
 
 export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInset = 0 }: Props) {
@@ -159,15 +177,17 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
         onClose={() => onClose(session.sessionId)}
       />)}
     </ScrollView>
-    <View ref={terminalRegionRef} onLayout={measureTerminalRegion} style={styles.terminalRegion}>
-      {visibleSessions.map((session) => <View key={session.sessionId} style={styles.pane} onTouchStart={() => setFocusedSessionId(session.sessionId)}>
-        <Terminal
-          ref={(handle) => { if (handle) terminalRefs.current[session.sessionId] = handle; else delete terminalRefs.current[session.sessionId]; }}
-          output={session.output}
-          onInput={(data) => onInput(session.sessionId, data)}
-          onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
-        />
-      </View>)}
+    <View ref={terminalRegionRef} onLayout={measureTerminalRegion} testID="terminal-region" style={styles.terminalRegion}>
+      {visibleSessions.map((session) => <Draggable key={session.sessionId} dropRect={dropRect} onPlace={(side) => placeTab(session.sessionId, side)} onDragState={(isDragging, side) => { setDragging(isDragging); setDropSide(side); }} style={styles.pane} testID={`terminal-pane-${session.sessionId}`}>
+        <View style={styles.pane} onTouchStart={() => setFocusedSessionId(session.sessionId)}>
+          <Terminal
+            ref={(handle) => { if (handle) terminalRefs.current[session.sessionId] = handle; else delete terminalRefs.current[session.sessionId]; }}
+            output={session.output}
+            onInput={(data) => onInput(session.sessionId, data)}
+            onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
+          />
+        </View>
+      </Draggable>)}
       {dragging && <View pointerEvents="none" style={styles.dropZones}>
         <View style={[styles.dropZone, dropSide === 'left' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Left</Text></View>
         <View style={[styles.dropZone, dropSide === 'right' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>Right</Text></View>
