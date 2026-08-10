@@ -43,7 +43,7 @@ export function ShortcutKeyboard({ onInput, bottomInset = 0, onCopy, onPaste, on
     const hide = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
     return () => { show.remove(); hide.remove(); };
   }, []);
-  if (collapsed) return <View style={[styles.dock, { bottom: keyboardVisible ? keyboardHeight : 0 }]}><Pressable style={[styles.show, { paddingBottom: bottomInset }]} onPress={() => { onExpand?.(); setCollapsed(false); }} accessibilityLabel="kbd-show"><Feather name="terminal" size={20} color="#F0F0F0" /></Pressable></View>;
+  if (collapsed) return <View style={[styles.dock, { bottom: keyboardVisible ? keyboardHeight : 0 }]}><Pressable style={[styles.show, { paddingBottom: bottomInset }]} onPress={() => { onExpand?.(); setCollapsed(false); }}><Text style={styles.label}>⌨ Shortcuts</Text></Pressable></View>;
   const emit = (key: Key) => {
     onInput(modifiedTerminalInput(key.data, modifier?.kind ?? null));
     if (!modifier?.locked) setModifier(null);
@@ -79,8 +79,7 @@ const styles = StyleSheet.create({
   modifier: { minWidth: 58, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 7, backgroundColor: '#262626' },
   active: { backgroundColor: '#8B651E' },
   hide: { marginLeft: 'auto', minWidth: 48, alignItems: 'center', justifyContent: 'center' },
-  hide: { marginLeft: 'auto', minWidth: 48, alignItems: 'center', justifyContent: 'center' },
-  show: { borderTopWidth: 1, borderColor: '#262626', minHeight: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: '#181818' },
+  show: { borderTopWidth: 1, borderColor: '#262626', padding: 9, backgroundColor: '#181818' },
   label: { color: '#F0F0F0', fontSize: 13, fontWeight: '600' },
   pressed: { opacity: 0.6 },
 });

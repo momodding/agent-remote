@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import Feather from '@expo/vector-icons/Feather';
-import { ActivityIndicator } from 'react-native';
 
 import { parsePairingPayload } from '../lib/auth';
 import type { PairingPayload } from '../protocol';
@@ -111,7 +109,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
       return (
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="allow-camera" onPress={() => void requestPermission()}>
-            <Feather name="camera" size={20} color="#0A0A0A" />
+            <Text style={styles.primaryText}>Allow camera</Text>
           </Pressable>
         </View>
       );
@@ -121,7 +119,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera access was denied. Enable it in system settings to scan.</Text>
           <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="open-camera-settings" onPress={() => void Linking.openSettings()}>
-            <Feather name="external-link" size={20} color="#0A0A0A" />
+            <Text style={styles.primaryText}>Open camera settings</Text>
           </Pressable>
         </View>
       );
@@ -134,13 +132,13 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
         <View style={[styles.camera, { backgroundColor: palette.surface }]}>
           <Text style={[styles.cameraStatus, { color: palette.textSecondary }]}>Camera is unavailable right now.</Text>
           <Pressable style={[styles.primary, { backgroundColor: palette.warning }]} accessibilityLabel="retry-camera" onPress={openScan}>
-            <Feather name="refresh-cw" size={20} color="#0A0A0A" />
+            <Text style={styles.primaryText}>Retry camera</Text>
           </Pressable>
         </View>
       );
     }
     if (busy) {
-      return <View style={[styles.camera, { backgroundColor: palette.surface }]}><ActivityIndicator color={palette.textSecondary} style={{ marginBottom: 10 }} /><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="camera-connecting">{stage || 'Connecting…'}</Text></View>;
+      return <View style={[styles.camera, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="camera-connecting">{stage || 'Connecting…'}</Text></View>;
     }
     return (
       <View style={[styles.camera, { backgroundColor: palette.surface }]}>
@@ -161,7 +159,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
           <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
             <View style={styles.titleRow}>
               <Text style={[styles.title, { color: palette.text }]}>Connect a daemon</Text>
-              <Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss} style={styles.iconBtn}><Feather name="x" size={24} color={palette.text} /></Pressable>
+              <Pressable accessibilityLabel="cancel-pairing" disabled={busy} onPress={dismiss}><Text style={[styles.cancel, { color: palette.text }]}>Cancel</Text></Pressable>
             </View>
             <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
             <TextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
@@ -170,15 +168,15 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
             {scan ? (
               <>
                 {renderCamera()}
-                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Feather name="clipboard" size={20} color={palette.text} /></Pressable>
+                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} accessibilityLabel="use-pasted-json" disabled={busy} onPress={usePastedJSON}><Text style={[styles.primaryText, { color: palette.text }]}>Use pasted JSON</Text></Pressable>
               </>
             ) : (
               <>
-                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Feather name="camera" size={20} color={palette.text} /></Pressable>
+                <Pressable style={[styles.secondary, { backgroundColor: palette.accent }]} disabled={busy} onPress={openScan}><Text style={[styles.primaryText, { color: palette.text }]}>Scan QR code</Text></Pressable>
                 <TextInput style={[styles.input, styles.payload, { color: palette.text, borderColor: palette.border }]} value={payloadText} onChangeText={setPayloadText} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" editable={!busy} />
                 {busy
-                  ? <View style={[styles.status, { backgroundColor: palette.surface }]}><ActivityIndicator color={palette.textSecondary} style={{ marginBottom: 10 }} /><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
-                  : <Pressable accessibilityLabel="Connect" style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Feather name="log-in" size={20} color="#0A0A0A" /></Pressable>}
+                  ? <View style={[styles.status, { backgroundColor: palette.surface }]}><Text style={[styles.cameraStatus, { color: palette.textSecondary }]} accessibilityLabel="paste-connecting">{stage || 'Connecting…'}</Text></View>
+                  : <Pressable accessibilityLabel="Connect" style={[styles.primary, { backgroundColor: palette.warning }]} onPress={onPaste}><Text style={styles.primaryText}>Connect</Text></Pressable>}
               </>
             )}
           </ScrollView>
@@ -194,7 +192,6 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 20, fontWeight: '700' },
   cancel: { fontSize: 16 },
-  iconBtn: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   hint: { lineHeight: 20 },
   input: { minHeight: 48, borderWidth: 1, borderRadius: 8, padding: 12 },
   payload: { minHeight: 140, textAlignVertical: 'top', fontFamily: 'monospace' },

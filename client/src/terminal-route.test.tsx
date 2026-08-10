@@ -206,7 +206,7 @@ describe('terminal route detach', () => {
     mockCloseSession.mockResolvedValue(undefined);
   });
 
-    const detachBtn = tree.root.findByProps({ accessibilityLabel: 'Detach' });
+  afterEach(() => {
     jest.restoreAllMocks();
   });
 
@@ -233,13 +233,13 @@ describe('terminal route multi mode', () => {
 
   it('tracks multiSocketsRef and closes legacy and new sockets on detach', async () => {
     const tree = await renderScreen();
-    const detachBtn = tree.root.findByProps({ accessibilityLabel: 'Detach' });
+    // simulate handleAddSession called by Effect
     await act(async () => {
       expect(mockSocket.connect).toHaveBeenCalled();
     });
 
     await act(async () => {
-    const closeAll = tree.root.findByProps({ accessibilityLabel: 'Close all' });
+      await actionFor(tree, 'Close all')();
     });
     
     expect(mockCloseSession).toHaveBeenCalledWith('session');

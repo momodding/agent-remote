@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, StyleSheet, Text, useColorScheme, View } from 'react-native';
 import { Switch } from 'react-native-gesture-handler';
 import { BottomSheetScrollView, BottomSheetTextInput, BottomSheetView, TouchableOpacity } from '@gorhom/bottom-sheet';
-import Feather from '@expo/vector-icons/Feather';
 
 import type { Connection, ConnectionStore } from '../lib/connection';
 import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';
@@ -48,7 +47,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
   return (
     <GlassBottomSheet title="Daemon connections" onDismiss={close} ref={sheetRef}>
       <BottomSheetView style={styles.doneRow}>
-        <TouchableOpacity accessibilityLabel="Done" style={styles.iconBtn} onPress={close}><Feather name="check" size={24} color={palette.accent} /></TouchableOpacity>
+        <TouchableOpacity accessibilityLabel="Done" onPress={close}><Text style={[styles.cancel, { color: palette.accent }]}>Done</Text></TouchableOpacity>
       </BottomSheetView>
       {editing ? (
         <Editor
@@ -74,13 +73,13 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
                 {connection.endpoint === store.selectedEndpoint && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
               </View>
               <View style={styles.rowActions}>
-                <TouchableOpacity style={styles.iconBtn} accessibilityLabel={`Select ${connection.endpoint}`} onPress={() => void onSelect(connection.endpoint)}><Feather name="check-circle" size={20} color={palette.accent} /></TouchableOpacity>
-                <TouchableOpacity style={styles.iconBtn} accessibilityLabel={`Edit ${connection.endpoint}`} onPress={() => setEditing(connection)}><Feather name="edit-2" size={20} color={palette.accent} /></TouchableOpacity>
-                <TouchableOpacity style={styles.iconBtn} accessibilityLabel={`Delete ${connection.endpoint}`} onPress={() => remove(connection)}><Feather name="trash-2" size={20} color={palette.danger} /></TouchableOpacity>
+                <TouchableOpacity accessibilityLabel={`Select ${connection.endpoint}`} onPress={() => void onSelect(connection.endpoint)}><Text style={[styles.link, { color: palette.accent }]}>Select</Text></TouchableOpacity>
+                <TouchableOpacity accessibilityLabel={`Edit ${connection.endpoint}`} onPress={() => setEditing(connection)}><Text style={[styles.link, { color: palette.accent }]}>Edit</Text></TouchableOpacity>
+                <TouchableOpacity accessibilityLabel={`Delete ${connection.endpoint}`} onPress={() => remove(connection)}><Text style={[styles.danger, { color: palette.danger }]}>Delete</Text></TouchableOpacity>
               </View>
             </View>
           ))}
-          <TouchableOpacity accessibilityLabel="Add daemon" style={styles.primary} onPress={add}><Feather name="plus" size={20} color="#0A0A0A" /></TouchableOpacity>
+          <TouchableOpacity accessibilityLabel="Add daemon" style={styles.primary} onPress={add}><Text style={styles.primaryText}>Add daemon</Text></TouchableOpacity>
         </BottomSheetScrollView>
       )}
     </GlassBottomSheet>
@@ -122,8 +121,8 @@ function Editor({ connection, palette, onCancel, onSave }: { connection: Connect
       <BottomSheetTextInput style={inputStyle} value={token} onChangeText={setToken} placeholder="Session token" placeholderTextColor="#888" secureTextEntry autoCapitalize="none" />
       <View style={styles.row}><Text style={labelStyle}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} /></View>
       <View style={styles.rowActions}>
-        <TouchableOpacity accessibilityLabel="Cancel edit" style={styles.iconBtn} onPress={onCancel}><Feather name="x" size={24} color={palette.accent} /></TouchableOpacity>
-        <TouchableOpacity accessibilityLabel="Save" style={styles.primaryBtn} disabled={saving} onPress={() => void save()}>{saving ? <ActivityIndicator color="#0A0A0A" /> : <Feather name="save" size={24} color="#0A0A0A" />}</TouchableOpacity>
+        <TouchableOpacity accessibilityLabel="Cancel edit" onPress={onCancel}><Text style={[styles.link, { color: palette.accent }]}>Cancel</Text></TouchableOpacity>
+        <TouchableOpacity accessibilityLabel="Save" style={styles.primary} disabled={saving} onPress={() => void save()}><Text style={styles.primaryText}>{saving ? 'Saving…' : 'Save changes'}</Text></TouchableOpacity>
       </View>
     </BottomSheetScrollView>
   );
@@ -132,7 +131,6 @@ function Editor({ connection, palette, onCancel, onSave }: { connection: Connect
 const styles = StyleSheet.create({
   doneRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 20, paddingBottom: 8 },
   cancel: { fontSize: 16 },
-  iconBtn: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   listContent: { paddingHorizontal: 20, paddingBottom: 24 },
   editorContent: { paddingHorizontal: 20, paddingBottom: 24, gap: 12 },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10, borderBottomWidth: 1, paddingVertical: 12 },
@@ -143,7 +141,6 @@ const styles = StyleSheet.create({
   rowActions: { flexDirection: 'row', gap: 14 },
   link: { fontWeight: '600' },
   danger: { fontWeight: '600' },
-  primaryBtn: { minWidth: 44, minHeight: 44, borderRadius: 8, backgroundColor: '#D19A2C', alignItems: 'center', justifyContent: 'center' },
   label: { fontWeight: '600', marginTop: 10, marginBottom: 6 },
   input: { minHeight: 46, borderWidth: 1, borderRadius: 8, padding: 12 },
   primary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#D19A2C', marginTop: 8 },
