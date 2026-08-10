@@ -69,6 +69,20 @@ describe('MultiTerminal', () => {
     expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
   });
 
+  it('reactivates a drop zone on repeated drags to the same side', () => {
+    const tree = render({ s1: session('s1'), s2: session('s2') });
+    act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
+    const drag = mockGestures['tab-s2'];
+    const update = () => drag._onUpdate({ absoluteX: 0, absoluteY: 50, translationX: 0, translationY: 0 });
+    const leftZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
+
+    act(() => { drag._onBegin(); update(); });
+    expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+    act(() => drag._onEnd({ absoluteX: 0, absoluteY: 50 }));
+    act(() => { drag._onBegin(); update(); });
+    expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+  });
+
   it('keeps five tabs while replacing only target pane', () => {
     const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3'), s4: session('s4'), s5: session('s5') });
     act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
