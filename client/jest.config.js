@@ -2,6 +2,7 @@ const expoPreset = require('jest-expo/jest-preset');
 
 module.exports = {
   ...expoPreset,
+  setupFiles: [...expoPreset.setupFiles, '<rootDir>/jest.setup.js'],
   testMatch: ['**/*.test.ts', '**/*.test.tsx'],
   resolver: 'react-native-worklets/jest/resolver',
   moduleNameMapper: {

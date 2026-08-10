@@ -16,7 +16,7 @@ const mockAsyncStorage = {
   removeItem: jest.fn<Promise<void>, [string]>(),
 };
 
-jest.mock('react-native', () => ({ Platform: { OS: mockPlatform } }));
+jest.mock('react-native', () => ({ Platform: { get OS() { return mockPlatform; } } }));
 jest.mock('expo-secure-store', () => mockSecureStore);
 jest.mock('@react-native-async-storage/async-storage', () => ({ __esModule: true, default: mockAsyncStorage }));
 
@@ -25,14 +25,14 @@ const first: Connection = {
   skipFingerprintVerification: true, token: 'first-token', clientName: 'test-client',
 };
 const second: Connection = {
-  name: 'Backup daemon', endpoint: 'http://127.0.0.1:8766', fingerprint: '',
+  name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', fingerprint: '',
   skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
 const empty: ConnectionStore = { connections: [], selectedEndpoint: null };
 const loadModule = (): ConnectionModule => require('./connection') as ConnectionModule;
 
 beforeEach(() => {
-  jest.resetModules(); jest.clearAllMocks(); mockPlatform = 'web'; stored = null;
+  jest.clearAllMocks(); mockPlatform = 'web'; stored = null;
   mockAsyncStorage.getItem.mockImplementation(async () => stored);
   mockAsyncStorage.setItem.mockImplementation(async (_key, value) => { stored = value; });
   mockAsyncStorage.removeItem.mockImplementation(async () => { stored = null; });
@@ -107,7 +107,7 @@ describe('connection storage', () => {
   });
 
   it.each([
-    [{ ...first, endpoint: 'ftp://daemon.example' }, 'http or https'],
+    [{ ...first, endpoint: 'http://daemon.example' }, 'must use https'],
     [{ ...first, endpoint: 'https://user:pass@daemon.example' }, 'credentials'],
     [{ ...first, endpoint: 'https://daemon.example/path' }, 'path'],
     [{ ...first, name: ' ' }, 'Name'], [{ ...first, name: 'x'.repeat(65) }, 'Name'],

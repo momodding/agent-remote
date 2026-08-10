@@ -3,7 +3,7 @@ import type { PairingPayload } from '../protocol';
 type ApiModule = typeof import('./api');
 
 let mockPlatform = 'web';
-jest.mock('react-native', () => ({ Platform: { OS: mockPlatform } }));
+jest.mock('react-native', () => ({ Platform: { get OS() { return mockPlatform; } } }));
 // clientProof is mocked to keep auth-flow tests independent of the real crypto path.
 jest.mock('./auth', () => ({
   clientProof: jest.fn(async () => 'mock-proof'),
@@ -59,7 +59,6 @@ const payload: PairingPayload = {
 };
 
 beforeEach(() => {
-  jest.resetModules();
   MockWebSocket.instances = [];
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 });
@@ -77,151 +76,39 @@ describe('transport URLs', () => {
   });
 });
 
-describe('isLocalHostname', () => {
-  it.each([
-    ['localhost', true],
-    ['LOCALHOST', true],
-    ['printer.local', true],
-    ['127.0.0.1', true],
-    ['169.254.1.1', true],
-    ['10.0.0.5', true],
-    ['172.16.0.1', true],
-    ['172.31.255.255', true],
-    ['192.168.1.1', true],
-    ['100.64.0.1', true],
-    ['100.127.255.255', true],
-    ['::1', true],
-    ['[::1]', true],
-    ['fe80::1', true],
-    ['fc00::1', true],
-    ['fd12:3456::1', true],
-    ['8.8.8.8', false],
-    ['172.32.0.1', false],
-    ['172.15.0.1', false],
-    ['100.128.0.1', false],
-    ['daemon.example.com', false],
-    ['2001:db8::1', false],
-  ])('%s -> %s', (host, expected) => {
-    const { isLocalHostname } = loadModule();
-    expect(isLocalHostname(host)).toBe(expected);
-  });
-});
 
-describe('resolveAuthEndpoint', () => {
-  it('resolves Android local HTTPS + skip to HTTP', () => {
-    const { resolveAuthEndpoint } = loadModule();
-    const resolved = resolveAuthEndpoint('https://192.168.1.5:8765', 'android', true, '192.168.1.5');
-    expect(resolved).toBe('http://192.168.1.5:8765');
-  });
-
-  it('leaves HTTP unchanged', () => {
-    const { resolveAuthEndpoint } = loadModule();
-    const resolved = resolveAuthEndpoint('http://192.168.1.5:8765', 'android', true, '192.168.1.5');
-    expect(resolved).toBe('http://192.168.1.5:8765');
-  });
-
-  it('does not downgrade when skip is false', () => {
-    const { resolveAuthEndpoint } = loadModule();
-    const resolved = resolveAuthEndpoint('https://192.168.1.5:8765', 'android', false, '192.168.1.5');
-    expect(resolved).toBe('https://192.168.1.5:8765');
-  });
-
-  it('does not downgrade on non-Android platforms', () => {
-    const { resolveAuthEndpoint } = loadModule();
-    const resolved = resolveAuthEndpoint('https://192.168.1.5:8765', 'ios', true, '192.168.1.5');
-    expect(resolved).toBe('https://192.168.1.5:8765');
-  });
-
-  it('does not downgrade for public hostnames', () => {
-    const { resolveAuthEndpoint } = loadModule();
-    const resolved = resolveAuthEndpoint('https://daemon.example.com:8765', 'android', true, 'daemon.example.com');
-    expect(resolved).toBe('https://daemon.example.com:8765');
-  });
-});
-
-describe('authenticatePairing Android resolution & fallback', () => {
+describe('authenticatePairing HTTPS transport', () => {
   const authOk = (socket: MockWebSocket) => {
     socket.open();
     socket.message({ type: 'auth.challenge', salt: 'c2FsdA', serverNonce: 'server-nonce', challengeId: 'chal-1' });
     socket.message({ type: 'auth.ok', sessionToken: 'session-token' });
   };
 
-  const flush = () => new Promise<void>((resolve) => setImmediate(() => resolve()));
+  const started = () => new Promise<void>((resolve) => setImmediate(resolve));
 
   let mockFetch: jest.Mock;
   beforeEach(() => {
     mockFetch = jest.fn().mockResolvedValue({ ok: true } as Response);
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    Object.defineProperty(globalThis, 'fetch', { value: mockFetch, writable: true, configurable: true });
   });
-
-  afterEach(() => {
-    delete (globalThis as Record<string, unknown>).fetch;
-  });
-
-  const started = () => new Promise<void>((resolve) => setImmediate(resolve));
-
-  it('Android local HTTPS + skip resolves directly to HTTP via resolver', async () => {
+  it('keeps local Android pairing on HTTPS/WSS', async () => {
     mockPlatform = 'android';
     const { authenticatePairing } = loadModule();
     const promise = authenticatePairing(payload, 'phone', jest.fn());
     await started();
     expect(MockWebSocket.instances).toHaveLength(1);
-    expect(MockWebSocket.instances[0].url).toBe('ws://192.168.1.5:8765/v1/ws/sessions/bootstrap');
-    await started();
+    expect(MockWebSocket.instances[0].url).toBe('wss://192.168.1.5:8765/v1/ws/sessions/bootstrap');
     authOk(MockWebSocket.instances[0]);
     const result = await promise;
-    expect(result.endpoint).toBe('http://192.168.1.5:8765');
+    expect(result.endpoint).toBe('https://192.168.1.5:8765');
     expect(result.token).toBe('session-token');
   });
 
-  it('HTTP payload stays HTTP (no fallback needed)', async () => {
-    mockPlatform = 'android';
+  it('rejects plaintext pairing endpoints', async () => {
     const { authenticatePairing } = loadModule();
-    const httpPayload = { ...payload, endpoint: 'http://192.168.1.5:8765' };
-    const promise = authenticatePairing(httpPayload, 'phone', jest.fn());
-    await started();
-    expect(MockWebSocket.instances[0].url).toBe('ws://192.168.1.5:8765/v1/ws/sessions/bootstrap');
-    authOk(MockWebSocket.instances[0]);
-    await started();
-    const result = await promise;
-    expect(result.endpoint).toBe('http://192.168.1.5:8765');
-    expect(MockWebSocket.instances).toHaveLength(1); // No retry
-  });
-
-  it('non-Android platform stays HTTPS (no downgrade)', async () => {
-    mockPlatform = 'ios';
-    const { authenticatePairing } = loadModule();
-    const promise = authenticatePairing(payload, 'phone', jest.fn());
-    await started();
-    expect(MockWebSocket.instances[0].url).toBe('wss://192.168.1.5:8765/v1/ws/sessions/bootstrap');
-    authOk(MockWebSocket.instances[0]);
-    const result = await promise;
-    expect(result.endpoint).toBe('https://192.168.1.5:8765');
-    await started();
-  });
-
-  it('skip=false on Android stays HTTPS (no downgrade)', async () => {
-    mockPlatform = 'android';
-    const { authenticatePairing } = loadModule();
-    const strictPayload = { ...payload, skipFingerprintVerification: false };
-    const promise = authenticatePairing(strictPayload, 'phone', jest.fn());
-    await started();
-    expect(MockWebSocket.instances[0].url).toBe('wss://192.168.1.5:8765/v1/ws/sessions/bootstrap');
-    authOk(MockWebSocket.instances[0]);
-    const result = await promise;
-    expect(result.endpoint).toBe('https://192.168.1.5:8765');
-  });
-
-  it('public hostname stays HTTPS on Android + skip', async () => {
-    mockPlatform = 'android';
-    const { authenticatePairing } = loadModule();
-    const remotePayload = { ...payload, endpoint: 'https://daemon.example.com:8765' };
-    const promise = authenticatePairing(remotePayload, 'phone', jest.fn());
-    await started();
-    expect(MockWebSocket.instances[0].url).toBe('wss://daemon.example.com:8765/v1/ws/sessions/bootstrap');
-    authOk(MockWebSocket.instances[0]);
-    const result = await promise;
-    expect(result.endpoint).toBe('https://daemon.example.com:8765');
+    await expect(authenticatePairing({ ...payload, endpoint: 'http://192.168.1.5:8765' }, 'phone', jest.fn()))
+      .rejects.toThrow('Pairing endpoint must use HTTPS');
+    expect(MockWebSocket.instances).toHaveLength(0);
   });
 
   it('forbidden_source from health probe surfaces CIDR guidance', async () => {
@@ -229,33 +116,9 @@ describe('authenticatePairing Android resolution & fallback', () => {
       ok: false,
       json: async () => ({ code: 'forbidden_source', message: 'Client IP not in allowedCidrs' }),
     } as Response);
-    mockPlatform = 'android';
     const { authenticatePairing } = loadModule();
-    const promise = authenticatePairing(payload, 'phone', jest.fn());
-    await expect(promise).rejects.toThrow(/allowedCidrs must include your LAN subnet/);
-    expect(MockWebSocket.instances).toHaveLength(0); // No socket attempt
-  });
-
-  it('does not retry on non-Android even for local transport error', async () => {
-    mockPlatform = 'ios';
-    const { authenticatePairing } = loadModule();
-    const promise = authenticatePairing(payload, 'phone', jest.fn());
-    await started();
-    MockWebSocket.instances[0].fail();
-    await expect(promise).rejects.toThrow();
-    expect(MockWebSocket.instances).toHaveLength(1);
-    await started();
-  });
-
-  it('does not retry for non-local host on Android', async () => {
-    mockPlatform = 'android';
-    const { authenticatePairing } = loadModule();
-    const remotePayload = { ...payload, endpoint: 'https://daemon.example.com:8765' };
-    const promise = authenticatePairing(remotePayload, 'phone', jest.fn());
-    await started();
-    MockWebSocket.instances[0].fail();
-    await expect(promise).rejects.toThrow();
-    expect(MockWebSocket.instances).toHaveLength(1);
+    await expect(authenticatePairing(payload, 'phone', jest.fn())).rejects.toThrow(/allowedCidrs must include your LAN subnet/);
+    expect(MockWebSocket.instances).toHaveLength(0);
   });
 });
 describe('authenticatePairing timeouts and terminal races', () => {
@@ -263,18 +126,15 @@ describe('authenticatePairing timeouts and terminal races', () => {
 
   beforeEach(() => {
     mockFetch = jest.fn().mockResolvedValue({ ok: true } as Response);
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    Object.defineProperty(globalThis, 'fetch', { value: mockFetch, writable: true, configurable: true });
     jest.useFakeTimers();
   });
-
   afterEach(() => {
-    delete (globalThis as Record<string, unknown>).fetch;
     jest.restoreAllMocks();
     jest.useRealTimers();
   });
 
   const flush = async () => {
-    await Promise.resolve();
     await Promise.resolve();
   };
 
