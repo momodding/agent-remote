@@ -77,7 +77,6 @@ export default function TerminalScreen() {
   }, [connect, connectionEndpoint]);
   useEffect(() => {
     const listener = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && connection) connect(connection);
       if (state === 'active' && connection) {
         if (!isMultiModeCheck) connect(connection);
         Object.values(multiSocketsRef.current).forEach((s) => s.connect());
