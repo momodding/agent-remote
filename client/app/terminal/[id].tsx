@@ -12,7 +12,7 @@ import { ShortcutKeyboard } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
 import { SessionSocket } from '../../src/lib/session-socket';
-import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
+import { MAX_MULTI_SESSIONS, addSession, closeSession, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
@@ -136,8 +136,6 @@ export default function TerminalScreen() {
   }, [connection]);
 
 
-  const platformMax = getPlatformMax();
-
   // Multi-window handlers
   const handleAddSession = useCallback((sessionId: string, sessionName: string) => {
     if (!connection || multiSocketsRef.current[sessionId]) return;
@@ -146,7 +144,6 @@ export default function TerminalScreen() {
       name: sessionName,
       connectionEndpoint: connection.endpoint,
       output: '',
-      minimized: false,
     };
     const newSocket = new SessionSocket(
       connection,
@@ -182,9 +179,6 @@ export default function TerminalScreen() {
     }
   }, [connection]);
 
-  const handleMinimize = useCallback((sessionId: string) => {
-    setMultiSessions((prev) => toggleMinimize(prev, sessionId));
-  }, []);
 
   const handleInput = useCallback((sessionId: string, data: string) => {
     if (isBroadcasting) {
@@ -211,13 +205,20 @@ export default function TerminalScreen() {
     return <Wrapper {...wrapperProps}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
-        <Pressable accessibilityLabel="Detach" onPress={detach}>
-          <Text style={styles.back}>‹ Sessions</Text>
+        <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}>
+          <Feather name="arrow-left" size={20} color="#46B8C4" />
         </Pressable>
         <Text style={styles.title}>Multi-Terminal</Text>
         <View style={styles.actions}>
-          <Pressable accessibilityLabel="Close all" onPress={handleCloseAll}>
-            <Text style={styles.close}>Close All</Text>
+          <Pressable
+            accessibilityLabel={isBroadcasting ? 'Disable broadcast' : 'Enable broadcast'}
+            onPress={() => setIsBroadcasting((previous) => !previous)}
+            style={({ pressed }) => [styles.headerIcon, isBroadcasting && styles.broadcastActive, pressed && styles.pressed]}
+          >
+            <Feather name="zap" size={18} color={isBroadcasting ? '#0A0A0A' : '#46B8C4'} />
+          </Pressable>
+          <Pressable accessibilityLabel="Close all" onPress={handleCloseAll} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}>
+            <Feather name="x-circle" size={20} color="#EF6666" />
           </Pressable>
         </View>
       </View>
@@ -227,17 +228,13 @@ export default function TerminalScreen() {
             sessions={multiSessions}
             onInput={handleInput}
             onResize={handleResize}
-            onMinimize={handleMinimize}
             onClose={handleCloseSession}
-            isBroadcasting={isBroadcasting}
-            onBroadcastToggle={() => setIsBroadcasting((prev) => !prev)}
-            platformMax={platformMax}
             bottomInset={insets.bottom}
           />
           <AddSessionFAB
             api={new AgenticRemoteAPI(connection)}
             onAdd={handleAddSession}
-            disabled={Object.keys(multiSessions).length >= platformMax}
+            disabled={Object.keys(multiSessions).length >= MAX_MULTI_SESSIONS}
             bottomInset={insets.bottom}
           />
         </>
@@ -250,11 +247,11 @@ export default function TerminalScreen() {
   return <Wrapper {...wrapperProps}>
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}>
-      <Pressable accessibilityLabel="Detach" onPress={detach}><Text style={styles.back}>‹ Sessions</Text></Pressable>
+      <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}><Feather name="arrow-left" size={20} color="#46B8C4" /></Pressable>
       <Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text>
       <View style={styles.actions}>
-        <Pressable accessibilityLabel="Clear" onPress={() => setOutput('')} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => pressed && styles.pressed}><Feather name="trash-2" size={18} color="#B8B8B8" /></Pressable>
-        <Pressable accessibilityLabel="Close session" onPress={close} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => pressed && styles.pressed}><Feather name="x" size={20} color="#EF6666" /></Pressable>
+        <Pressable accessibilityLabel="Clear" onPress={() => setOutput('')} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="trash-2" size={18} color="#B8B8B8" /></Pressable>
+        <Pressable accessibilityLabel="Close session" onPress={close} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="x" size={20} color="#EF6666" /></Pressable>
       </View>
     </View>
     <View style={styles.terminal}>
@@ -266,5 +263,12 @@ export default function TerminalScreen() {
 
 const styles = StyleSheet.create({
   pressed: { opacity: 0.6 },
-  screen: { flex: 1, backgroundColor: '#0A0A0A' }, header: { minHeight: 56, paddingHorizontal: 14, alignItems: 'center', flexDirection: 'row', gap: 14, borderBottomWidth: 1, borderColor: '#262626' }, back: { color: '#46B8C4', fontWeight: '700' }, title: { flex: 1, color: '#F0F0F0', fontSize: 16, fontWeight: '700' }, actions: { flexDirection: 'row', gap: 14 }, clear: { color: '#B8B8B8' }, close: { color: '#EF6666' }, terminal: { flex: 1 }, connecting: { color: '#B8B8B8', padding: 20 },
+  screen: { flex: 1, backgroundColor: '#0A0A0A' },
+  header: { minHeight: 56, paddingHorizontal: 14, alignItems: 'center', flexDirection: 'row', gap: 8, borderBottomWidth: 1, borderColor: '#262626' },
+  headerIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 6 },
+  broadcastActive: { backgroundColor: '#46B8C4' },
+  title: { flex: 1, color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
+  actions: { flexDirection: 'row', gap: 4 },
+  terminal: { flex: 1 },
+  connecting: { color: '#B8B8B8', padding: 20 },
 });

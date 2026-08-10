@@ -1,58 +1,46 @@
-import { Platform } from 'react-native';
-import { addSession, closeSession, getPlatformMax, toggleMinimize, updateOutput, type MultiSessionState } from './multi-session';
-
-jest.mock('react-native', () => ({
-  Platform: { OS: 'web' },
-}));
+import {
+  MAX_MULTI_SESSIONS,
+  addSession,
+  closeSession,
+  placeInSplit,
+  reconcileSplit,
+  updateOutput,
+  type MultiSessionState,
+} from './multi-session';
 
 describe('multi-session state', () => {
-  const session1: MultiSessionState = {
-    sessionId: 's1',
-    name: 'Shell 1',
-    connectionEndpoint: 'https://example.com',
-    output: 'output1',
-    minimized: false,
-  };
+  const session1: MultiSessionState = { sessionId: 's1', name: 'Shell 1', connectionEndpoint: 'https://example.com', output: 'output1' };
+  const session2: MultiSessionState = { sessionId: 's2', name: 'Shell 2', connectionEndpoint: 'https://example.com', output: 'output2' };
 
-  const session2: MultiSessionState = {
-    sessionId: 's2',
-    name: 'Shell 2',
-    connectionEndpoint: 'https://example.com',
-    output: 'output2',
-    minimized: false,
-  };
-
-  it('adds sessions', () => {
+  it('adds, closes, and updates sessions', () => {
     const sessions = addSession({}, session1);
-    expect(sessions).toEqual({ s1: session1 });
     expect(addSession(sessions, session2)).toEqual({ s1: session1, s2: session2 });
+    expect(closeSession({ s1: session1, s2: session2 }, 's1')).toEqual({ s2: session2 });
+    expect(updateOutput(sessions, 's1', 'new output').s1.output).toBe('new output');
   });
 
-  it('closes sessions', () => {
-    const sessions = { s1: session1, s2: session2 };
-    expect(closeSession(sessions, 's1')).toEqual({ s2: session2 });
-    expect(closeSession(sessions, 's2')).toEqual({ s1: session1 });
+  it('allows five open tabs', () => {
+    expect(MAX_MULTI_SESSIONS).toBe(5);
   });
 
-  it('toggles minimize', () => {
-    const sessions = { s1: session1 };
-    const minimized = toggleMinimize(sessions, 's1');
-    expect(minimized.s1.minimized).toBe(true);
-    expect(toggleMinimize(minimized, 's1').s1.minimized).toBe(false);
+  it('places an inactive tab opposite a lone pane', () => {
+    expect(placeInSplit({ left: 's1', right: null }, 's2', 'left')).toEqual({ left: 's2', right: 's1' });
+    expect(placeInSplit({ left: 's1', right: null }, 's2', 'right')).toEqual({ left: 's1', right: 's2' });
   });
 
-  it('updates output', () => {
-    const sessions = { s1: session1 };
-    const updated = updateOutput(sessions, 's1', 'new output');
-    expect(updated.s1.output).toBe('new output');
-    expect(updated.s1.name).toBe('Shell 1');
+  it('replaces only the targeted split pane', () => {
+    expect(placeInSplit({ left: 's1', right: 's2' }, 's3', 'right')).toEqual({ left: 's1', right: 's3' });
   });
 
-  it('returns platform max (4 for web, 2 for native)', () => {
-    expect(getPlatformMax()).toBe(4);
-    (Platform as { OS: string }).OS = 'android';
-    expect(getPlatformMax()).toBe(2);
-    (Platform as { OS: string }).OS = 'ios';
-    expect(getPlatformMax()).toBe(2);
+  it('swaps visible panes and ignores a current-side drop', () => {
+    const layout = { left: 's1', right: 's2' };
+    expect(placeInSplit(layout, 's1', 'right')).toEqual({ left: 's2', right: 's1' });
+    expect(placeInSplit(layout, 's1', 'left')).toBe(layout);
+  });
+
+  it('reconciles closed IDs while retaining order fallback', () => {
+    expect(reconcileSplit({ left: 'closed', right: 's2' }, ['s1', 's2'])).toEqual({ left: 's2', right: null });
+    expect(reconcileSplit({ left: 'closed', right: null }, ['s1', 's2'])).toEqual({ left: 's1', right: null });
+    expect(reconcileSplit({ left: 'closed', right: null }, [])).toEqual({ left: null, right: null });
   });
 });
