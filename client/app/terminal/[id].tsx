@@ -114,7 +114,7 @@ export default function TerminalScreen() {
     router.replace('/');
   }, []);
 
-  const handleCloseAll = useCallback(async () => {
+  const closeAll = useCallback(async () => {
     socket.current?.close();
     if (connection) {
       const restApi = new AgenticRemoteAPI(connection);
@@ -133,6 +133,13 @@ export default function TerminalScreen() {
     setMultiSessions({});
     router.replace('/');
   }, [connection]);
+
+  const handleCloseAll = useCallback(() => {
+    Alert.alert('Close all sessions?', 'This will terminate every running session.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Close all', style: 'destructive', onPress: () => void closeAll() },
+    ]);
+  }, [closeAll]);
 
 
   // Multi-window handlers
