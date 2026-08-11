@@ -123,4 +123,20 @@ describe('SessionSocket', () => {
     reconnected.open();
     expect(frames(reconnected)).toEqual([{ type: 'auth.token', token: 'secret' }]);
   });
+
+  it('forwards error code from error frames', () => {
+    const onError = jest.fn();
+    const session = new SessionSocket(connection, 'session', jest.fn(), jest.fn(), onError);
+    session.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'error', code: 'session_not_found', message: 'session not found' }),
+    });
+    expect(onError).toHaveBeenCalledWith('session not found', 'session_not_found');
+
+    socket.onerror?.();
+    expect(onError).toHaveBeenCalledWith('Terminal connection lost', 'connection_lost');
+  });
 });

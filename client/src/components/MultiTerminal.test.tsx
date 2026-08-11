@@ -39,11 +39,12 @@ jest.mock('./Terminal', () => ({ Terminal: () => null }));
 jest.mock('./ShortcutKeyboard', () => ({ ShortcutKeyboard: () => null }));
 jest.mock('react-native', () => {
   const React = require('react');
+  const dimensionsState = { current: { width: 200, height: 100 } }; // ponytail: landscape default keeps existing X-axis drag tests unchanged
   const View = React.forwardRef(({ children, ...props }: { children?: React.ReactNode }, ref: React.ForwardedRef<{ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => void }>) => {
     React.useImperativeHandle(ref, () => ({ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(0, 0, 100, 100) }));
     return React.createElement('View', props, children);
   });
-  return { View, Text: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Text', props, children), ScrollView: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('ScrollView', props, children), Pressable: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Pressable', props, children), StyleSheet: { create: <T,>(styles: T) => styles, absoluteFill: {} } };
+  return { View, Text: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Text', props, children), ScrollView: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('ScrollView', props, children), Pressable: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Pressable', props, children), StyleSheet: { create: <T,>(styles: T) => styles, absoluteFill: {} }, useWindowDimensions: () => dimensionsState.current, __setWindowDimensions: (next: { width: number; height: number }) => { dimensionsState.current = next; } };
 });
 
 describe('MultiTerminal', () => {
@@ -81,6 +82,28 @@ describe('MultiTerminal', () => {
     act(() => drag._onEnd({ absoluteX: 0, absoluteY: 50 }));
     act(() => { drag._onBegin(); update(); });
     expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+  });
+
+  it('shows Top/Bottom drop-zone labels and splits on Y-axis in portrait', () => {
+    const { __setWindowDimensions } = require('react-native');
+    __setWindowDimensions({ width: 100, height: 200 });
+    try {
+      const tree = render({ s1: session('s1'), s2: session('s2') });
+      act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
+      const drag = mockGestures['tab-s2'];
+      const topZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
+      const bottomZone = () => tree.root.findByProps({ testID: 'drop-zone-right' });
+
+      act(() => {
+        drag._onBegin();
+        drag._onUpdate({ absoluteX: 50, absoluteY: 10, translationX: 0, translationY: 0 });
+      });
+      expect(topZone().findByType(require('react-native').Text).props.children).toBe('Top');
+      expect(bottomZone().findByType(require('react-native').Text).props.children).toBe('Bottom');
+      expect(topZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+    } finally {
+      __setWindowDimensions({ width: 200, height: 100 });
+    }
   });
 
   it('keeps five tabs while replacing only target pane', () => {

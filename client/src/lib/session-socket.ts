@@ -22,7 +22,7 @@ export class SessionSocket {
     private readonly sessionId: string,
     private readonly onOutput: (data: string) => void,
     private readonly onState: (state: SessionSummary['state'], waitState?: WaitState) => void,
-    private readonly onError: (message: string) => void,
+    private readonly onError: (message: string, code: string) => void,
   ) {}
 
   connect(): void {
@@ -41,14 +41,14 @@ export class SessionSocket {
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
-      this.onError('Terminal connection lost');
+      this.onError('Terminal connection lost', 'connection_lost');
     };
     socket.onmessage = ({ data }) => {
       if (this.socket !== socket) return;
       const frame = JSON.parse(String(data)) as SessionFrame;
       if (frame.type === 'pty.output') this.onOutput(text(decodeBase64(frame.data)));
       if (frame.type === 'session.state') this.onState(frame.state, frame.waitState);
-      if (frame.type === 'error') this.onError(frame.message);
+      if (frame.type === 'error') this.onError(frame.message, frame.code);
     };
   }
 

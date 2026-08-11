@@ -29,6 +29,7 @@ export default function TerminalScreen() {
   const socket = useRef<SessionSocket | undefined>(undefined);
   const isMultiModeCheck = mode === "multi";
   const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
+  const multiInitializedRef = useRef(false); // ponytail: guards the one-shot initial-session effect so a closed/not-found session never retriggers it
   // Guards natural-exit and manual-Close from racing each other into a double
   // REST close / double navigation (closing triggers the daemon's own `exited` frame).
   const finishingRef = useRef(false);
@@ -57,7 +58,10 @@ export default function TerminalScreen() {
       id,
       (data) => setOutput((existing) => existing + data),
       (state) => { if (state === 'exited') void finish(current); },
-      (message) => Alert.alert('Terminal', message),
+      (message, code) => {
+        if (code === 'session_not_found') { void finish(current); return; }
+        Alert.alert('Terminal', message);
+      },
     );
     socket.current.connect();
   }, [id, finish]);
@@ -162,7 +166,15 @@ export default function TerminalScreen() {
           setMultiSessions((prev) => closeSession(prev, sessionId));
         }
       },
-      (message) => Alert.alert('Terminal', message),
+      (message, code) => {
+        if (code === 'session_not_found') {
+          multiSocketsRef.current[sessionId]?.close();
+          delete multiSocketsRef.current[sessionId];
+          setMultiSessions((prev) => closeSession(prev, sessionId));
+          return;
+        }
+        Alert.alert('Terminal', message);
+      },
     );
     newSocket.connect();
     newSession.socket = newSocket;
@@ -200,12 +212,13 @@ export default function TerminalScreen() {
     multiSocketsRef.current[sessionId]?.resize(cols, rows);
   }, []);
 
-  // Initialize first session in multi-mode
+  // Initialize first session in multi-mode; runs once per screen mount, not on every empty-state dip.
   useEffect(() => {
-    if (isMultiModeCheck && connection && id && Object.keys(multiSessions).length === 0) {
+    if (isMultiModeCheck && connection && id && !multiInitializedRef.current) {
+      multiInitializedRef.current = true;
       handleAddSession(id, name || 'Shell');
     }
-  }, [isMultiModeCheck, connection, id, name, multiSessions, handleAddSession]);
+  }, [isMultiModeCheck, connection, id, name, handleAddSession]);
 
   if (isMultiModeCheck) {
     return <Wrapper {...wrapperProps}>
