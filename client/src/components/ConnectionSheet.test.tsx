@@ -1,6 +1,6 @@
-jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: jest.requireActual("react-native").View }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, type AlertButton, TextInput } from 'react-native';
+import { Alert, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
 
 import { ConnectionSheet } from './ConnectionSheet';
 import type { Connection, ConnectionStore } from '../lib/connection';
@@ -55,6 +55,14 @@ describe('ConnectionSheet row actions', () => {
     const props = makeProps();
     const tree = await renderSheet(props);
 
+    expect(tree.root.findAllByType(Modal).length).toBe(1);
+    expect(actionFor(tree, `Select ${second.endpoint}`)).toBeDefined();
+    expect(tree.root.findByProps({ accessibilityLabel: `Select ${second.endpoint}` }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ accessibilityLabel: `Edit ${second.endpoint}` }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ accessibilityLabel: `Delete ${second.endpoint}` }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ accessibilityLabel: 'Add daemon' }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ accessibilityLabel: 'Done' }).type).toBe(Pressable);
+
     act(() => actionFor(tree, `Select ${second.endpoint}`)());
     expect(props.onSelect).toHaveBeenCalledWith(second.endpoint);
     expect(props.onSave).not.toHaveBeenCalled();
@@ -88,6 +96,10 @@ describe('ConnectionSheet editor', () => {
     const tree = await renderSheet(props);
 
     act(() => actionFor(tree, `Edit ${first.endpoint}`)());
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Cancel edit' }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ accessibilityLabel: 'Save' }).type).toBe(Pressable);
+    expect(tree.root.findByProps({ value: first.skipFingerprintVerification }).type).toBe(Switch);
 
     const inputs = tree.root.findAllByType(TextInput);
     const byPlaceholder = (placeholder: string) => inputs.find((input) => input.props.placeholder === placeholder)!;
