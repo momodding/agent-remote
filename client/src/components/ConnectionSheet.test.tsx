@@ -1,9 +1,14 @@
-jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: jest.requireActual("react-native").View }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, type AlertButton, TextInput } from 'react-native';
+import { Alert, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
 
 import { ConnectionSheet } from './ConnectionSheet';
 import type { Connection, ConnectionStore } from '../lib/connection';
+
+function isType(node: { type: unknown }, Component: unknown): boolean {
+  if (node.type === Component) return true;
+  return typeof Component === 'object' && Component !== null && 'type' in Component && Component.type === node.type;
+}
 
 const first: Connection = {
   name: 'Primary daemon', endpoint: 'https://daemon.example:8765', fingerprint: 'sha256:first',
@@ -55,6 +60,13 @@ describe('ConnectionSheet row actions', () => {
     const props = makeProps();
     const tree = await renderSheet(props);
 
+    expect(tree.root.findAllByType(Modal).length).toBe(1);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Select ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Edit ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Delete ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Add daemon' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Done' }), Pressable)).toBe(true);
+
     act(() => actionFor(tree, `Select ${second.endpoint}`)());
     expect(props.onSelect).toHaveBeenCalledWith(second.endpoint);
     expect(props.onSave).not.toHaveBeenCalled();
@@ -88,6 +100,10 @@ describe('ConnectionSheet editor', () => {
     const tree = await renderSheet(props);
 
     act(() => actionFor(tree, `Edit ${first.endpoint}`)());
+
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Cancel edit' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Save' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ value: first.skipFingerprintVerification }), Switch)).toBe(true);
 
     const inputs = tree.root.findAllByType(TextInput);
     const byPlaceholder = (placeholder: string) => inputs.find((input) => input.props.placeholder === placeholder)!;
