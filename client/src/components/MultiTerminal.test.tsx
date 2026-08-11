@@ -106,6 +106,22 @@ describe('MultiTerminal', () => {
     }
   });
 
+  it('shows Left/Right drop-zone labels and splits on X-axis in landscape', () => {
+    const tree = render({ s1: session('s1'), s2: session('s2') });
+    act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
+    const drag = mockGestures['tab-s2'];
+    const leftZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
+    const rightZone = () => tree.root.findByProps({ testID: 'drop-zone-right' });
+
+    act(() => {
+      drag._onBegin();
+      drag._onUpdate({ absoluteX: 10, absoluteY: 50, translationX: 0, translationY: 0 });
+    });
+    expect(leftZone().findByType(require('react-native').Text).props.children).toBe('Left');
+    expect(rightZone().findByType(require('react-native').Text).props.children).toBe('Right');
+    expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+  });
+
   it('keeps five tabs while replacing only target pane', () => {
     const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3'), s4: session('s4'), s5: session('s5') });
     act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
