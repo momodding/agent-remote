@@ -5,6 +5,11 @@ import { Alert, Modal, Pressable, Switch, type AlertButton, TextInput } from 're
 import { ConnectionSheet } from './ConnectionSheet';
 import type { Connection, ConnectionStore } from '../lib/connection';
 
+function isType(node: { type: unknown }, Component: unknown): boolean {
+  if (node.type === Component) return true;
+  return typeof Component === 'object' && Component !== null && 'type' in Component && Component.type === node.type;
+}
+
 const first: Connection = {
   name: 'Primary daemon', endpoint: 'https://daemon.example:8765', fingerprint: 'sha256:first',
   skipFingerprintVerification: true, token: 'first-token', clientName: 'test-client',
@@ -56,12 +61,11 @@ describe('ConnectionSheet row actions', () => {
     const tree = await renderSheet(props);
 
     expect(tree.root.findAllByType(Modal).length).toBe(1);
-    expect(actionFor(tree, `Select ${second.endpoint}`)).toBeDefined();
-    expect(tree.root.findByProps({ accessibilityLabel: `Select ${second.endpoint}` }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ accessibilityLabel: `Edit ${second.endpoint}` }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ accessibilityLabel: `Delete ${second.endpoint}` }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Add daemon' }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Done' }).type).toBe(Pressable);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Select ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Edit ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: `Delete ${second.endpoint}` }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Add daemon' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Done' }), Pressable)).toBe(true);
 
     act(() => actionFor(tree, `Select ${second.endpoint}`)());
     expect(props.onSelect).toHaveBeenCalledWith(second.endpoint);
@@ -97,9 +101,9 @@ describe('ConnectionSheet editor', () => {
 
     act(() => actionFor(tree, `Edit ${first.endpoint}`)());
 
-    expect(tree.root.findByProps({ accessibilityLabel: 'Cancel edit' }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Save' }).type).toBe(Pressable);
-    expect(tree.root.findByProps({ value: first.skipFingerprintVerification }).type).toBe(Switch);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Cancel edit' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ accessibilityLabel: 'Save' }), Pressable)).toBe(true);
+    expect(isType(tree.root.findByProps({ value: first.skipFingerprintVerification }), Switch)).toBe(true);
 
     const inputs = tree.root.findAllByType(TextInput);
     const byPlaceholder = (placeholder: string) => inputs.find((input) => input.props.placeholder === placeholder)!;
