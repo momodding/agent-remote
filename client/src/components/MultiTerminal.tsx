@@ -4,7 +4,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import Feather from '@expo/vector-icons/Feather';
 import { Terminal, type TerminalHandle } from './Terminal';
-import { ShortcutKeyboard } from './ShortcutKeyboard';
+import { ShortcutKeyboard, type ShortcutKeyboardHandle } from './ShortcutKeyboard';
 import { placeInSplit, reconcileSplit, type MultiSessionState, type SplitLayout, type SplitSide } from '../lib/multi-session';
 
 type Props = {
@@ -146,6 +146,7 @@ function DraggableTab({
 }
 
 export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInset = 0 }: Props) {
+  const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
   const { width, height } = useWindowDimensions();
   const isPortrait = height > width;
   const sessionList = Object.values(sessions);
@@ -203,7 +204,7 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
           <Terminal
             ref={(handle) => { if (handle) terminalRefs.current[session.sessionId] = handle; else delete terminalRefs.current[session.sessionId]; }}
             output={session.output}
-            onInput={(data) => onInput(session.sessionId, data)}
+            onInput={(data) => shortcutKeyboardRef.current?.input(data)}
             onResize={(cols, rows) => onResize(session.sessionId, cols, rows)}
           />
         </View>
@@ -214,7 +215,8 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
       </View>}
     </View>
     <ShortcutKeyboard
-      onInput={(data) => { const id = focusedSessionId ?? visibleSessions[0]?.sessionId; if (id) onInput(id, data); }}
+      ref={shortcutKeyboardRef}
+      onInput={(data) => { if (focusedSessionId) onInput(focusedSessionId, data); }}
       bottomInset={bottomInset}
       onCopy={() => getFocused()?.copy()}
       onPaste={() => getFocused()?.paste()}

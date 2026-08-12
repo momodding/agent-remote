@@ -35,8 +35,17 @@ jest.mock('react-native-reanimated', () => {
   return { __esModule: true, default: { View: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('AnimatedView', props, children) }, runOnJS: (fn: unknown) => fn, useAnimatedStyle: () => ({}), useReducedMotion: () => true, useSharedValue: (value: unknown) => ({ value }), withTiming: (value: unknown) => value };
 });
 
-jest.mock('./Terminal', () => ({ Terminal: () => null }));
-jest.mock('./ShortcutKeyboard', () => ({ ShortcutKeyboard: () => null }));
+let mockTerminalOnInput: ((data: string) => void) | undefined;
+let mockShortcutOnInput: ((data: string) => void) | undefined;
+jest.mock('./Terminal', () => ({ Terminal: (props: { onInput: (data: string) => void }) => { mockTerminalOnInput = props.onInput; return null; } }));
+jest.mock('./ShortcutKeyboard', () => {
+  const React = require('react');
+  return { ShortcutKeyboard: React.forwardRef((props: { onInput: (data: string) => void }, ref: React.ForwardedRef<{ input: (data: string) => void }>) => {
+    mockShortcutOnInput = props.onInput;
+    React.useImperativeHandle(ref, () => ({ input: (data: string) => props.onInput(`modified:${data}`) }));
+    return null;
+  }) };
+});
 jest.mock('react-native', () => {
   const React = require('react');
   const dimensionsState = { current: { width: 200, height: 100 } }; // ponytail: landscape default keeps existing X-axis drag tests unchanged
@@ -54,6 +63,16 @@ describe('MultiTerminal', () => {
     act(() => { tree = create(<MultiTerminal sessions={sessions} onInput={jest.fn()} onResize={jest.fn()} onClose={onClose} />); });
     return tree!;
   };
+
+  it('routes visible terminal input through shortcut modifier before parent dispatch', () => {
+    const onInput = jest.fn();
+    act(() => { create(<MultiTerminal sessions={{ a: session('a') }} onInput={onInput} onResize={jest.fn()} onClose={jest.fn()} />); });
+
+    act(() => mockTerminalOnInput?.('c'));
+
+    expect(mockShortcutOnInput).toBeDefined();
+    expect(onInput).toHaveBeenCalledWith('a', 'modified:c');
+  });
 
   it('shows first tab in one pane and keeps other sessions as tabs', () => {
     const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3') });

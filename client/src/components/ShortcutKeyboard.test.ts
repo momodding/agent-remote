@@ -1,4 +1,7 @@
-import { modifiedTerminalInput, terminalRows } from './ShortcutKeyboard';
+import { createElement, createRef } from 'react';
+import { act, create } from 'react-test-renderer';
+import { Pressable } from 'react-native';
+import { modifiedTerminalInput, ShortcutKeyboard, type ShortcutKeyboardHandle, terminalRows } from './ShortcutKeyboard';
 
 describe('terminal shortcuts', () => {
   it('uses xterm-compatible special-key byte sequences', () => {
@@ -11,5 +14,33 @@ describe('terminal shortcuts', () => {
     expect(modifiedTerminalInput('c', 'ctrl')).toBe('\x03');
     expect(modifiedTerminalInput('x', 'alt')).toBe('\x1bx');
     expect(modifiedTerminalInput('\x1b[A', 'ctrl')).toBe('\x1b[A');
+  });
+
+  it('routes imperative and shortcut input through one-shot modifiers', () => {
+    const onInput = jest.fn();
+    const ref = createRef<ShortcutKeyboardHandle>();
+    let tree!: ReturnType<typeof create>;
+    act(() => { tree = create(createElement(ShortcutKeyboard, { ref, onInput })); });
+    const ctrl = tree.root.findByProps({ accessibilityLabel: 'Ctrl' });
+
+    act(() => ctrl.props.onPress());
+    act(() => ref.current?.input('c'));
+    act(() => ref.current?.input('x'));
+
+    expect(onInput.mock.calls).toEqual([['\x03'], ['x']]);
+  });
+
+  it('keeps long-press modifiers locked for imperative and shortcut input', () => {
+    const onInput = jest.fn();
+    const ref = createRef<ShortcutKeyboardHandle>();
+    let tree!: ReturnType<typeof create>;
+    act(() => { tree = create(createElement(ShortcutKeyboard, { ref, onInput })); });
+    const ctrl = tree.root.findByProps({ accessibilityLabel: 'Ctrl' });
+
+    act(() => ctrl.props.onLongPress());
+    act(() => ref.current?.input('c'));
+    act(() => tree.root.findByProps({ accessibilityLabel: 'Esc' }).props.onPress());
+
+    expect(onInput.mock.calls).toEqual([['\x03'], ['\x1b']]);
   });
 });

@@ -8,7 +8,7 @@ import Feather from '@expo/vector-icons/Feather';
 import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
 import { MultiTerminal } from '../../src/components/MultiTerminal';
 import { AddSessionFAB } from '../../src/components/AddSessionFAB';
-import { ShortcutKeyboard } from '../../src/components/ShortcutKeyboard';
+import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
 import { SessionSocket } from '../../src/lib/session-socket';
@@ -26,6 +26,7 @@ export default function TerminalScreen() {
 
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
+  const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
   const socket = useRef<SessionSocket | undefined>(undefined);
   const isMultiModeCheck = mode === "multi";
   const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
@@ -222,6 +223,7 @@ export default function TerminalScreen() {
 
   if (isMultiModeCheck) {
     return <Wrapper {...wrapperProps}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
         <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}>
@@ -260,10 +262,12 @@ export default function TerminalScreen() {
       ) : (
         <Text style={styles.connecting}>Connecting…</Text>
       )}
+      </KeyboardAvoidingView>
     </Wrapper>;
   }
 
   return <Wrapper {...wrapperProps}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}>
       <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}><Feather name="arrow-left" size={20} color="#46B8C4" /></Pressable>
@@ -274,9 +278,10 @@ export default function TerminalScreen() {
       </View>
     </View>
     <View style={styles.terminal}>
-      {connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => socket.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}
+      {connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => shortcutKeyboardRef.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}
     </View>
-    <ShortcutKeyboard onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
+    <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
+    </KeyboardAvoidingView>
   </Wrapper>;
 }
 
