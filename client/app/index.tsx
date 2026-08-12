@@ -146,7 +146,29 @@ export default function Dashboard() {
   if (!connection) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
 
   return <SafeAreaView style={styles.screen}>
-  <View style={styles.topbar}><View><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.endpoint}>{new URL(connection.endpoint).host}</Text></View><View style={styles.actions}><Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}><Feather name="refresh-cw" size={18} color="#46B8C4" /></Pressable><Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { connectionEndpoint: connection.endpoint } })}><Feather name="folder" size={18} color="#46B8C4" /></Pressable><Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}><Feather name="server" size={18} color="#46B8C4" /></Pressable></View></View>
+  <View style={styles.topbar}>
+    <View>
+      <Text style={styles.wordmark}>agenticRemote</Text>
+      <Text style={styles.endpoint}>{new URL(connection.endpoint).host}</Text>
+    </View>
+    <View style={styles.actions}>
+      <Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}>
+        <Feather name="refresh-cw" size={18} color="#46B8C4" />
+      </Pressable>
+      {process.env.EXPO_PUBLIC_ENABLE_NOVNC === 'true' && (
+        <Pressable accessibilityLabel="Desktop" style={styles.action}
+          onPress={() => router.push({ pathname: '/desktop', params: { connectionEndpoint: connection.endpoint } })}>
+          <Feather name="monitor" size={18} color="#46B8C4" />
+        </Pressable>
+      )}
+      <Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { connectionEndpoint: connection.endpoint } })}>
+        <Feather name="folder" size={18} color="#46B8C4" />
+      </Pressable>
+      <Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}>
+        <Feather name="server" size={18} color="#46B8C4" />
+      </Pressable>
+    </View>
+  </View>
   <View style={styles.controls}><TextInput style={styles.search} value={query} onChangeText={setQuery} placeholder="Search sessions" placeholderTextColor="#888" /><View style={styles.createButtons}><Pressable accessibilityLabel="New shell" style={styles.primary} onPress={() => void create()}><Feather name="plus" size={18} color="#0A0A0A" /></Pressable><Pressable accessibilityLabel="New multi-session window" style={styles.secondary} onPress={() => void createMulti()}><Feather name="columns" size={18} color="#46B8C4" /></Pressable></View></View>
     <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} connectionEndpoint={connection.endpoint} onClose={() => void refresh()} /> : null} />
     {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
