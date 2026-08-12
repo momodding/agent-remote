@@ -327,6 +327,13 @@ func serve(configPath string) error {
 	}
 	listener := &sniffListener{Listener: rawListener, tlsConfig: tlsConfig}
 	log.Printf("serving on %s (accepting HTTP and HTTPS)", listener.Addr())
+	vncAddr := fmt.Sprintf("127.0.0.1:%d", cfg.VNCPort)
+	if conn, err := net.DialTimeout("tcp", vncAddr, 2*time.Second); err != nil {
+		log.Printf("[WARNING] Local VNC server not detected on %s — Remote Desktop will be unavailable", vncAddr)
+	} else {
+		conn.Close()
+		log.Printf("[INFO] Local VNC server detected on %s — Remote Desktop proxy available", vncAddr)
+	}
 	if os.Getenv("AGENTICREMOTE_TEST_ONESHOT") == "1" || cfg.ListenAddr == "127.0.0.1:0" {
 		go func() {
 			select {
