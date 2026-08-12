@@ -108,13 +108,21 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter 
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		log.Printf("request start remote=%s method=%s path=%s", r.RemoteAddr, r.Method, r.URL.RequestURI())
+
+		logURL := *r.URL
+		if q := logURL.Query(); q.Has("token") {
+			q.Set("token", "REDACTED")
+			logURL.RawQuery = q.Encode()
+		}
+		uri := logURL.RequestURI()
+
+		log.Printf("request start remote=%s method=%s path=%s", r.RemoteAddr, r.Method, uri)
 		rec := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
 		if rec.status == 0 {
 			rec.status = http.StatusOK
 		}
-		log.Printf("request complete remote=%s method=%s path=%s status=%d duration=%s", r.RemoteAddr, r.Method, r.URL.RequestURI(), rec.status, time.Since(started))
+		log.Printf("request complete remote=%s method=%s path=%s status=%d duration=%s", r.RemoteAddr, r.Method, uri, rec.status, time.Since(started))
 	})
 }
 
@@ -502,6 +510,11 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.limits.ReleaseWS()
 	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/ws/sessions/")
+	connType := "Terminal"
+	if sessionID == "bootstrap" {
+		connType = "Auth-Bootstrap"
+	}
+	log.Printf("[INFO] Connection opened | Type: %s | IP: %s | Endpoint: %s", connType, r.RemoteAddr, r.URL.Path)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
