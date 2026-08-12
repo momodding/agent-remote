@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -81,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/pairing", s.handlePairingPage)
 	}
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
+	mux.HandleFunc("/v1/ws/vnc", s.handleVNCProxy)
 	return logRequests(cors(s.allowedCIDR(mux)))
 }
 
@@ -624,6 +626,60 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 			_ = write(protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})
 		}
 	}
+}
+
+func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
+	// 1. Auth via query token (VNC-only)
+	token := r.URL.Query().Get("token")
+	if token == "" || s.auth == nil || !s.authSession(token) {
+		writeJSON(w, http.StatusUnauthorized, protocol.ErrorEnvelope{Type: "error", Code: "unauthorized", Message: "authentication failed"})
+		return
+	}
+
+	log.Printf("[INFO] Connection opened | Type: noVNC | IP: %s | Endpoint: %s", r.RemoteAddr, r.URL.Path)
+
+	// 2. Resource limits
+	if err := s.limits.AcquireWS(r.Context()); err != nil {
+		writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_connections", Message: err.Error()})
+		return
+	}
+	defer s.limits.ReleaseWS()
+
+	// 3. Backend availability
+	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
+	tcpConn, err := net.DialTimeout("tcp", vncAddr, 5*time.Second)
+	if err != nil {
+		log.Printf("[ERROR] VNC proxy: cannot reach %s: %v", vncAddr, err)
+		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorEnvelope{Type: "error", Code: "vnc_unavailable", Message: "VNC server is not running"})
+		return
+	}
+
+	// 4. Disable global write timeouts on the HTTP connection
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	// 5. Upgrade
+	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
+	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
+		for _, p := range strings.Split(h, ",") {
+			acceptOpts.Subprotocols = append(acceptOpts.Subprotocols, strings.TrimSpace(p))
+		}
+	}
+	wsConn, err := websocket.Accept(w, r, acceptOpts)
+	if err != nil {
+		tcpConn.Close()
+		log.Printf("[ERROR] VNC proxy: websocket accept: %v", err)
+		return
+	}
+
+	nc := websocket.NetConn(r.Context(), wsConn, websocket.MessageBinary)
+
+	// 6. Bridge
+	errc := make(chan error, 2)
+	go func() { defer tcpConn.Close(); _, err := io.Copy(tcpConn, nc); errc <- err }()
+	go func() { defer wsConn.CloseNow(); _, err := io.Copy(nc, tcpConn); errc <- err }()
+	<-errc
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
