@@ -10,6 +10,8 @@ import { APIError } from './lib/api';
 const mockCloseSession = jest.fn();
 const mockSocket = { connect: jest.fn(), close: jest.fn(), input: jest.fn(), resize: jest.fn() };
 let mockOnState: (state: string, waitState?: unknown) => void = () => undefined;
+let mockTerminalInput: ((data: string) => void) | undefined;
+let mockShortcutInput: ((data: string) => void) | undefined;
 let mockOnOutput: (data: string) => void = () => undefined;
 
 const mockConnection: Connection = {
@@ -53,9 +55,16 @@ jest.mock('./lib/session-socket', () => ({
 }));
 let mockTerminalOutput: string | undefined;
 jest.mock('./components/Terminal', () => ({
-  Terminal: (props: { output: string }) => { mockTerminalOutput = props.output; return null; },
+  Terminal: (props: { output: string; onInput: (data: string) => void }) => { mockTerminalOutput = props.output; mockTerminalInput = props.onInput; return null; },
 }));
-jest.mock('./components/ShortcutKeyboard', () => ({ ShortcutKeyboard: () => null }));
+jest.mock('./components/ShortcutKeyboard', () => {
+  const React = require('react');
+  return { ShortcutKeyboard: React.forwardRef((props: { onInput: (data: string) => void }, ref: React.ForwardedRef<{ input: (data: string) => void }>) => {
+    mockShortcutInput = props.onInput;
+    React.useImperativeHandle(ref, () => ({ input: (data: string) => props.onInput(`modified:${data}`) }));
+    return null;
+  }) };
+});
 
 async function renderScreen() {
   let tree: ReactTestRenderer;
@@ -66,6 +75,15 @@ async function renderScreen() {
   });
   return tree!;
 }
+
+it('routes native terminal input through shortcut modifier before socket input', async () => {
+  await renderScreen();
+
+  act(() => mockTerminalInput?.('c'));
+
+  expect(mockShortcutInput).toBeDefined();
+  expect(mockSocket.input).toHaveBeenCalledWith('modified:c');
+});
 
 function actionFor(tree: ReactTestRenderer, label: string) {
   return tree.root.findByProps({ accessibilityLabel: label }).props.onPress as () => void;
