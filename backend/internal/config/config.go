@@ -29,6 +29,7 @@ type Config struct {
 	PairingRotationSeconds      int      `json:"pairingRotationSeconds"`
 	PairingPageUsername         string   `json:"pairingPageUsername"`
 	PairingPagePassword         string   `json:"pairingPagePassword"`
+	VNCPort                     int      `json:"vncPort"`
 }
 
 func Default() Config {
@@ -48,6 +49,7 @@ func Default() Config {
 		SkipFingerprintVerification: false,
 		ExpoPushEndpoint:            "https://exp.host/--/api/v2/push/send",
 		PairingRotationSeconds:      45,
+		VNCPort:                     5900,
 	}
 }
 
@@ -112,6 +114,9 @@ func Validate(cfg Config) error {
 	}
 	if (cfg.PairingPageUsername == "") != (cfg.PairingPagePassword == "") {
 		return errors.New("pairingPageUsername and pairingPagePassword must be set together")
+	}
+	if cfg.VNCPort < 1 || cfg.VNCPort > 65535 {
+		return errors.New("vncPort must be 1-65535")
 	}
 	return nil
 }
