@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"html"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -527,5 +528,109 @@ func TestBootstrapRejectsNonAuthResponseJSON(t *testing.T) {
 		_ = json.NewDecoder(rec.Body)
 	}
 }
+func TestHandleVNCProxyMissingToken(t *testing.T) {
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleVNCProxyInvalidToken(t *testing.T) {
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token=bogus", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleVNCProxyUnavailable(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	// Find an unused port to simulate VNC down
+	srv.cfg.VNCPort = 40001
+	token := testBearerToken(t, srv, pairings)
+	
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token="+token, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestHandleVNCProxyBytesFlow(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+	
+	// Start dummy VNC server
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	port := vncListener.Addr().(*net.TCPAddr).Port
+	srv.cfg.VNCPort = port
+	
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4)
+		_, _ = conn.Read(buf)
+		if string(buf) == "PING" {
+			_, _ = conn.Write([]byte("PONG"))
+		}
+	}()
+	
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("PING")); err != nil {
+		t.Fatal(err)
+	}
+	
+	_, reply, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != "PONG" {
+		t.Fatalf("expected PONG, got %s", reply)
+	}
+}
+
+func TestLogRequestRedactsTokens(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log.SetOutput(buf)
+	defer log.SetOutput(log.Writer())
+	
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token=mysecrettoken&other=pass", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	srv.Handler().ServeHTTP(rec, req)
+	
+	logOut := buf.String()
+	if strings.Contains(logOut, "mysecrettoken") {
+		t.Fatalf("expected token to be redacted, got logs: %s", logOut)
+	}
+	if !strings.Contains(logOut, "token=REDACTED") {
+		t.Fatalf("expected REDACTED marker in logs: %s", logOut)
+	}
+}
+
 
 var _ = tls.VersionTLS12

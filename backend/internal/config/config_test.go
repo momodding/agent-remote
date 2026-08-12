@@ -217,6 +217,35 @@ func TestPublicEndpointValidation(t *testing.T) {
 		})
 	}
 }
+func TestVNCPortValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		port    int
+		wantErr bool
+	}{
+		{name: "default", port: 5900, wantErr: false},
+		{name: "max", port: 65535, wantErr: false},
+		{name: "min", port: 1, wantErr: false},
+		{name: "zero", port: 0, wantErr: true},
+		{name: "negative", port: -1, wantErr: true},
+		{name: "too high", port: 65536, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.VNCPort = tt.port
+			err := Validate(cfg)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 
 func TestListenSchemeValidation(t *testing.T) {
 	tests := []struct {
