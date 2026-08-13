@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -12,8 +13,31 @@ func TestPathTraversalRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join("..", "etc", "passwd")
-	if _, _, err := svc.Resolve(target); err == nil {
+	if _, _, _, err := svc.Resolve(target); err == nil {
 		t.Fatal("expected traversal to fail")
+	}
+}
+
+func TestAbsolutePathListingUsesAbsolutePaths(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "host.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(workspace, t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := svc.List(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one entry, got %d", len(entries))
+	}
+	want := filepath.ToSlash(filepath.Join(outside, "host.txt"))
+	if entries[0].Path != want {
+		t.Fatalf("path = %q, want %q", entries[0].Path, want)
 	}
 }
 
