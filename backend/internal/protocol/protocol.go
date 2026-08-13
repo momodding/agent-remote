@@ -55,6 +55,11 @@ type RenameFileRequest struct {
 	NewPath string `json:"newPath"`
 }
 
+type CopyFileRequest struct {
+	Path    string `json:"path"`
+	NewPath string `json:"newPath"`
+}
+
 type AuthHello struct {
 	Type        string `json:"type"`
 	PairingID   string `json:"pairingId"`
@@ -150,7 +155,7 @@ type GitEntry struct {
 
 type NotifyRegisterRequest struct {
 	Provider string `json:"provider"`
-	Token string `json:"token"`
+	Token    string `json:"token"`
 }
 
 type ListShellsResponse struct {

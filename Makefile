@@ -2,6 +2,7 @@
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
+ENABLE_NOVNC ?= true
 DAEMON_TARGET ?=
 CLIENT_TARGET ?=
 GOFLAGS ?=
@@ -163,9 +164,9 @@ client-test:
 client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
-			web) cd client && bun install && bun run build:web && cd .. ;; \
-			android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p builds && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
-			ios) cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 bunx eas-cli build --platform ios --local && cd .. ;; \
+			web) cd client && bun install && EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bun run build:web && cd .. ;; \
+			android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p builds && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
+			ios) cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform ios --local && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
@@ -205,6 +206,7 @@ help:
 	echo '  client-build-web      alias for client-build CLIENT_TARGETS=web'; \
 	echo '  client-build-android  alias for client-build CLIENT_TARGETS=android'; \
 	echo '  client-build-ios      alias for client-build CLIENT_TARGETS=ios'; \
+	echo '  ENABLE_NOVNC=false disables the Desktop/noVNC button in client builds'; \
 	echo '  test                  run backend and client tests'; \
 	echo '  lint                  run backend vet and client typecheck'; \
 	echo '  run-daemon            run daemon using examples/config.local.json'; \
