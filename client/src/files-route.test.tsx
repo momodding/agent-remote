@@ -18,7 +18,16 @@ const mockConnection: Connection = {
 const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
 const mockRootEntries: FileEntry[] = [{ path: 'docs', name: 'docs', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockDocsEntries: FileEntry[] = [{ path: 'docs/readme.txt', name: 'readme.txt', isDir: false, size: 12, mode: '-rw-r--r--' }];
-const mockFiles = jest.fn(async (path: string) => path === 'docs' ? mockDocsEntries : mockRootEntries);
+const mockHostEntries: FileEntry[] = [{ path: '/tmp', name: 'tmp', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
+const mockTmpEntries: FileEntry[] = [{ path: '/tmp/other', name: 'other', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
+const mockOtherEntries: FileEntry[] = [];
+const mockFiles = jest.fn(async (path: string) => {
+  if (path === 'docs') return mockDocsEntries;
+  if (path === '/') return mockHostEntries;
+  if (path === '/tmp') return mockTmpEntries;
+  if (path === '/tmp/other') return mockOtherEntries;
+  return mockRootEntries;
+});
 const mockGitStatus = jest.fn(async () => ({ available: true, entries: [] }));
 
 jest.mock('expo-router', () => ({
@@ -41,6 +50,10 @@ jest.mock('./lib/api', () => ({
 }));
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 async function renderScreen() {
   let tree!: ReactTestRenderer;
   await act(async () => {
@@ -52,7 +65,7 @@ async function renderScreen() {
 }
 
 function press(tree: ReactTestRenderer, label: string) {
-  act(() => tree.root.findByProps({ accessibilityLabel: label }).props.onPress());
+  tree.root.findByProps({ accessibilityLabel: label }).props.onPress();
 }
 
 it('shows daemon files and supports breadcrumb, parent, current refresh, and close', async () => {
@@ -73,4 +86,28 @@ it('shows daemon files and supports breadcrumb, parent, current refresh, and clo
 
   act(() => tree.root.findByProps({ accessibilityLabel: 'Close file manager' }).props.onPress());
   expect(router.replace).toHaveBeenCalledWith('/');
+});
+
+it('opens typed absolute paths and host root', async () => {
+  const tree = await renderScreen();
+  act(() => tree.root.findByProps({ accessibilityLabel: 'Path' }).props.onChangeText('/tmp/other'));
+  await act(async () => { press(tree, 'Go to path'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('/tmp/other');
+
+  await act(async () => { press(tree, 'Host root'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('/');
+});
+
+it('navigates absolute breadcrumbs and parent paths', async () => {
+  const tree = await renderScreen();
+  await act(async () => { press(tree, 'Host root'); await Promise.resolve(); });
+  await act(async () => { press(tree, 'Open folder tmp'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('/tmp');
+
+  await act(async () => { press(tree, 'Navigate to /'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('/');
+
+  await act(async () => { press(tree, 'Open folder tmp'); await Promise.resolve(); });
+  await act(async () => { press(tree, 'Parent directory'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('/');
 });

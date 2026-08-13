@@ -12,6 +12,7 @@ export default function FilesScreen() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [api, setAPI] = useState<AgenticRemoteAPI | null>(null);
   const [path, setPath] = useState('');
+  const [pathText, setPathText] = useState('');
   const [query, setQuery] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [git, setGit] = useState<GitStatus | null>(null);
@@ -20,7 +21,7 @@ export default function FilesScreen() {
   const requestRef = useRef(0);
 
   const reload = useCallback(async (client = api, location = path, search = query) => {
-    if (!client) return;
+    if (!client) return false;
     const request = ++requestRef.current;
     setLoading(true);
     try {
@@ -28,11 +29,13 @@ export default function FilesScreen() {
         search ? client.searchFiles(location, search) : client.files(location),
         client.gitStatus(location),
       ]);
-      if (request !== requestRef.current) return;
+      if (request !== requestRef.current) return false;
       setEntries(nextEntries);
       setGit(status);
+      return true;
     } catch (error) {
       if (request === requestRef.current) Alert.alert('Could not load files', error instanceof Error ? error.message : 'Unknown error');
+      return false;
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
@@ -55,13 +58,19 @@ export default function FilesScreen() {
   }, [connectionEndpoint]);
 
   const gitCodes = useMemo(() => new Map(git?.entries.map((entry) => [entry.path, entry.code]) ?? []), [git]);
-  const navigate = (location: string) => {
+  const navigate = async (location: string) => {
+    const previousPath = path;
+    const previousPathText = pathText;
     setPath(location);
+    setPathText(location);
     setQuery('');
-    void reload(api, location, '');
+    if (!await reload(api, location, '')) {
+      setPath(previousPath);
+      setPathText(previousPathText);
+    }
   };
   const open = async (entry: FileEntry) => {
-    if (entry.isDir) return navigate(entry.path);
+    if (entry.isDir) return void navigate(entry.path);
     if (!api) return;
     try { setFile(await api.readFile(entry.path)); }
     catch (error) { Alert.alert('Could not open file', error instanceof Error ? error.message : 'Unknown error'); }
@@ -69,8 +78,8 @@ export default function FilesScreen() {
 
   if (file) return <Editor file={file} api={api} onBack={() => { setFile(null); void reload(); }} />;
 
-  const segments = path.split('/').filter(Boolean);
-  const breadcrumbs = [{ label: 'Workspace', target: '' }, ...segments.map((segment, index) => ({ label: segment, target: segments.slice(0, index + 1).join('/') }))];
+  const breadcrumbs = buildBreadcrumbs(path);
+  const parentPath = getParentPath(path);
 
   return <SafeAreaView style={styles.screen}>
     <Stack.Screen options={{ headerShown: false }} />
@@ -90,7 +99,7 @@ export default function FilesScreen() {
       showsHorizontalScrollIndicator={false}
       data={breadcrumbs}
       keyExtractor={(item) => item.target || '/'}
-      renderItem={({ item, index }) => <Pressable accessibilityLabel={`Navigate to ${item.label}`} style={styles.breadcrumb} onPress={() => navigate(item.target)}>
+      renderItem={({ item, index }) => <Pressable accessibilityLabel={`Navigate to ${item.label}`} style={styles.breadcrumb} onPress={() => void navigate(item.target)}>
         {index > 0 && <Feather name="chevron-right" size={16} color="#666" />}
         <Text style={[styles.breadcrumbText, item.target === path && styles.breadcrumbActive]}>{item.label}</Text>
       </Pressable>}
@@ -98,8 +107,13 @@ export default function FilesScreen() {
     <View style={styles.searchRow}>
       <TextInput style={styles.input} value={query} onChangeText={(value) => { setQuery(value); if (!value) void reload(api, path, ''); }} onSubmitEditing={() => void reload()} placeholder="Search files…" placeholderTextColor="#777" returnKeyType="search" />
     </View>
-    <Pressable accessibilityLabel="Parent directory" disabled={!path} style={[styles.parent, !path && styles.disabled]} onPress={() => navigate(segments.slice(0, -1).join('/'))}>
-      <Feather name="corner-up-left" size={18} color={path ? '#F0F0F0' : '#666'} />
+    <View style={styles.pathRow}>
+      <TextInput accessibilityLabel="Path" style={[styles.input, styles.pathInput]} value={pathText} onChangeText={setPathText} onSubmitEditing={() => void navigate(pathText.trim())} placeholder="Path" placeholderTextColor="#777" autoCapitalize="none" autoCorrect={false} returnKeyType="go" />
+      <Pressable accessibilityLabel="Go to path" style={styles.smallBtn} onPress={() => void navigate(pathText.trim())}><Text style={styles.smallBtnText}>Go</Text></Pressable>
+      <Pressable accessibilityLabel="Host root" style={styles.smallBtn} onPress={() => void navigate('/')}><Text style={styles.smallBtnText}>Host root</Text></Pressable>
+    </View>
+    <Pressable accessibilityLabel="Parent directory" disabled={parentPath == null} style={[styles.parent, parentPath == null && styles.disabled]} onPress={() => parentPath != null && void navigate(parentPath)}>
+      <Feather name="corner-up-left" size={18} color={parentPath != null ? '#F0F0F0' : '#666'} />
       <Text style={styles.parentText}>Parent directory</Text>
     </Pressable>
     {loading && <ActivityIndicator color="#46B8C4" style={styles.loader} />}
@@ -125,6 +139,23 @@ function formatBytes(bytes: number) {
   const units = ['B', 'KB', 'MB', 'GB'];
   const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${parseFloat((bytes / 1024 ** unit).toFixed(1))} ${units[unit]}`;
+}
+
+function buildBreadcrumbs(path: string) {
+  if (path.startsWith('/')) {
+    const segments = path.split('/').filter(Boolean);
+    return [{ label: '/', target: '/' }, ...segments.map((segment, index) => ({ label: segment, target: `/${segments.slice(0, index + 1).join('/')}` }))];
+  }
+  const segments = path.split('/').filter(Boolean);
+  return [{ label: 'Workspace', target: '' }, ...segments.map((segment, index) => ({ label: segment, target: segments.slice(0, index + 1).join('/') }))];
+}
+
+function getParentPath(path: string) {
+  if (!path || path === '/') return null;
+  const trimmed = path.replace(/\/$/, '');
+  const index = trimmed.lastIndexOf('/');
+  if (path.startsWith('/')) return index <= 0 ? '/' : trimmed.slice(0, index);
+  return index < 0 ? '' : trimmed.slice(0, index);
 }
 
 function Editor({ file, api, onBack }: { file: ReadFileResponse; api: AgenticRemoteAPI | null; onBack: () => void }) {
@@ -157,6 +188,10 @@ const styles = StyleSheet.create({
   breadcrumbActive: { color: '#F0F0F0', fontWeight: '600' },
   searchRow: { padding: 12 },
   input: { minHeight: 46, paddingHorizontal: 12, borderWidth: 1, borderRadius: 8, borderColor: '#3A3A3A', color: '#F0F0F0' },
+  pathRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingBottom: 12 },
+  pathInput: { flex: 1 },
+  smallBtn: { minHeight: 46, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#123338' },
+  smallBtnText: { color: '#D9FAFF', fontWeight: '700' },
   parent: { minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 12, borderBottomWidth: 1, borderColor: '#181818' },
   parentText: { color: '#F0F0F0', fontSize: 15 },
   disabled: { opacity: 0.35 },
