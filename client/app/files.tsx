@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Directory, File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import Feather from '@expo/vector-icons/Feather';
 import { AgenticRemoteAPI } from '../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
@@ -17,6 +19,9 @@ export default function FilesScreen() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [git, setGit] = useState<GitStatus | null>(null);
   const [file, setFile] = useState<ReadFileResponse | null>(null);
+  const [clipboard, setClipboard] = useState<null | { mode: 'copy' | 'cut'; entry: FileEntry }>(null);
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  const [renameText, setRenameText] = useState('');
   const [loading, setLoading] = useState(true);
   const requestRef = useRef(0);
 
@@ -75,6 +80,65 @@ export default function FilesScreen() {
     try { setFile(await api.readFile(entry.path)); }
     catch (error) { Alert.alert('Could not open file', error instanceof Error ? error.message : 'Unknown error'); }
   };
+  const paste = async () => {
+    if (!api || !clipboard) return;
+    const destination = joinRemotePath(path, clipboard.entry.name);
+    try {
+      if (clipboard.mode === 'copy') await api.copyFile(clipboard.entry.path, destination);
+      else await api.renameFile(clipboard.entry.path, destination);
+      setClipboard(null);
+      void reload(api, path, '');
+    } catch (error) {
+      Alert.alert('Could not paste file', error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+  const saveRename = async () => {
+    if (!api || !renameTarget) return;
+    const name = renameText.trim();
+    if (!name || /[/\\]/.test(name)) {
+      Alert.alert('Invalid name');
+      return;
+    }
+    try {
+      await api.renameFile(renameTarget.path, joinRemotePath(getParentPath(renameTarget.path) ?? '', name));
+      setRenameTarget(null);
+      setRenameText('');
+      void reload(api, path, '');
+    } catch (error) {
+      Alert.alert('Could not rename file', error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+  const download = async (entry: FileEntry, mode: 'download' | 'open') => {
+    if (!api) return;
+    try {
+      const { url, headers } = api.downloadRequest(entry.path);
+      if (Platform.OS === 'web') {
+        const response = await fetch(url, { headers });
+        if (!response.ok) throw new Error(response.statusText || 'Download failed');
+        const blobURL = URL.createObjectURL(await response.blob());
+        if (mode === 'open') {
+          window.open(blobURL, '_blank', 'noopener,noreferrer');
+        } else {
+          const link = document.createElement('a');
+          link.href = blobURL;
+          link.download = entry.name;
+          link.click();
+        }
+        setTimeout(() => URL.revokeObjectURL(blobURL), 1000);
+        return;
+      }
+      const directory = new Directory(Paths.cache, 'agenticremote-downloads');
+      directory.create({ idempotent: true, intermediates: true });
+      const file = await File.downloadFileAsync(url, directory, { headers, idempotent: true });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, { dialogTitle: mode === 'open' ? 'Open with…' : 'Download file', mimeType: 'application/octet-stream' });
+      } else {
+        Alert.alert('Downloaded file', file.uri);
+      }
+    } catch (error) {
+      Alert.alert(mode === 'open' ? 'Could not open file' : 'Could not download file', error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
 
   if (file) return <Editor file={file} api={api} onBack={() => { setFile(null); void reload(); }} />;
 
@@ -116,6 +180,11 @@ export default function FilesScreen() {
       <Feather name="corner-up-left" size={18} color={parentPath != null ? '#F0F0F0' : '#666'} />
       <Text style={styles.parentText}>Parent directory</Text>
     </Pressable>
+    {clipboard && <View style={styles.pasteBar}>
+      <Text style={styles.pasteText} numberOfLines={1}>{clipboard.mode === 'copy' ? 'Copy' : 'Cut'} {clipboard.entry.name}</Text>
+      <Pressable accessibilityLabel="Paste into current directory" style={styles.smallBtn} onPress={() => void paste()}><Text style={styles.smallBtnText}>Paste</Text></Pressable>
+      <Pressable accessibilityLabel="Cancel paste" style={styles.ghostBtn} onPress={() => setClipboard(null)}><Text style={styles.ghostBtnText}>Cancel</Text></Pressable>
+    </View>}
     {loading && <ActivityIndicator color="#46B8C4" style={styles.loader} />}
     {!loading && entries.length === 0 && <Text style={styles.empty}>{query ? 'No matching files' : 'No files in this directory'}</Text>}
     <FlatList
@@ -129,8 +198,27 @@ export default function FilesScreen() {
         </View>
         {gitCodes.has(item.path) && <Text style={styles.gitCode}>{gitCodes.get(item.path)}</Text>}
         {!item.isDir && item.size != null && <Text style={styles.size}>{formatBytes(item.size)}</Text>}
+        <View style={styles.entryActions}>
+          <Pressable accessibilityLabel={`Copy ${item.name}`} style={styles.actionBtn} onPress={() => setClipboard({ mode: 'copy', entry: item })}><Feather name="copy" size={17} color="#D9FAFF" /></Pressable>
+          <Pressable accessibilityLabel={`Cut ${item.name}`} style={styles.actionBtn} onPress={() => setClipboard({ mode: 'cut', entry: item })}><Feather name="scissors" size={17} color="#D9FAFF" /></Pressable>
+          <Pressable accessibilityLabel={`Rename ${item.name}`} style={styles.actionBtn} onPress={() => { setRenameTarget(item); setRenameText(item.name); }}><Feather name="edit-2" size={17} color="#D9FAFF" /></Pressable>
+          {!item.isDir && <Pressable accessibilityLabel={`Download ${item.name}`} style={styles.actionBtn} onPress={() => void download(item, 'download')}><Feather name="download" size={17} color="#D9FAFF" /></Pressable>}
+          {!item.isDir && <Pressable accessibilityLabel={`Open with ${item.name}`} style={styles.actionBtn} onPress={() => void download(item, 'open')}><Feather name="external-link" size={17} color="#D9FAFF" /></Pressable>}
+        </View>
       </Pressable>}
     />
+    <Modal visible={renameTarget != null} animationType="slide" onRequestClose={() => setRenameTarget(null)}>
+      <SafeAreaView style={styles.screen}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBody}>
+          <Text style={styles.modalTitle}>Rename {renameTarget?.name}</Text>
+          <TextInput accessibilityLabel="New name" style={styles.input} value={renameText} onChangeText={setRenameText} autoCapitalize="none" autoCorrect={false} />
+          <View style={styles.modalActions}>
+            <Pressable accessibilityLabel="Cancel rename" style={styles.ghostBtn} onPress={() => setRenameTarget(null)}><Text style={styles.ghostBtnText}>Cancel</Text></Pressable>
+            <Pressable accessibilityLabel="Save rename" style={styles.smallBtn} onPress={() => void saveRename()}><Text style={styles.smallBtnText}>Save</Text></Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </Modal>
   </SafeAreaView>;
 }
 
@@ -157,6 +245,13 @@ function getParentPath(path: string) {
   if (path.startsWith('/')) return index <= 0 ? '/' : trimmed.slice(0, index);
   return index < 0 ? '' : trimmed.slice(0, index);
 }
+
+function joinRemotePath(base: string, name: string) {
+  if (!base) return name;
+  if (base === '/') return `/${name}`;
+  return `${base.replace(/\/$/, '')}/${name}`;
+}
+
 
 function Editor({ file, api, onBack }: { file: ReadFileResponse; api: AgenticRemoteAPI | null; onBack: () => void }) {
   const [content, setContent] = useState(file.text);
@@ -192,16 +287,25 @@ const styles = StyleSheet.create({
   pathInput: { flex: 1 },
   smallBtn: { minHeight: 46, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#123338' },
   smallBtnText: { color: '#D9FAFF', fontWeight: '700' },
+  ghostBtn: { minHeight: 46, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#3A3A3A' },
+  ghostBtnText: { color: '#F0F0F0', fontWeight: '700' },
   parent: { minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 12, borderBottomWidth: 1, borderColor: '#181818' },
   parentText: { color: '#F0F0F0', fontSize: 15 },
+  pasteBar: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: '#181818', backgroundColor: '#101B1D' },
+  pasteText: { flex: 1, color: '#F0F0F0', fontWeight: '600' },
   disabled: { opacity: 0.35 },
   loader: { marginTop: 36 },
   empty: { color: '#888', textAlign: 'center', marginTop: 36 },
-  entry: { minHeight: 64, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderColor: '#181818' },
-  entryInfo: { flex: 1 },
+  entry: { minHeight: 64, paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderColor: '#181818' },
+  entryInfo: { flex: 1, minWidth: 0 },
   entryName: { color: '#F0F0F0', fontSize: 16 },
   entryPath: { color: '#888', fontSize: 12, marginTop: 2 },
   gitCode: { color: '#E8A05C', fontSize: 13, fontWeight: '700', minWidth: 20, textAlign: 'center' },
   size: { color: '#888', fontSize: 13 },
+  entryActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  actionBtn: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#123338' },
+  modalBody: { flex: 1, justifyContent: 'center', gap: 14, padding: 20 },
+  modalTitle: { color: '#F0F0F0', fontSize: 20, fontWeight: '700' },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   editor: { flex: 1, padding: 16, color: '#F0F0F0', fontSize: 15, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 });
