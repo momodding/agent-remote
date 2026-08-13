@@ -58,3 +58,70 @@ func TestDeleteDisabledByDefault(t *testing.T) {
 		t.Fatalf("expected destructive disabled error, got %v", err)
 	}
 }
+
+func TestRenameRejectsExistingDestination(t *testing.T) {
+	root := t.TempDir()
+	svc, _ := NewService(root, root, true)
+	if err := os.WriteFile(filepath.Join(root, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Rename("old.txt", "new.txt"); !errors.Is(err, ErrDestinationExists) {
+		t.Fatalf("expected destination exists, got %v", err)
+	}
+}
+
+func TestCopyCopiesFile(t *testing.T) {
+	root := t.TempDir()
+	svc, _ := NewService(root, root, false)
+	if err := os.WriteFile(filepath.Join(root, "src.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Copy("src.txt", "dst.txt"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "dst.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("copied data = %q", data)
+	}
+}
+
+func TestCopyCopiesNestedDirectory(t *testing.T) {
+	root := t.TempDir()
+	svc, _ := NewService(root, root, false)
+	if err := os.MkdirAll(filepath.Join(root, "src", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "nested", "file.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Copy("src", "dst"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "dst", "nested", "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("copied data = %q", data)
+	}
+}
+
+func TestCopyRejectsSymlinkSource(t *testing.T) {
+	root := t.TempDir()
+	svc, _ := NewService(root, root, false)
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target.txt", filepath.Join(root, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Copy("link.txt", "dst.txt"); err == nil {
+		t.Fatal("expected symlink copy to fail")
+	}
+}

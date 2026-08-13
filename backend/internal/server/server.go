@@ -12,11 +12,13 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +77,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/fs/write", s.withAuth(s.handleFSWrite))
 	mux.HandleFunc("/v1/fs/delete", s.withAuth(s.handleFSDelete))
 	mux.HandleFunc("/v1/fs/rename", s.withAuth(s.handleFSRename))
+	mux.HandleFunc("/v1/fs/copy", s.withAuth(s.handleFSCopy))
+	mux.HandleFunc("/v1/fs/download", s.withAuth(s.handleFSDownload))
 	mux.HandleFunc("/v1/fs/upload", s.withAuth(s.handleFSUpload))
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
@@ -307,11 +311,57 @@ func (s *Server) handleFSRename(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusBadRequest
 		if errors.Is(err, fsservice.ErrDestructiveDisabled) {
 			status = http.StatusForbidden
+		} else if errors.Is(err, fsservice.ErrDestinationExists) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, protocol.ErrorEnvelope{Type: "error", Code: "fs_rename_failed", Message: err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleFSCopy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req protocol.CopyFileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+		return
+	}
+	if err := s.fs.Copy(req.Path, req.NewPath); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, fsservice.ErrDestinationExists) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, protocol.ErrorEnvelope{Type: "error", Code: "fs_copy_failed", Message: err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleFSDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	file, info, filename, err := s.fs.OpenDownload(r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_download_failed", Message: err.Error()})
+		return
+	}
+	defer file.Close()
+	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filename))
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	if _, err := io.Copy(w, file); err != nil {
+		log.Printf("download copy failed path=%q err=%v", filename, err)
+	}
 }
 
 func (s *Server) handleFSUpload(w http.ResponseWriter, r *http.Request) {

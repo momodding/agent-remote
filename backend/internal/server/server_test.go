@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,6 +66,70 @@ func TestHandleShellsRequiresBearerAndReturnsList(t *testing.T) {
 	}
 	if len(out.Shells) == 0 {
 		t.Fatalf("expected shells list to be non-empty")
+	}
+}
+
+func TestFSCopyRequiresBearerAndCopiesFile(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkspaceRoot, "src.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"path":"src.txt","newPath":"dst.txt"}`))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"path":"src.txt","newPath":"dst.txt"}`))
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.Code, resp.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(srv.cfg.WorkspaceRoot, "dst.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("copied data = %q", data)
+	}
+}
+
+func TestFSCopyConflictReturns409(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkspaceRoot, "src.txt"), []byte("src"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkspaceRoot, "dst.txt"), []byte("dst"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/fs/copy", strings.NewReader(`{"path":"src.txt","newPath":"dst.txt"}`))
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestFSDownloadReturnsAttachment(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkspaceRoot, "file.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/fs/download?path=file.txt", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if resp.Body.String() != "hello" {
+		t.Fatalf("body = %q", resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Disposition"); !strings.Contains(got, `attachment; filename="file.txt"`) {
+		t.Fatalf("content disposition = %q", got)
 	}
 }
 
@@ -553,7 +618,7 @@ func TestHandleVNCProxyUnavailable(t *testing.T) {
 	// Find an unused port to simulate VNC down
 	srv.cfg.VNCPort = 40001
 	token := testBearerToken(t, srv, pairings)
-	
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token="+token, nil)
 	srv.Handler().ServeHTTP(rec, req)
@@ -565,7 +630,7 @@ func TestHandleVNCProxyUnavailable(t *testing.T) {
 func TestHandleVNCProxyBytesFlow(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	token := testBearerToken(t, srv, pairings)
-	
+
 	// Start dummy VNC server
 	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -574,7 +639,7 @@ func TestHandleVNCProxyBytesFlow(t *testing.T) {
 	defer vncListener.Close()
 	port := vncListener.Addr().(*net.TCPAddr).Port
 	srv.cfg.VNCPort = port
-	
+
 	go func() {
 		conn, err := vncListener.Accept()
 		if err != nil {
@@ -587,22 +652,22 @@ func TestHandleVNCProxyBytesFlow(t *testing.T) {
 			_, _ = conn.Write([]byte("PONG"))
 		}
 	}()
-	
+
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	
+
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte("PING")); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	_, reply, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -616,13 +681,13 @@ func TestLogRequestRedactsTokens(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log.SetOutput(buf)
 	defer log.SetOutput(log.Writer())
-	
+
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token=mysecrettoken&other=pass", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	srv.Handler().ServeHTTP(rec, req)
-	
+
 	logOut := buf.String()
 	if strings.Contains(logOut, "mysecrettoken") {
 		t.Fatalf("expected token to be redacted, got logs: %s", logOut)
@@ -631,6 +696,5 @@ func TestLogRequestRedactsTokens(t *testing.T) {
 		t.Fatalf("expected REDACTED marker in logs: %s", logOut)
 	}
 }
-
 
 var _ = tls.VersionTLS12
