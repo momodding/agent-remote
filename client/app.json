@@ -34,7 +34,8 @@
       "expo-router",
       "expo-camera",
       "expo-secure-store",
-      "expo-build-properties"
+      "expo-build-properties",
+      "expo-sharing"
     ],
     "extra": {
       "router": {},

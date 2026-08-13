@@ -1,4 +1,5 @@
 import type {
+  CopyFileRequest,
   CreateSessionRequest,
   ErrorEnvelope,
   FileEntry,
@@ -6,6 +7,7 @@ import type {
   ListShellsResponse,
   PairingPayload,
   ReadFileResponse,
+  RenameFileRequest,
   SessionSummary,
 } from '../protocol';
 import { clientProof, newClientNonce, validateClientName } from './auth';
@@ -48,6 +50,23 @@ export class AgenticRemoteAPI {
 
   async writeFile(path: string, content: string, expectedSha256: string): Promise<ReadFileResponse> {
     return this.request('/v1/fs/write', { method: 'POST', body: JSON.stringify({ path, content, expectedSha256 }) });
+  }
+
+  async renameFile(path: string, newPath: string): Promise<void> {
+    const body: RenameFileRequest = { path, newPath };
+    await this.request('/v1/fs/rename', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  async copyFile(path: string, newPath: string): Promise<void> {
+    const body: CopyFileRequest = { path, newPath };
+    await this.request('/v1/fs/copy', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  downloadRequest(path: string): { url: string; headers: Record<string, string> } {
+    return {
+      url: apiURL(this.connection.endpoint, `/v1/fs/download?path=${encodeURIComponent(path)}`),
+      headers: { Authorization: `Bearer ${this.connection.token}` },
+    };
   }
 
   async gitStatus(path = ''): Promise<GitStatus> {

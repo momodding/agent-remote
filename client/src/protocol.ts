@@ -47,6 +47,9 @@ export type FileEntry = {
 
 export type ReadFileResponse = { path: string; sha256: string; text: string };
 
+export type RenameFileRequest = { path: string; newPath: string };
+export type CopyFileRequest = { path: string; newPath: string };
+
 export type GitStatus = {
   available: boolean;
   entries: Array<{ code: string; path: string }>;
