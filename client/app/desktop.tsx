@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { WebView } from 'react-native-webview';
+import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
@@ -9,19 +9,42 @@ import { getConnection, loadConnections, type Connection } from '../src/lib/conn
 function buildDesktopHTML(wsURL: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}</style>
-</head><body><div id="screen"></div>
-<script type="module">
-import RFB from 'https://unpkg.com/@novnc/novnc@1.5.0/core/rfb.js';
-const rfb = new RFB(document.getElementById('screen'), '${wsURL}');
-rfb.scaleViewport = true;
-rfb.resizeSession = true;
+<style>
+html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;color:#d9faff;font-family:system-ui,sans-serif}
+#status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000}
+#screen.connected+#status{display:none}
+</style>
+</head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
+<script>
+const screen = document.getElementById('screen');
+const status = document.getElementById('status');
+const wsURL = ${JSON.stringify(wsURL)};
+const report = (message) => {
+  status.textContent = message;
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message }));
+};
+window.addEventListener('error', (event) => report(event.message || 'Desktop view failed'));
+window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
+(async () => {
+  try {
+    const module = await import('https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/+esm');
+    const rfb = new module.default(screen, wsURL);
+    rfb.scaleViewport = true;
+    rfb.resizeSession = true;
+    rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
+    rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
+    rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
+  } catch (error) {
+    report(error?.message || 'Could not load noVNC client');
+  }
+})();
 </script></body></html>`;
 }
 
 export default function DesktopScreen() {
   const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
   const [connection, setConnection] = useState<Connection | null>(null);
+  const [status, setStatus] = useState('Connecting to desktop…');
 
   useEffect(() => {
     loadConnections().then((store) => {
@@ -34,6 +57,14 @@ export default function DesktopScreen() {
     const wsBase = connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '');
     return buildDesktopHTML(`${wsBase}/v1/ws/vnc?token=${encodeURIComponent(connection.token)}`);
   }, [connection]);
+  const onMessage = ({ nativeEvent }: WebViewMessageEvent) => {
+    try {
+      const message = JSON.parse(nativeEvent.data) as { type?: string; message?: string };
+      if (message.type === 'status' && message.message) setStatus(message.message);
+    } catch {
+      setStatus(nativeEvent.data);
+    }
+  };
 
   if (!connection) return <SafeAreaView style={styles.screen}><Text style={styles.text}>Loading...</Text></SafeAreaView>;
 
@@ -48,9 +79,10 @@ export default function DesktopScreen() {
       {Platform.OS === 'web' ? (
         <iframe srcDoc={html} style={{ flex: 1, border: 'none', width: '100%', height: '100%' }} />
       ) : (
-        <WebView source={{ html }} originWhitelist={['*']} style={styles.webview}
-          javaScriptEnabled mixedContentMode="always" />
+        <WebView source={{ html, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
+          javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage} onError={(event) => setStatus(event.nativeEvent.description)} onLoadSubResourceError={(event) => setStatus(event.nativeEvent.description)} />
       )}
+      {Platform.OS !== 'web' && status !== 'Desktop connected' && <Text style={styles.status}>{status}</Text>}
     </SafeAreaView>
   );
 }
@@ -62,4 +94,5 @@ const styles = StyleSheet.create({
   title: { color: '#F0F0F0', fontSize: 17, fontWeight: '700' },
   text: { color: '#888', textAlign: 'center', marginTop: 40 },
   webview: { flex: 1, backgroundColor: '#000' },
+  status: { position: 'absolute', left: 16, right: 16, bottom: 18, color: '#D9FAFF', textAlign: 'center' },
 });

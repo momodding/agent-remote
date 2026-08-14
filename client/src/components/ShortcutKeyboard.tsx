@@ -31,7 +31,7 @@ export type ShortcutKeyboardHandle = {
   input: (data: string) => void;
 };
 
-export const ShortcutKeyboard = forwardRef<ShortcutKeyboardHandle, { onInput: (data: string) => void; bottomInset?: number; onCopy?: () => void; onPaste?: () => void; onSelectAll?: () => void; onExpand?: () => void; onCollapse?: () => void }>(({ onInput, bottomInset = 0, onCopy, onPaste, onSelectAll, onExpand, onCollapse }, ref) => {
+export const ShortcutKeyboard = forwardRef<ShortcutKeyboardHandle, { onInput: (data: string) => void; bottomInset?: number; keyboardInset?: number; onCopy?: () => void; onPaste?: () => void; onSelectAll?: () => void; onExpand?: () => void; onCollapse?: () => void }>(({ onInput, bottomInset = 0, keyboardInset = 0, onCopy, onPaste, onSelectAll, onExpand, onCollapse }, ref) => {
   const [collapsed, setCollapsed] = useState(false);
   const [modifier, setModifier] = useState<{ kind: Modifier; locked: boolean } | null>(null);
   const input = (data: string) => {
@@ -39,13 +39,13 @@ export const ShortcutKeyboard = forwardRef<ShortcutKeyboardHandle, { onInput: (d
     if (!modifier?.locked) setModifier(null);
   };
   useImperativeHandle(ref, () => ({ input }), [onInput, modifier]);
-  if (collapsed) return <View style={styles.dock}><Pressable style={[styles.show, { paddingBottom: bottomInset }]} onPress={() => { onExpand?.(); setCollapsed(false); }}><Text style={styles.label}>⌨ Shortcuts</Text></Pressable></View>;
+  if (collapsed) return <View style={[styles.dock, { marginBottom: keyboardInset }]}><Pressable style={[styles.show, { paddingBottom: bottomInset }]} onPress={() => { onExpand?.(); setCollapsed(false); }}><Text style={styles.label}>⌨ Shortcuts</Text></Pressable></View>;
   const emit = (key: Key) => {
     input(key.data);
   };
   const toggle = (kind: Modifier, locked = false) => setModifier((current) => current?.kind === kind && current.locked === locked ? null : { kind, locked });
   return (
-    <View style={styles.dock}>
+    <View testID="shortcut-dock" style={[styles.dock, { marginBottom: keyboardInset }]}>
       <View style={[styles.keyboard, { paddingBottom: bottomInset }]}>
       <View style={styles.toolbar}>
         <Pressable accessibilityLabel="Ctrl" style={[styles.modifier, modifier?.kind === 'ctrl' && styles.active]} onPress={() => toggle('ctrl')} onLongPress={() => toggle('ctrl', true)}><Text style={styles.label}>Ctrl{modifier?.kind === 'ctrl' && modifier.locked ? ' 🔒' : ''}</Text></Pressable>

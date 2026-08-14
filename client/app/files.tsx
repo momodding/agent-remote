@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,6 +21,8 @@ export default function FilesScreen() {
   const [file, setFile] = useState<ReadFileResponse | null>(null);
   const [clipboard, setClipboard] = useState<null | { mode: 'copy' | 'cut'; entry: FileEntry }>(null);
   const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
+  const [menuEntry, setMenuEntry] = useState<FileEntry | null>(null);
   const [renameText, setRenameText] = useState('');
   const [loading, setLoading] = useState(true);
   const requestRef = useRef(0);
@@ -190,7 +192,7 @@ export default function FilesScreen() {
     <FlatList
       data={entries}
       keyExtractor={(item) => item.path}
-      renderItem={({ item }) => <Pressable accessibilityLabel={item.isDir ? `Open folder ${item.name}` : `Open file ${item.name}`} style={styles.entry} onPress={() => void open(item)}>
+      renderItem={({ item }) => <Pressable accessibilityLabel={item.isDir ? `Open folder ${item.name}` : `Open file ${item.name}`} style={[styles.entry, selectedEntry?.path === item.path && styles.entrySelected]} onPress={() => void open(item)} onLongPress={() => setSelectedEntry(item)}>
         <Feather name={item.isDir ? 'folder' : 'file'} size={20} color={item.isDir ? '#46B8C4' : '#888'} />
         <View style={styles.entryInfo}>
           <Text style={styles.entryName} numberOfLines={1}>{item.name}</Text>
@@ -198,13 +200,9 @@ export default function FilesScreen() {
         </View>
         {gitCodes.has(item.path) && <Text style={styles.gitCode}>{gitCodes.get(item.path)}</Text>}
         {!item.isDir && item.size != null && <Text style={styles.size}>{formatBytes(item.size)}</Text>}
-        <View style={styles.entryActions}>
-          <Pressable accessibilityLabel={`Copy ${item.name}`} style={styles.actionBtn} onPress={() => setClipboard({ mode: 'copy', entry: item })}><Feather name="copy" size={17} color="#D9FAFF" /></Pressable>
-          <Pressable accessibilityLabel={`Cut ${item.name}`} style={styles.actionBtn} onPress={() => setClipboard({ mode: 'cut', entry: item })}><Feather name="scissors" size={17} color="#D9FAFF" /></Pressable>
-          <Pressable accessibilityLabel={`Rename ${item.name}`} style={styles.actionBtn} onPress={() => { setRenameTarget(item); setRenameText(item.name); }}><Feather name="edit-2" size={17} color="#D9FAFF" /></Pressable>
-          {!item.isDir && <Pressable accessibilityLabel={`Download ${item.name}`} style={styles.actionBtn} onPress={() => void download(item, 'download')}><Feather name="download" size={17} color="#D9FAFF" /></Pressable>}
-          {!item.isDir && <Pressable accessibilityLabel={`Open with ${item.name}`} style={styles.actionBtn} onPress={() => void download(item, 'open')}><Feather name="external-link" size={17} color="#D9FAFF" /></Pressable>}
-        </View>
+        {selectedEntry?.path === item.path && <Pressable accessibilityLabel={`More actions ${item.name}`} style={styles.actionBtn} onPress={() => setMenuEntry(item)}>
+          <Feather name="more-vertical" size={19} color="#D9FAFF" />
+        </Pressable>}
       </Pressable>}
     />
     <Modal visible={renameTarget != null} animationType="slide" onRequestClose={() => setRenameTarget(null)}>
@@ -218,6 +216,20 @@ export default function FilesScreen() {
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
+    </Modal>
+    <Modal transparent visible={menuEntry != null} animationType="fade" onRequestClose={() => setMenuEntry(null)}>
+      <Pressable style={styles.menuBackdrop} onPress={() => setMenuEntry(null)}>
+        <View style={styles.menu}>
+          {menuEntry && <>
+            <Text style={styles.menuTitle} numberOfLines={1}>{menuEntry.name}</Text>
+            <MenuButton label={`Copy ${menuEntry.name}`} icon="copy" onPress={() => { setClipboard({ mode: 'copy', entry: menuEntry }); setMenuEntry(null); }} />
+            <MenuButton label={`Cut ${menuEntry.name}`} icon="scissors" onPress={() => { setClipboard({ mode: 'cut', entry: menuEntry }); setMenuEntry(null); }} />
+            <MenuButton label={`Rename ${menuEntry.name}`} icon="edit-2" onPress={() => { setRenameTarget(menuEntry); setRenameText(menuEntry.name); setMenuEntry(null); }} />
+            {!menuEntry.isDir && <MenuButton label={`Download ${menuEntry.name}`} icon="download" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'download'); }} />}
+            {!menuEntry.isDir && <MenuButton label={`Open with ${menuEntry.name}`} icon="external-link" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'open'); }} />}
+          </>}
+        </View>
+      </Pressable>
     </Modal>
   </SafeAreaView>;
 }
@@ -239,10 +251,12 @@ function buildBreadcrumbs(path: string) {
 }
 
 function getParentPath(path: string) {
-  if (!path || path === '/') return null;
+  if (path === '/') return null;
+  if (!path) return '..';
   const trimmed = path.replace(/\/$/, '');
   const index = trimmed.lastIndexOf('/');
   if (path.startsWith('/')) return index <= 0 ? '/' : trimmed.slice(0, index);
+  if (trimmed === '..' || trimmed.startsWith('../')) return `${trimmed}/..`;
   return index < 0 ? '' : trimmed.slice(0, index);
 }
 
@@ -250,6 +264,13 @@ function joinRemotePath(base: string, name: string) {
   if (!base) return name;
   if (base === '/') return `/${name}`;
   return `${base.replace(/\/$/, '')}/${name}`;
+}
+
+function MenuButton({ label, icon, onPress }: { label: string; icon: ComponentProps<typeof Feather>['name']; onPress: () => void }) {
+  return <Pressable accessibilityLabel={label} style={styles.menuItem} onPress={onPress}>
+    <Feather name={icon} size={18} color="#D9FAFF" />
+    <Text style={styles.menuText}>{label}</Text>
+  </Pressable>;
 }
 
 
@@ -297,6 +318,7 @@ const styles = StyleSheet.create({
   loader: { marginTop: 36 },
   empty: { color: '#888', textAlign: 'center', marginTop: 36 },
   entry: { minHeight: 64, paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderColor: '#181818' },
+  entrySelected: { backgroundColor: '#102124' },
   entryInfo: { flex: 1, minWidth: 0 },
   entryName: { color: '#F0F0F0', fontSize: 16 },
   entryPath: { color: '#888', fontSize: 12, marginTop: 2 },
@@ -304,6 +326,11 @@ const styles = StyleSheet.create({
   size: { color: '#888', fontSize: 13 },
   entryActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   actionBtn: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#123338' },
+  menuBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.35)' },
+  menu: { margin: 12, padding: 8, borderRadius: 12, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#181818' },
+  menuTitle: { color: '#F0F0F0', fontSize: 16, fontWeight: '700', padding: 12 },
+  menuItem: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, borderRadius: 8 },
+  menuText: { color: '#F0F0F0', fontSize: 15, fontWeight: '600' },
   modalBody: { flex: 1, justifyContent: 'center', gap: 14, padding: 20 },
   modalTitle: { color: '#F0F0F0', fontSize: 20, fontWeight: '700' },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },

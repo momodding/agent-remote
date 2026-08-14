@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
@@ -22,6 +22,8 @@ export default function TerminalScreen() {
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
+  const { height: windowHeight } = useWindowDimensions();
+  const [keyboardInset, setKeyboardInset] = useState(0);
   const wrapperProps = { style: styles.screen, edges: ['top', 'left', 'right'] as const };
 
   const [connection, setConnection] = useState<Connection | null>(null);
@@ -93,6 +95,19 @@ export default function TerminalScreen() {
     return () => listener.remove();
   }, [connection, connect]);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const show = (event: { endCoordinates: { screenY: number } }) => setKeyboardInset(Math.max(0, windowHeight - event.endCoordinates.screenY - insets.bottom));
+    const hide = () => setKeyboardInset(0);
+    const shown = Keyboard.addListener('keyboardDidShow', show);
+    const changed = Keyboard.addListener('keyboardDidChangeFrame', show);
+    const hidden = Keyboard.addListener('keyboardDidHide', hide);
+    return () => {
+      shown.remove();
+      changed.remove();
+      hidden.remove();
+    };
+  }, [insets.bottom, windowHeight]);
   const close = useCallback(() => {
     if (!api || !id || finishingRef.current) return;
     Alert.alert('Close session?', 'This will terminate the running session.', [
@@ -251,6 +266,7 @@ export default function TerminalScreen() {
             onResize={handleResize}
             onClose={handleCloseSession}
             bottomInset={insets.bottom}
+            keyboardInset={keyboardInset}
           />
           <AddSessionFAB
             api={new AgenticRemoteAPI(connection)}
@@ -280,7 +296,7 @@ export default function TerminalScreen() {
     <View style={styles.terminal}>
       {connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => shortcutKeyboardRef.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}
     </View>
-    <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
+    <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} keyboardInset={keyboardInset} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
     </KeyboardAvoidingView>
   </Wrapper>;
 }
