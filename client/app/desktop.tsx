@@ -5,6 +5,7 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
+import noVNCBase64 from '../src/generated/novnc_base64';
 
 function buildDesktopHTML(wsURL: string): string {
   return `<!DOCTYPE html>
@@ -15,6 +16,7 @@ html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;back
 #screen.connected+#status{display:none}
 </style>
 </head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
+<script src="data:text/javascript;base64,${noVNCBase64}"></script>
 <script>
 const screen = document.getElementById('screen');
 const status = document.getElementById('status');
@@ -25,19 +27,16 @@ const report = (message) => {
 };
 window.addEventListener('error', (event) => report(event.message || 'Desktop view failed'));
 window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
-(async () => {
-  try {
-    const module = await import('https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/+esm');
-    const rfb = new module.default(screen, wsURL);
+try {
+    const rfb = new window.RFB(screen, wsURL);
     rfb.scaleViewport = true;
     rfb.resizeSession = true;
     rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
     rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
     rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
-  } catch (error) {
-    report(error?.message || 'Could not load noVNC client');
-  }
-})();
+} catch (error) {
+  report(error?.message || 'Could not load noVNC client');
+}
 </script></body></html>`;
 }
 
