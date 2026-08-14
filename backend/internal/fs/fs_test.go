@@ -7,15 +7,30 @@ import (
 	"testing"
 )
 
-func TestPathTraversalRejected(t *testing.T) {
-	svc, err := NewService(t.TempDir(), t.TempDir(), false)
+func TestRelativeParentCanLeaveWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "sibling.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(workspace, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join("..", "etc", "passwd")
-	if _, _, _, err := svc.Resolve(target); err == nil {
-		t.Fatal("expected traversal to fail")
+	entries, err := svc.List("..")
+	if err != nil {
+		t.Fatal(err)
 	}
+	want := filepath.ToSlash(filepath.Join(parent, "sibling.txt"))
+	for _, entry := range entries {
+		if entry.Path == want {
+			return
+		}
+	}
+	t.Fatalf("expected parent listing to contain %q, got %#v", want, entries)
 }
 
 func TestAbsolutePathListingUsesAbsolutePaths(t *testing.T) {

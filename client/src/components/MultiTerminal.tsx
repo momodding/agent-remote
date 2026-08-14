@@ -13,6 +13,7 @@ type Props = {
   onResize: (sessionId: string, cols: number, rows: number) => void;
   onClose: (sessionId: string) => void;
   bottomInset?: number;
+  keyboardInset?: number;
 };
 
 type DropRect = { x: number; y: number; width: number; height: number };
@@ -145,7 +146,7 @@ function DraggableTab({
   </Draggable>;
 }
 
-export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInset = 0 }: Props) {
+export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInset = 0, keyboardInset = 0 }: Props) {
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
   const { width, height } = useWindowDimensions();
   const isPortrait = height > width;
@@ -218,6 +219,7 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
       ref={shortcutKeyboardRef}
       onInput={(data) => { if (focusedSessionId) onInput(focusedSessionId, data); }}
       bottomInset={bottomInset}
+      keyboardInset={keyboardInset}
       onCopy={() => getFocused()?.copy()}
       onPaste={() => getFocused()?.paste()}
       onSelectAll={() => getFocused()?.selectAll()}

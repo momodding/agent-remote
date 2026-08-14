@@ -53,18 +53,18 @@ func (s *Service) Resolve(rel string) (string, string, bool, error) {
 	if err != nil {
 		return "", "", false, err
 	}
-	if abs != s.WorkspaceRoot && !strings.HasPrefix(abs, s.WorkspaceRoot+string(filepath.Separator)) {
-		return "", "", false, errors.New("path escapes workspaceRoot")
+	if abs == s.WorkspaceRoot || strings.HasPrefix(abs, s.WorkspaceRoot+string(filepath.Separator)) {
+		relPath, err := filepath.Rel(s.WorkspaceRoot, abs)
+		if err != nil {
+			return "", "", false, err
+		}
+		display := filepath.ToSlash(relPath)
+		if display == "." {
+			display = ""
+		}
+		return abs, display, false, nil
 	}
-	relPath, err := filepath.Rel(s.WorkspaceRoot, abs)
-	if err != nil {
-		return "", "", false, err
-	}
-	display := filepath.ToSlash(relPath)
-	if display == "." {
-		display = ""
-	}
-	return abs, display, false, nil
+	return abs, filepath.ToSlash(abs), true, nil
 }
 
 func (s *Service) List(rel string) ([]protocol.FileEntry, error) {

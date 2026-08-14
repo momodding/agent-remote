@@ -1,4 +1,22 @@
 jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children, ...props }: { children?: React.ReactNode }) => require('react').createElement('SafeAreaView', props, children) }));
+jest.mock('react-native', () => {
+  const React = require('react');
+  const RN = jest.requireActual('react-native');
+  return {
+    ActivityIndicator: RN.ActivityIndicator,
+    Alert: RN.Alert,
+    KeyboardAvoidingView: RN.KeyboardAvoidingView,
+    Modal: RN.Modal,
+    Platform: RN.Platform,
+    Pressable: RN.Pressable,
+    StyleSheet: RN.StyleSheet,
+    Text: RN.Text,
+    TextInput: RN.TextInput,
+    View: RN.View,
+    FlatList: ({ data = [], renderItem, keyExtractor, ...props }: { data?: unknown[]; renderItem: (info: { item: unknown; index: number }) => React.ReactNode; keyExtractor?: (item: unknown, index: number) => string }) =>
+      React.createElement(RN.View, props, data.map((item, index) => React.createElement(React.Fragment, { key: keyExtractor?.(item, index) ?? index }, renderItem({ item, index })))),
+  };
+});
 
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, Platform, Pressable, Text } from 'react-native';
@@ -20,6 +38,7 @@ const mockRootEntries: FileEntry[] = [{ path: 'docs', name: 'docs', isDir: true,
 const mockDocsEntries: FileEntry[] = [{ path: 'docs/readme.txt', name: 'readme.txt', isDir: false, size: 12, mode: '-rw-r--r--' }];
 const mockHostEntries: FileEntry[] = [{ path: '/tmp', name: 'tmp', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockTmpEntries: FileEntry[] = [{ path: '/tmp/other', name: 'other', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
+const mockParentEntries: FileEntry[] = [{ path: '/tmp/workspace-sibling', name: 'workspace-sibling', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockOtherEntries: FileEntry[] = [];
 const mockCopyFile = jest.fn(async () => undefined);
 const mockRenameFile = jest.fn(async () => undefined);
@@ -33,6 +52,7 @@ const mockFiles = jest.fn(async (path: string) => {
   if (path === '/') return mockHostEntries;
   if (path === '/tmp') return mockTmpEntries;
   if (path === '/tmp/other') return mockOtherEntries;
+  if (path === '..') return mockParentEntries;
   return mockRootEntries;
 });
 const mockGitStatus = jest.fn(async () => ({ available: true, entries: [] }));
@@ -89,6 +109,10 @@ function press(tree: ReactTestRenderer, label: string) {
   tree.root.findByProps({ accessibilityLabel: label }).props.onPress();
 }
 
+function longPress(tree: ReactTestRenderer, label: string) {
+  tree.root.findByProps({ accessibilityLabel: label }).props.onLongPress();
+}
+
 it('shows daemon files and supports breadcrumb, parent, current refresh, and close', async () => {
   const tree = await renderScreen();
 
@@ -119,6 +143,12 @@ it('opens typed absolute paths and host root', async () => {
   expect(mockFiles).toHaveBeenLastCalledWith('/');
 });
 
+it('navigates from workspace root to its parent', async () => {
+  const tree = await renderScreen();
+  await act(async () => { press(tree, 'Parent directory'); await Promise.resolve(); });
+  expect(mockFiles).toHaveBeenLastCalledWith('..');
+});
+
 it('navigates absolute breadcrumbs and parent paths', async () => {
   const tree = await renderScreen();
   await act(async () => { press(tree, 'Host root'); await Promise.resolve(); });
@@ -133,29 +163,37 @@ it('navigates absolute breadcrumbs and parent paths', async () => {
   expect(mockFiles).toHaveBeenLastCalledWith('/');
 });
 
-it('copies and cuts into the current directory', async () => {
+it('copies and cuts into the current directory from the long-press menu', async () => {
   const tree = await renderScreen();
   await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   act(() => press(tree, 'Copy readme.txt'));
   await act(async () => { press(tree, 'Paste into current directory'); await Promise.resolve(); });
   expect(mockCopyFile).toHaveBeenCalledWith('docs/readme.txt', 'docs/readme.txt');
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   act(() => press(tree, 'Cut readme.txt'));
   await act(async () => { press(tree, 'Paste into current directory'); await Promise.resolve(); });
   expect(mockRenameFile).toHaveBeenCalledWith('docs/readme.txt', 'docs/readme.txt');
 });
 
-it('renames sibling files and rejects invalid names', async () => {
+it('renames sibling files and rejects invalid names from the long-press menu', async () => {
   const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
   const tree = await renderScreen();
   await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   act(() => press(tree, 'Rename readme.txt'));
   act(() => tree.root.findByProps({ accessibilityLabel: 'New name' }).props.onChangeText('new.txt'));
   await act(async () => { press(tree, 'Save rename'); await Promise.resolve(); });
   expect(mockRenameFile).toHaveBeenCalledWith('docs/readme.txt', 'docs/new.txt');
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   act(() => press(tree, 'Rename readme.txt'));
   act(() => tree.root.findByProps({ accessibilityLabel: 'New name' }).props.onChangeText('bad/name'));
   act(() => press(tree, 'Save rename'));
@@ -163,16 +201,20 @@ it('renames sibling files and rejects invalid names', async () => {
   alertSpy.mockRestore();
 });
 
-it('downloads and opens files with native sharing', async () => {
+it('downloads and opens files with native sharing from the long-press menu', async () => {
   const tree = await renderScreen();
   await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   await act(async () => { press(tree, 'Download readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
   expect(mockDownloadRequest).toHaveBeenCalledWith('docs/readme.txt');
   expect(mockDirectoryCreate).toHaveBeenCalledWith({ idempotent: true, intermediates: true });
   expect(mockDownloadFileAsync).toHaveBeenCalledWith('https://daemon.test:8765/v1/fs/download?path=readme.txt', expect.anything(), { headers: { Authorization: 'Bearer secret' }, idempotent: true });
   expect(mockShareAsync).toHaveBeenCalledWith('file:///cache/readme.txt', { dialogTitle: 'Download file', mimeType: 'application/octet-stream' });
 
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
   await act(async () => { press(tree, 'Open with readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
   expect(mockShareAsync).toHaveBeenLastCalledWith('file:///cache/readme.txt', { dialogTitle: 'Open with…', mimeType: 'application/octet-stream' });
 });

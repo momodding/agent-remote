@@ -1,5 +1,5 @@
 import { createElement, createRef } from 'react';
-import { act, create } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Pressable } from 'react-native';
 import { modifiedTerminalInput, ShortcutKeyboard, type ShortcutKeyboardHandle, terminalRows } from './ShortcutKeyboard';
 
@@ -42,5 +42,12 @@ describe('terminal shortcuts', () => {
     act(() => tree.root.findByProps({ accessibilityLabel: 'Esc' }).props.onPress());
 
     expect(onInput.mock.calls).toEqual([['\x03'], ['\x1b']]);
+  });
+
+  it('offsets the shortcut dock above Android keyboard inset', () => {
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(ShortcutKeyboard, { onInput: jest.fn(), keyboardInset: 216 })); });
+
+    expect(tree.root.findByProps({ testID: 'shortcut-dock' }).props.style).toEqual(expect.arrayContaining([{ marginBottom: 216 }]));
   });
 });
