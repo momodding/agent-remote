@@ -5,7 +5,7 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
-import noVNCBase64 from '../src/generated/novnc_base64';
+import noVNCScript from '../src/generated/novnc_script';
 
 function buildDesktopHTML(wsURL: string): string {
   return `<!DOCTYPE html>
@@ -16,7 +16,7 @@ html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;back
 #screen.connected+#status{display:none}
 </style>
 </head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
-<script src="data:text/javascript;base64,${noVNCBase64}"></script>
+<script>${noVNCScript}</script>
 <script>
 const screen = document.getElementById('screen');
 const status = document.getElementById('status');

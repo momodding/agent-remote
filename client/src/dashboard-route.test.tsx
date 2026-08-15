@@ -72,7 +72,7 @@ jest.mock('./components/PairingSheet', () => ({
 }));
 
 const session = (id: string, state: SessionSummary['state']): SessionSummary => ({
-  id, name: id, command: 'bash', cwd: '', state, createdAt: '', updatedAt: '', preview: [],
+  id, name: id, command: '', cwd: '', state, createdAt: '', updatedAt: '', preview: [],
 });
 
 async function flush() {
