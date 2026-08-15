@@ -1,3 +1,5 @@
+<!-- source-branch: main -->
+<!-- work-branch: omp/novnc-iife-fix -->
 # noVNC IIFE fix + file-manager restriction verification
 
 ## Root causes (confirmed by direct experiment, not inference)
