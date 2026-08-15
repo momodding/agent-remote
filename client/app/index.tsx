@@ -124,7 +124,7 @@ export default function Dashboard() {
   const create = async () => {
     if (!api || !connection) return;
     try {
-      const session = await api.createSession({ name: 'Shell', command: 'bash', args: [], cwd: '', cols: 80, rows: 24 });
+      const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
       setSessions((items) => [session, ...items]);
       router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, connectionEndpoint: connection.endpoint } });
     } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }
@@ -133,7 +133,7 @@ export default function Dashboard() {
   const createMulti = async () => {
     if (!api || !connection) return;
     try {
-      const session = await api.createSession({ name: 'Shell', command: 'bash', args: [], cwd: '', cols: 80, rows: 24 });
+      const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
       setSessions((items) => [session, ...items]);
       router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, connectionEndpoint: connection.endpoint, mode: 'multi' } });
     } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }

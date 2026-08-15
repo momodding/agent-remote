@@ -39,7 +39,7 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
       onAdd(session.id, session.name);
       sheetRef.current?.dismiss();
       setName('');
-      setCommand('bash');
+      setCommand('');
     } catch (error) {
       Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error');
     }

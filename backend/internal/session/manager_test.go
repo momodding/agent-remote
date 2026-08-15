@@ -103,6 +103,45 @@ func TestManagerInvalidDefaultHomeDeterministicError(t *testing.T) {
 	}
 }
 
+// TestManagerEmptyCommandUsesDefaultShell verifies that empty request Command
+// resolves via defaultShell() (honoring $SHELL) instead of being left empty
+// or silently defaulting to bash.
+func TestManagerEmptyCommandUsesDefaultShell(t *testing.T) {
+	tmpDir := t.TempDir()
+	defaultHome := filepath.Join(tmpDir, "home")
+	if err := os.MkdirAll(defaultHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeShell := filepath.Join(tmpDir, "fake-shell")
+	if err := os.WriteFile(fakeShell, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", fakeShell)
+
+	stateDir := filepath.Join(tmpDir, "state")
+	workspaceRoot := filepath.Join(tmpDir, "workspace")
+
+	manager, err := NewManager(defaultHome, stateDir, workspaceRoot, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test",
+		Command: "",
+		CWD:     defaultHome,
+	})
+	if err != nil {
+		t.Fatalf("Create with empty Command failed: %v", err)
+	}
+	defer manager.Close(summary.ID)
+
+	if summary.Command != fakeShell {
+		t.Errorf("expected Command %s (from $SHELL), got %s", fakeShell, summary.Command)
+	}
+}
+
 func TestAvailableShellsNonEmpty(t *testing.T) {
 	shells := AvailableShells()
 	if len(shells) == 0 {

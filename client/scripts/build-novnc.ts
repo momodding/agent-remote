@@ -5,7 +5,10 @@ const output = `${directory}/novnc.js`;
 await mkdir(directory, { recursive: true });
 
 const tempEntry = `${directory}/entry.js`;
-await Bun.write(tempEntry, `import RFB from '@novnc/novnc/lib/rfb.js';globalThis.RFB = RFB;`);
+await Bun.write(tempEntry, `
+import RFB_Raw from '@novnc/novnc/lib/rfb.js';
+globalThis.RFB = RFB_Raw.default || RFB_Raw;
+`);
 
 const result = await Bun.build({
   entrypoints: [tempEntry],
