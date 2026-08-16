@@ -45,7 +45,7 @@ func Default() Config {
 		MaxSessions:                 16,
 		ChannelBufferSize:           256,
 		MaxScrollbackBytes:          10485760,
-		AllowDestructiveFiles:       false,
+		AllowDestructiveFiles:       true,
 		SkipFingerprintVerification: false,
 		ExpoPushEndpoint:            "https://exp.host/--/api/v2/push/send",
 		PairingRotationSeconds:      45,

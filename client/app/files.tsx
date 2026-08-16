@@ -110,6 +110,21 @@ export default function FilesScreen() {
       Alert.alert('Could not rename file', error instanceof Error ? error.message : 'Unknown error');
     }
   };
+  const deleteEntry = (entry: FileEntry) => {
+    Alert.alert(`Delete ${entry.name}?`, entry.isDir ? 'This deletes the folder and everything inside it.' : 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        if (!api) return;
+        try {
+          await api.deleteFile(entry.path);
+          setSelectedEntry(null);
+          void reload(api, path, '');
+        } catch (error) {
+          Alert.alert('Could not delete file', error instanceof Error ? error.message : 'Unknown error');
+        }
+      } },
+    ]);
+  };
   const download = async (entry: FileEntry, mode: 'download' | 'open') => {
     if (!api) return;
     try {
@@ -200,9 +215,14 @@ export default function FilesScreen() {
         </View>
         {gitCodes.has(item.path) && <Text style={styles.gitCode}>{gitCodes.get(item.path)}</Text>}
         {!item.isDir && item.size != null && <Text style={styles.size}>{formatBytes(item.size)}</Text>}
-        {selectedEntry?.path === item.path && <Pressable accessibilityLabel={`More actions ${item.name}`} style={styles.actionBtn} onPress={() => setMenuEntry(item)}>
-          <Feather name="more-vertical" size={19} color="#D9FAFF" />
-        </Pressable>}
+        {selectedEntry?.path === item.path && <View style={styles.entryActions}>
+          <Pressable accessibilityLabel={`More actions ${item.name}`} style={styles.actionBtn} onPress={() => setMenuEntry(item)}>
+            <Feather name="more-vertical" size={19} color="#D9FAFF" />
+          </Pressable>
+          <Pressable accessibilityLabel="Cancel selection" style={styles.actionBtn} onPress={() => setSelectedEntry(null)}>
+            <Feather name="x" size={19} color="#D9FAFF" />
+          </Pressable>
+        </View>}
       </Pressable>}
     />
     <Modal visible={renameTarget != null} animationType="slide" onRequestClose={() => setRenameTarget(null)}>
@@ -227,6 +247,7 @@ export default function FilesScreen() {
             <MenuButton label={`Rename ${menuEntry.name}`} icon="edit-2" onPress={() => { setRenameTarget(menuEntry); setRenameText(menuEntry.name); setMenuEntry(null); }} />
             {!menuEntry.isDir && <MenuButton label={`Download ${menuEntry.name}`} icon="download" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'download'); }} />}
             {!menuEntry.isDir && <MenuButton label={`Open with ${menuEntry.name}`} icon="external-link" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'open'); }} />}
+            <MenuButton label={`Delete ${menuEntry.name}`} icon="trash-2" onPress={() => { const entry = menuEntry; setMenuEntry(null); deleteEntry(entry); }} />
           </>}
         </View>
       </Pressable>

@@ -677,6 +677,43 @@ func TestHandleVNCProxyBytesFlow(t *testing.T) {
 	}
 }
 
+func TestHandleVNCProxyCleanCloseOnUpstreamClose(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close() // simulate the VNC server ending the session
+	}()
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	_, _, err = conn.Read(ctx)
+	code := websocket.CloseStatus(err)
+	if code != websocket.StatusNormalClosure {
+		t.Fatalf("expected clean close (%d), got code=%d err=%v", websocket.StatusNormalClosure, code, err)
+	}
+}
+
 func TestLogRequestRedactsTokens(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log.SetOutput(buf)
