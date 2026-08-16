@@ -728,7 +728,7 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	// 6. Bridge
 	errc := make(chan error, 2)
 	go func() { defer tcpConn.Close(); _, err := io.Copy(tcpConn, nc); errc <- err }()
-	go func() { defer wsConn.CloseNow(); _, err := io.Copy(nc, tcpConn); errc <- err }()
+	go func() { defer wsConn.Close(websocket.StatusNormalClosure, ""); _, err := io.Copy(nc, tcpConn); errc <- err }()
 	<-errc
 }
 

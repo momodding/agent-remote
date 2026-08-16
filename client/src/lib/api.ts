@@ -62,6 +62,10 @@ export class AgenticRemoteAPI {
     await this.request('/v1/fs/copy', { method: 'POST', body: JSON.stringify(body) });
   }
 
+  async deleteFile(path: string): Promise<void> {
+    await this.request(`/v1/fs/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+  }
+
   downloadRequest(path: string): { url: string; headers: Record<string, string> } {
     return {
       url: apiURL(this.connection.endpoint, `/v1/fs/download?path=${encodeURIComponent(path)}`),
