@@ -49,9 +49,9 @@ const mockSharingAvailable = jest.fn(async () => true);
 const mockShareAsync = jest.fn(async (_url: string, _options: unknown) => undefined);
 const mockGetContentUriAsync = jest.fn(async () => 'content://cache/readme.txt');
 const mockRequestDirectoryPermissionsAsync = jest.fn(async () => ({ granted: true, directoryUri: 'content://downloads' }));
-const mockCreateFileAsync = jest.fn(async () => 'content://downloads/readme.txt');
-const mockCopyAsync = jest.fn(async () => undefined);
-const mockStartActivityAsync = jest.fn(async () => undefined);
+const mockCreateFileAsync = jest.fn(async (_directoryUri: string, _fileName: string, _mimeType: string) => 'content://downloads/readme.txt');
+const mockCopyAsync = jest.fn(async (_options: unknown) => undefined);
+const mockStartActivityAsync = jest.fn(async (_action: string, _params: unknown) => undefined);
 const mockFiles = jest.fn(async (path: string) => {
   if (path === 'docs') return mockDocsEntries;
   if (path === '/') return mockHostEntries;
