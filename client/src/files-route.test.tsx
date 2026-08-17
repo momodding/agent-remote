@@ -47,6 +47,11 @@ const mockDirectoryCreate = jest.fn();
 const mockDownloadFileAsync = jest.fn(async (_url: string, _destination: unknown, _options: unknown) => ({ uri: 'file:///cache/readme.txt' }));
 const mockSharingAvailable = jest.fn(async () => true);
 const mockShareAsync = jest.fn(async (_url: string, _options: unknown) => undefined);
+const mockGetContentUriAsync = jest.fn(async () => 'content://cache/readme.txt');
+const mockRequestDirectoryPermissionsAsync = jest.fn(async () => ({ granted: true, directoryUri: 'content://downloads' }));
+const mockCreateFileAsync = jest.fn(async (_directoryUri: string, _fileName: string, _mimeType: string) => 'content://downloads/readme.txt');
+const mockCopyAsync = jest.fn(async (_options: unknown) => undefined);
+const mockStartActivityAsync = jest.fn(async (_action: string, _params: unknown) => undefined);
 const mockFiles = jest.fn(async (path: string) => {
   if (path === 'docs') return mockDocsEntries;
   if (path === '/') return mockHostEntries;
@@ -83,6 +88,19 @@ jest.mock('expo-file-system', () => ({
   Directory: jest.fn().mockImplementation(function () { return { create: mockDirectoryCreate }; }),
   File: { downloadFileAsync: (url: string, destination: unknown, options: unknown) => mockDownloadFileAsync(url, destination, options) },
   Paths: { cache: { uri: 'file:///cache' } },
+}));
+jest.mock('expo-file-system/legacy', () => ({
+  __esModule: true,
+  getContentUriAsync: () => mockGetContentUriAsync(),
+  StorageAccessFramework: {
+    requestDirectoryPermissionsAsync: () => mockRequestDirectoryPermissionsAsync(),
+    createFileAsync: (directoryUri: string, fileName: string, mimeType: string) => mockCreateFileAsync(directoryUri, fileName, mimeType),
+  },
+  copyAsync: (options: unknown) => mockCopyAsync(options),
+}));
+jest.mock('expo-intent-launcher', () => ({
+  __esModule: true,
+  startActivityAsync: (action: string, params: unknown) => mockStartActivityAsync(action, params),
 }));
 jest.mock('expo-sharing', () => ({
   __esModule: true,
@@ -217,4 +235,32 @@ it('downloads and opens files with native sharing from the long-press menu', asy
   act(() => press(tree, 'More actions readme.txt'));
   await act(async () => { press(tree, 'Open with readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
   expect(mockShareAsync).toHaveBeenLastCalledWith('file:///cache/readme.txt', { dialogTitle: 'Open with…', mimeType: 'application/octet-stream' });
+});
+
+it('downloads with Android SAF and opens with ACTION_VIEW', async () => {
+  Object.defineProperty(Platform, 'OS', { value: 'android' });
+  const tree = await renderScreen();
+  await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
+
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
+  await act(async () => { press(tree, 'Download readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  expect(mockRequestDirectoryPermissionsAsync).toHaveBeenCalledTimes(1);
+  expect(mockCreateFileAsync).toHaveBeenCalledWith('content://downloads', 'readme.txt', 'application/octet-stream');
+  expect(mockCopyAsync).toHaveBeenCalledWith({ from: 'file:///cache/readme.txt', to: 'content://downloads/readme.txt' });
+  expect(mockRequestDirectoryPermissionsAsync.mock.invocationCallOrder[0]).toBeLessThan(mockCreateFileAsync.mock.invocationCallOrder[0]);
+  expect(mockCreateFileAsync.mock.invocationCallOrder[0]).toBeLessThan(mockCopyAsync.mock.invocationCallOrder[0]);
+  expect(mockShareAsync).not.toHaveBeenCalled();
+
+  act(() => longPress(tree, 'Open file readme.txt'));
+  act(() => press(tree, 'More actions readme.txt'));
+  await act(async () => { press(tree, 'Open with readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  expect(mockGetContentUriAsync).toHaveBeenCalledTimes(1);
+  expect(mockStartActivityAsync).toHaveBeenCalledWith('android.intent.action.VIEW', {
+    data: 'content://cache/readme.txt',
+    type: 'application/octet-stream',
+    flags: 1,
+  });
+  expect(mockGetContentUriAsync.mock.invocationCallOrder[0]).toBeLessThan(mockStartActivityAsync.mock.invocationCallOrder[0]);
+  expect(mockShareAsync).not.toHaveBeenCalled();
 });

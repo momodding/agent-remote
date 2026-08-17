@@ -1,41 +1,50 @@
+# fix-files-novnc — remaining work
+
 <!-- source-branch: main -->
-# Fix: Android file manager actions and noVNC disconnect
+<!-- work-branch: omp/fix-files-novnc-3 -->
 
-## Bug 1 — Android file manager error "destructive file system actions disable" when performing cut action
+Continuation of `plans/fix-files-novnc.md`. Backend/noVNC fixes, delete action,
+cancel-selection action, and powerline font injection are already merged/done
+on branch `omp/fix-files-novnc-3`. Two items remain:
 
-**Root cause**: Backend default config for `AllowDestructiveFiles` is false.
-```go
-func Default() Config {
-	return Config{
-		...
-		AllowDestructiveFiles:       false,
-		...
-	}
-}
-```
-This restricts operations like delete, rename, and cut.
+## 1. Android SAF download / ACTION_VIEW open (`client/app/files.tsx`)
 
-**Fix**: Change `AllowDestructiveFiles: false` to `true` in `backend/internal/config/config.go` `Default()` so that default local dev usage permits file actions.
+Current `download()` downloads to app cache then always calls
+`Sharing.shareAsync` on mobile — this is the reported bug (share sheet
+instead of direct save / direct open).
 
-## Bug 2 — Add option to delete files/directories
+Change, Android only (`Platform.OS === 'android'`), after the existing
+`File.downloadFileAsync` cache step:
+- `mode === 'open'`: `FileSystem.getContentUriAsync(file.uri)` (legacy API)
+  then `expo-intent-launcher` `startActivityAsync('android.intent.action.VIEW', { data, type: file.type ?? 'application/octet-stream', flags: 1 })`.
+- `mode === 'download'`: `FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()`
+  → if denied, no-op; else `createFileAsync(directoryUri, entry.name, mimeType)`
+  then `FileSystem.copyAsync({ from: file.uri, to: destination })` to stream
+  bytes into the SAF-picked location without base64 in JS.
 
-**Root cause**: Missing UI action in `client/app/files.tsx`.
+iOS/web keep existing `Sharing.shareAsync` / blob-link behavior unchanged.
 
-**Fix**: Add an action sheet or direct entry swipe/long press option in `FilesScreen` to call the `api.deleteFile()` endpoint. The backend endpoint already exists `DELETE /fs`.
+`expo-intent-launcher` dependency already added to `client/package.json` /
+`client/bun.lock` (uncommitted).
 
-## Bug 3 — Add cancel button to deselect files/folders in the Android file manager
+## 2. Test updates (`client/src/files-route.test.tsx`)
 
-**Root cause**: Once you select a file (e.g. for cut/copy), the UI enters a selection state but lacks a visible "Cancel" escape hatch aside from completing the action or backing out entirely.
+Existing test `'downloads and opens files with native sharing from the
+long-press menu'` asserts iOS `Sharing.shareAsync` behavior — keep it as-is
+(iOS still shares). Add an Android-specific case: set `Platform.OS =
+'android'`, mock `expo-file-system/legacy` (`getContentUriAsync`,
+`StorageAccessFramework.requestDirectoryPermissionsAsync`,
+`StorageAccessFramework.createFileAsync`, `copyAsync`) and `expo-intent-launcher`
+(`startActivityAsync`), then assert:
+- Download path calls `requestDirectoryPermissionsAsync` → `createFileAsync`
+  → `copyAsync`, and never calls `Sharing.shareAsync`.
+- Open path calls `getContentUriAsync` → `startActivityAsync` with
+  `action: 'android.intent.action.VIEW'`, and never calls `Sharing.shareAsync`.
 
-**Fix**: Add a "Cancel" button to the bottom action bar (or top header) in `client/app/files.tsx` that clears the `clipboard` or `selectedEntry` state.
+## 3. Verification
 
-## Bug 4 — Fix noVNC client error "desktop disconnected unexpectedly" on Android
+- `make client-test` (Jest) for the updated file-manager suite.
+- `make client-build-web` to confirm the Expo web export still works with
+  the new native-only imports guarded correctly.
 
-**Root cause**: The previous fix (`omp/fix-vnc-selection-shell`) changed `<script src="data...` to an inline `<script>${noVNCScript}</script>`. While it fixed the loading, Android WebView or `noVNC` logic might hit a hard disconnect early due to missing URL param parsing for token, WebSocket keepalives, or protocol strictness that terminates the connection. Needs investigation in `client/app/desktop.tsx` or backend VNC WebSocket handshakes. The backend logs might reveal if it's EOF or bad handshake.
-
-**Fix**: Will investigate backend `vnc` handler and frontend WebSocket init.
-
-## Files touched
-- `backend/internal/config/config.go`
-- `client/app/files.tsx`
-- `client/app/desktop.tsx` (maybe)
+No other files touched by this increment.

@@ -3,6 +3,8 @@ import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platfo
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Directory, File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import Feather from '@expo/vector-icons/Feather';
 import { AgenticRemoteAPI } from '../src/lib/api';
@@ -147,8 +149,22 @@ export default function FilesScreen() {
       const directory = new Directory(Paths.cache, 'agenticremote-downloads');
       directory.create({ idempotent: true, intermediates: true });
       const file = await File.downloadFileAsync(url, directory, { headers, idempotent: true });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file.uri, { dialogTitle: mode === 'open' ? 'Open with…' : 'Download file', mimeType: 'application/octet-stream' });
+      const mimeType = file.type ?? 'application/octet-stream';
+      if (Platform.OS === 'android') {
+        if (mode === 'open') {
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+            data: await FileSystem.getContentUriAsync(file.uri),
+            type: mimeType,
+            flags: 1,
+          });
+        } else {
+          const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (!permission.granted) return;
+          const destination = await FileSystem.StorageAccessFramework.createFileAsync(permission.directoryUri, entry.name, mimeType);
+          await FileSystem.copyAsync({ from: file.uri, to: destination });
+        }
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, { dialogTitle: mode === 'open' ? 'Open with…' : 'Download file', mimeType });
       } else {
         Alert.alert('Downloaded file', file.uri);
       }
