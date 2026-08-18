@@ -15,7 +15,6 @@
     "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.1",
     "expo-file-system": "~57.0.2",
-    "expo-intent-launcher": "~57",
     "expo-router": "~57.0.7",
     "expo-secure-store": "~57.0.1",
     "expo-sharing": "~57.0.11",
