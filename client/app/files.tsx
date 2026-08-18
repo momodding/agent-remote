@@ -4,7 +4,6 @@ import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import Feather from '@expo/vector-icons/Feather';
 import { AgenticRemoteAPI } from '../src/lib/api';
@@ -152,16 +151,13 @@ export default function FilesScreen() {
       const mimeType = file.type ?? 'application/octet-stream';
       if (Platform.OS === 'android') {
         if (mode === 'open') {
-          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-            data: await FileSystem.getContentUriAsync(file.uri),
-            type: mimeType,
-            flags: 1,
-          });
+          await Sharing.shareAsync(file.uri, { dialogTitle: 'Open with…', mimeType });
         } else {
           const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
           if (!permission.granted) return;
           const destination = await FileSystem.StorageAccessFramework.createFileAsync(permission.directoryUri, entry.name, mimeType);
-          await FileSystem.copyAsync({ from: file.uri, to: destination });
+          const content = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
+          await FileSystem.writeAsStringAsync(destination, content, { encoding: FileSystem.EncodingType.Base64 });
         }
       } else if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(file.uri, { dialogTitle: mode === 'open' ? 'Open with…' : 'Download file', mimeType });
