@@ -8,6 +8,14 @@ import { getConnection, loadConnections, type Connection } from '../src/lib/conn
 import { base64, decodeBase64 } from '../src/lib/bytes';
 import noVNCScript from '../src/generated/novnc_script';
 
+// ponytail: one shared VNC control menu (Ctrl+Alt+Del/Esc/Tab) rendered identically by both HTML builders.
+const VNC_CONTROLS_STYLE = '#vnc-controls{position:fixed;top:10px;right:10px;display:flex;gap:6px;z-index:20}#vnc-controls button{background:rgba(20,20,20,.85);color:#d9faff;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:12px}';
+const VNC_CONTROLS_HTML = '<div id="vnc-controls"><button id="vnc-esc">Esc</button><button id="vnc-tab">Tab</button><button id="vnc-cad">Ctrl+Alt+Del</button></div>';
+const VNC_CONTROLS_SCRIPT = `
+    document.getElementById('vnc-esc').addEventListener('click', () => rfb.sendKey(0xff1b, 'Escape'));
+    document.getElementById('vnc-tab').addEventListener('click', () => rfb.sendKey(0xff09, 'Tab'));
+    document.getElementById('vnc-cad').addEventListener('click', () => rfb.sendCtrlAltDel());`;
+
 // ponytail: web path keeps direct wsURL; native uses RN-side WebSocket bridged via postMessage
 
 /** HTML for web iframe — noVNC opens its own WebSocket. */
@@ -18,8 +26,10 @@ function buildWebDesktopHTML(wsURL: string): string {
 html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;color:#d9faff;font-family:system-ui,sans-serif}
 #status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000}
 #screen.connected+#status{display:none}
+${VNC_CONTROLS_STYLE}
 </style>
 </head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
+${VNC_CONTROLS_HTML}
 <script>${noVNCScript}</script>
 <script>
 const screen = document.getElementById('screen');
@@ -36,7 +46,7 @@ try {
     rfb.resizeSession = true;
     rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
     rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-    rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
+    rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));${VNC_CONTROLS_SCRIPT}
 } catch (error) {
   report(error?.message || 'Could not load noVNC client');
 }
@@ -51,8 +61,10 @@ function buildBridgedDesktopHTML(): string {
 html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;color:#d9faff;font-family:system-ui,sans-serif}
 #status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000}
 #screen.connected+#status{display:none}
+${VNC_CONTROLS_STYLE}
 </style>
 </head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
+${VNC_CONTROLS_HTML}
 <script>${noVNCScript}</script>
 <script>
 const screen = document.getElementById('screen');
@@ -64,11 +76,11 @@ const report = (message) => {
 window.addEventListener('error', (event) => report(event.message || 'Desktop view failed'));
 window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
 
-// Fake WebSocket-like channel for noVNC; real transport is on the React Native side.
+// Fake WebSocket-like channel for noVNC; real transport and its lifecycle live on the React Native side.
 const channel = {
   binaryType: 'arraybuffer',
   protocol: '',
-  readyState: 'open',
+  readyState: 1, // WebSocket.OPEN — React Native owns connect/close, so the channel is always "open" to noVNC
   onopen: null,
   onmessage: null,
   onerror: null,
@@ -80,13 +92,11 @@ const channel = {
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'vnc', data: btoa(bin) }));
   },
-  close() {
-    channel.readyState = 'closed';
-    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'vnc-close' }));
-  },
+  // no-op: React Native owns and closes the real WebSocket on route teardown; no second socket lifecycle here.
+  close() {},
 };
 
-// Receive binary frames from React Native
+// Receive binary frames and lifecycle notices from React Native
 window.addEventListener('message', (event) => {
   try {
     const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
@@ -97,7 +107,6 @@ window.addEventListener('message', (event) => {
       for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
       channel.onmessage({ data: buf });
     } else if (msg.type === 'vnc-close') {
-      channel.readyState = 'closed';
       if (channel.onclose) channel.onclose({ code: 1000, reason: '' });
     } else if (msg.type === 'vnc-error') {
       if (channel.onerror) channel.onerror(new Event('error'));
@@ -111,12 +120,13 @@ try {
   rfb.resizeSession = true;
   rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
   rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));${VNC_CONTROLS_SCRIPT}
 } catch (error) {
   report(error?.message || 'Could not load noVNC client');
 }
 </script></body></html>`;
 }
+
 
 export default function DesktopScreen() {
   const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
