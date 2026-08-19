@@ -1,17 +1,17 @@
 import { touchToCell, selectionLength } from './touch-select';
 
 describe('touchToCell', () => {
-  const rect = { left: 0, top: 0, width: 800, height: 400 };
+  const rect = { left: 8, top: 8, width: 800, height: 400 };
 
   it('maps a point to the correct col/row', () => {
-    expect(touchToCell(0, 0, rect, 80, 24)).toEqual({ col: 0, row: 0 });
-    expect(touchToCell(799, 399, rect, 80, 24)).toEqual({ col: 79, row: 23 });
-    expect(touchToCell(400, 200, rect, 80, 24)).toEqual({ col: 40, row: 12 });
+    expect(touchToCell(8, 8, rect, 80, 24)).toEqual({ col: 0, row: 0 });
+    expect(touchToCell(807, 407, rect, 80, 24)).toEqual({ col: 79, row: 23 });
+    expect(touchToCell(408, 208, rect, 80, 24)).toEqual({ col: 40, row: 12 });
   });
 
   it('clamps points outside the rect', () => {
-    expect(touchToCell(-50, -50, rect, 80, 24)).toEqual({ col: 0, row: 0 });
-    expect(touchToCell(5000, 5000, rect, 80, 24)).toEqual({ col: 79, row: 23 });
+    expect(touchToCell(0, 0, rect, 80, 24)).toEqual({ col: 0, row: 0 });
+    expect(touchToCell(815, 415, rect, 80, 24)).toEqual({ col: 79, row: 23 });
   });
 });
 
