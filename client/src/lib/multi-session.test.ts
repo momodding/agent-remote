@@ -1,13 +1,13 @@
 import {
   MAX_MULTI_SESSIONS,
   addSession,
+  auxSlotCount,
   closeSession,
   placeInSplit,
   reconcileSplit,
   updateOutput,
   type MultiSessionState,
 } from './multi-session';
-
 describe('multi-session state', () => {
   const session1: MultiSessionState = { sessionId: 's1', name: 'Shell 1', connectionEndpoint: 'https://example.com', output: 'output1' };
   const session2: MultiSessionState = { sessionId: 's2', name: 'Shell 2', connectionEndpoint: 'https://example.com', output: 'output2' };
@@ -19,28 +19,27 @@ describe('multi-session state', () => {
     expect(updateOutput(sessions, 's1', 'new output').s1.output).toBe('new output');
   });
 
-  it('allows five open tabs', () => {
+  it('allows five open tabs with four web or two native auxiliary slots', () => {
     expect(MAX_MULTI_SESSIONS).toBe(5);
+    expect(auxSlotCount(true)).toBe(4);
+    expect(auxSlotCount(false)).toBe(2);
   });
 
-  it('places an inactive tab opposite a lone pane', () => {
-    expect(placeInSplit({ left: 's1', right: null }, 's2', 'left')).toEqual({ left: 's2', right: 's1' });
-    expect(placeInSplit({ left: 's1', right: null }, 's2', 'right')).toEqual({ left: 's1', right: 's2' });
+  it('places an inactive tab into only the indexed slot', () => {
+    expect(placeInSplit(['s1', null, null], 's2', 1)).toEqual(['s1', 's2', null]);
+    expect(placeInSplit(['s1', 's2', null, null, null], 's3', 4)).toEqual(['s1', 's2', null, null, 's3']);
   });
 
-  it('replaces only the targeted split pane', () => {
-    expect(placeInSplit({ left: 's1', right: 's2' }, 's3', 'right')).toEqual({ left: 's1', right: 's3' });
+  it('swaps visible sessions and prevents duplicate placement', () => {
+    const layout = ['s1', 's2', null];
+    expect(placeInSplit(layout, 's1', 1)).toEqual(['s2', 's1', null]);
+    expect(placeInSplit(layout, 's1', 0)).toBe(layout);
   });
 
-  it('swaps visible panes and ignores a current-side drop', () => {
-    const layout = { left: 's1', right: 's2' };
-    expect(placeInSplit(layout, 's1', 'right')).toEqual({ left: 's2', right: 's1' });
-    expect(placeInSplit(layout, 's1', 'left')).toBe(layout);
-  });
-
-  it('reconciles closed IDs while retaining order fallback', () => {
-    expect(reconcileSplit({ left: 'closed', right: 's2' }, ['s1', 's2'])).toEqual({ left: 's2', right: null });
-    expect(reconcileSplit({ left: 'closed', right: null }, ['s1', 's2'])).toEqual({ left: 's1', right: null });
-    expect(reconcileSplit({ left: 'closed', right: null }, [])).toEqual({ left: null, right: null });
+  it('compacts valid unique sessions deterministically to the active slot count', () => {
+    expect(reconcileSplit(['closed', 's2', null, 's2', 's1'], ['s1', 's2'], 5)).toEqual(['s2', 's1', null, null, null]);
+    expect(reconcileSplit(['s1', 's2', 's3', 's4', 's5'], ['s1', 's2', 's3', 's4', 's5'], 3)).toEqual(['s1', 's2', 's3']);
+    expect(reconcileSplit(['closed', null, null], ['s1', 's2'], 3)).toEqual(['s1', null, null]);
+    expect(reconcileSplit(['closed', null, null], [], 3)).toEqual([null, null, null]);
   });
 });

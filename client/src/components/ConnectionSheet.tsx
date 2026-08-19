@@ -1,9 +1,13 @@
-import { useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useColorScheme, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import Feather from '@expo/vector-icons/Feather';
 
+import { AgenticRemoteAPI } from '../lib/api';
+import { parsePairingPayload } from '../lib/auth';
 import type { Connection, ConnectionStore } from '../lib/connection';
+import { ConnectionStatusIndicator } from './ConnectionStatusIndicator';
 
 type Props = {
   visible: boolean;
@@ -48,6 +52,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
             </View>
             {editing ? (
               <Editor
+                key={editing.endpoint}
                 connection={editing}
                 palette={palette}
                 onCancel={() => setEditing(null)}
@@ -67,6 +72,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
                     <View style={styles.rowMain}>
                       <Text style={[styles.name, { color: palette.text }]} numberOfLines={1}>{connection.name}</Text>
                       <Text style={[styles.endpoint, { color: palette.textSecondary }]} numberOfLines={1}>{connection.endpoint}</Text>
+                      <ConnectionStatusIndicator api={new AgenticRemoteAPI(connection)} showLatency />
                       {connection.endpoint === store.selectedEndpoint && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
                     </View>
                     <View style={styles.rowActions}>
@@ -94,6 +100,42 @@ function Editor({ connection, palette, onCancel, onSave }: { connection: Connect
   const [token, setToken] = useState(connection.token);
   const [skip, setSkip] = useState(connection.skipFingerprintVerification);
   const [saving, setSaving] = useState(false);
+  const [raw, setRaw] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [permission, requestPermission] = useCameraPermissions();
+  const scanLock = useRef(false);
+
+  const applyPairingPayload = (value: string): boolean => {
+    try {
+      const payload = parsePairingPayload(value);
+      const url = new URL(payload.endpoint);
+      setName(url.host);
+      setEndpoint(url.origin);
+      setFingerprint(payload.fingerprint);
+      setToken(payload.token);
+      setSkip(payload.skipFingerprintVerification ?? false);
+      setImportError('');
+      return true;
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Invalid pairing data');
+      return false;
+    }
+  };
+
+  const openScanner = () => {
+    scanLock.current = false;
+    setImportError('');
+    setScanning(true);
+    if (!permission?.granted && permission?.canAskAgain !== false) void requestPermission();
+  };
+
+  const onScanned = ({ data }: { data: string }) => {
+    if (scanLock.current) return;
+    scanLock.current = true;
+    if (applyPairingPayload(data)) setScanning(false);
+    else scanLock.current = false;
+  };
 
   const save = async () => {
     setSaving(true);
@@ -109,6 +151,25 @@ function Editor({ connection, palette, onCancel, onSave }: { connection: Connect
 
   return (
     <>
+      <View style={styles.rowActions}>
+        <Pressable accessibilityLabel="Scan QR" style={styles.secondaryBtn} onPress={openScanner}><Feather name="camera" size={20} color={palette.text} /></Pressable>
+        <Pressable accessibilityLabel="Apply JSON" style={styles.secondaryBtn} onPress={() => applyPairingPayload(raw)}><Feather name="clipboard" size={20} color={palette.text} /></Pressable>
+      </View>
+      <TextInput style={[inputStyle, styles.payload]} value={raw} onChangeText={setRaw} placeholder="Paste pairing JSON" placeholderTextColor="#888" multiline autoCapitalize="none" />
+      {importError ? <Text accessibilityLabel="pairing-import-error" style={{ color: palette.danger }}>{importError}</Text> : null}
+      {scanning ? (
+        permission?.granted ? (
+          <View style={styles.camera}>
+            <CameraView style={StyleSheet.absoluteFill} barcodeScannerSettings={{ barcodeTypes: ['qr'] }} onBarcodeScanned={onScanned} onMountError={() => setImportError('Camera is unavailable')} />
+            <Pressable accessibilityLabel="Cancel scan" style={styles.cameraCancel} onPress={() => setScanning(false)}><Feather name="x" size={24} color="#FFF" /></Pressable>
+          </View>
+        ) : (
+          <View style={styles.permissionError}>
+            <Text style={{ color: palette.danger }}>Camera permission is required to scan QR codes.</Text>
+            {permission?.canAskAgain === false ? <Pressable accessibilityLabel="Open camera settings" onPress={() => void Linking.openSettings()}><Text style={{ color: palette.accent }}>Open settings</Text></Pressable> : null}
+          </View>
+        )
+      ) : null}
       <Text style={labelStyle}>Name</Text>
       <TextInput style={inputStyle} value={name} onChangeText={setName} placeholder="Name" placeholderTextColor="#888" />
       <Text style={labelStyle}>Endpoint</Text>
@@ -142,8 +203,13 @@ const styles = StyleSheet.create({
   selected: { fontWeight: '700', fontSize: 12, marginTop: 2 },
   rowActions: { flexDirection: 'row', gap: 14 },
   primaryBtn: { minWidth: 44, minHeight: 44, borderRadius: 8, backgroundColor: '#D19A2C', alignItems: 'center', justifyContent: 'center' },
+  secondaryBtn: { flex: 1, minHeight: 44, borderRadius: 8, backgroundColor: '#7773', alignItems: 'center', justifyContent: 'center' },
   label: { fontWeight: '600', marginTop: 10, marginBottom: 6 },
   input: { minHeight: 46, borderWidth: 1, borderRadius: 8, padding: 12 },
+  payload: { minHeight: 100, textAlignVertical: 'top', fontFamily: 'monospace' },
+  camera: { minHeight: 280, overflow: 'hidden', borderRadius: 10 },
+  cameraCancel: { position: 'absolute', top: 8, right: 8, minWidth: 44, minHeight: 44, borderRadius: 22, backgroundColor: '#000A', alignItems: 'center', justifyContent: 'center' },
+  permissionError: { minHeight: 72, justifyContent: 'center', gap: 8 },
   primary: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#D19A2C', marginTop: 8 },
   primaryText: { color: '#0A0A0A', fontWeight: '700' },
 });

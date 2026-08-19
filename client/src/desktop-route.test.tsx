@@ -126,3 +126,23 @@ it('renders bridged HTML without wsURL on native', async () => {
   expect(html).toContain('const channel');
   expect(html).not.toContain('wss://daemon.test');
 });
+
+it('uses WebSocket ready states for the noVNC raw channel', async () => {
+  const tree = await renderScreen();
+  const html = tree.root.findByType('WebView' as never).props.source.html as string;
+  expect(html).toContain('readyState: 1');
+  expect(html).not.toContain("readyState: 'open'");
+});
+
+it('renders the VNC control menu on native and web', async () => {
+  let tree = await renderScreen();
+  expect(tree.root.findByType('WebView' as never).props.source.html).toContain('Ctrl+Alt+Del');
+  expect(tree.root.findByType('WebView' as never).props.source.html).toContain('rfb.sendCtrlAltDel()');
+
+  Object.defineProperty(Platform, 'OS', { value: 'web' });
+  await act(async () => { tree.unmount(); });
+  tree = await renderScreen();
+  const html = tree.root.findByType('iframe' as never).props.srcDoc as string;
+  expect(html).toContain('Ctrl+Alt+Del');
+  expect(html).toContain('rfb.sendKey');
+});

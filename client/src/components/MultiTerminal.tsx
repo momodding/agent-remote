@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import Feather from '@expo/vector-icons/Feather';
 import { Terminal, type TerminalHandle } from './Terminal';
 import { ShortcutKeyboard, type ShortcutKeyboardHandle } from './ShortcutKeyboard';
-import { placeInSplit, reconcileSplit, type MultiSessionState, type SplitLayout, type SplitSide } from '../lib/multi-session';
+import { auxSlotCount, placeInSplit, reconcileSplit, type MultiSessionState, type SplitLayout } from '../lib/multi-session';
 
 type Props = {
   sessions: Record<string, MultiSessionState>;
@@ -18,10 +18,22 @@ type Props = {
 
 type DropRect = { x: number; y: number; width: number; height: number };
 
+function dropSlot(rect: DropRect, x: number, y: number, isWeb: boolean, isPortrait: boolean): number {
+  'worklet';
+  if (isWeb) {
+    const column = x < rect.x + rect.width / 2 ? 0 : 1;
+    const row = y < rect.y + rect.height / 2 ? 0 : 1;
+    return row * 2 + column + 1;
+  }
+  if (isPortrait) return y < rect.y + rect.height / 2 ? 1 : 2;
+  return x < rect.x + rect.width / 2 ? 1 : 2;
+}
+
 function Draggable({
   children,
   dropRect,
   isPortrait,
+  isWeb,
   onPlace,
   onDragState,
   style,
@@ -30,8 +42,9 @@ function Draggable({
   children: React.ReactNode;
   dropRect: DropRect | null;
   isPortrait: boolean;
-  onPlace: (side: SplitSide) => void;
-  onDragState: (dragging: boolean, side: SplitSide | null) => void;
+  isWeb: boolean;
+  onPlace: (index: number) => void;
+  onDragState: (dragging: boolean, index: number | null) => void;
   style: object;
   testID: string;
 }) {
@@ -45,12 +58,14 @@ function Draggable({
   const rectWidth = useSharedValue(0);
   const rectHeight = useSharedValue(0);
   const hasDropRect = useSharedValue(false);
-  const currentSide = useSharedValue<SplitSide | null>(null);
+  const currentSlot = useSharedValue<number | null>(null);
   const isPortraitValue = useSharedValue(isPortrait);
+  const isWebValue = useSharedValue(isWeb);
 
   useEffect(() => {
     isPortraitValue.value = isPortrait;
-  }, [isPortrait, isPortraitValue]);
+    isWebValue.value = isWeb;
+  }, [isPortrait, isPortraitValue, isWeb, isWebValue]);
 
   useEffect(() => {
     if (!dropRect) {
@@ -66,7 +81,7 @@ function Draggable({
 
   const reset = () => {
     'worklet';
-    currentSide.value = null;
+    currentSlot.value = null;
     translateX.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
     translateY.value = reducedMotion ? 0 : withTiming(0, { duration: 180 });
     scale.value = reducedMotion ? 1 : withTiming(1, { duration: 180 });
@@ -77,29 +92,23 @@ function Draggable({
     .onBegin(() => {
       scale.value = reducedMotion ? 1.04 : withTiming(1.04, { duration: 180 });
       opacity.value = reducedMotion ? 1 : withTiming(0.9, { duration: 180 });
-      // ponytail: no onDragState here — drop zones appear only when drag reaches terminal region
     })
     .onUpdate((event) => {
       translateX.value = event.translationX;
       translateY.value = event.translationY;
       const inside = hasDropRect.value && event.absoluteX >= rectX.value && event.absoluteX <= rectX.value + rectWidth.value && event.absoluteY >= rectY.value && event.absoluteY <= rectY.value + rectHeight.value;
-      const side = inside
-        ? (isPortraitValue.value
-          ? (event.absoluteY < rectY.value + rectHeight.value / 2 ? 'left' : 'right')
-          : (event.absoluteX < rectX.value + rectWidth.value / 2 ? 'left' : 'right'))
+      const slot = inside
+        ? dropSlot({ x: rectX.value, y: rectY.value, width: rectWidth.value, height: rectHeight.value }, event.absoluteX, event.absoluteY, isWebValue.value, isPortraitValue.value)
         : null;
-      if (side !== currentSide.value) {
-        currentSide.value = side;
-        runOnJS(onDragState)(side !== null, side);
+      if (slot !== currentSlot.value) {
+        currentSlot.value = slot;
+        runOnJS(onDragState)(slot !== null, slot);
       }
     })
     .onEnd((event) => {
       const inside = hasDropRect.value && event.absoluteX >= rectX.value && event.absoluteX <= rectX.value + rectWidth.value && event.absoluteY >= rectY.value && event.absoluteY <= rectY.value + rectHeight.value;
       if (inside) {
-        const side = isPortraitValue.value
-          ? (event.absoluteY < rectY.value + rectHeight.value / 2 ? 'left' : 'right')
-          : (event.absoluteX < rectX.value + rectWidth.value / 2 ? 'left' : 'right');
-        runOnJS(onPlace)(side);
+        runOnJS(onPlace)(dropSlot({ x: rectX.value, y: rectY.value, width: rectWidth.value, height: rectHeight.value }, event.absoluteX, event.absoluteY, isWebValue.value, isPortraitValue.value));
       }
       reset();
     })
@@ -122,6 +131,7 @@ function DraggableTab({
   active,
   dropRect,
   isPortrait,
+  isWeb,
   onSelect,
   onPlace,
   onDragState,
@@ -131,12 +141,13 @@ function DraggableTab({
   active: boolean;
   dropRect: DropRect | null;
   isPortrait: boolean;
+  isWeb: boolean;
   onSelect: () => void;
-  onPlace: (side: SplitSide) => void;
-  onDragState: (dragging: boolean, side: SplitSide | null) => void;
+  onPlace: (index: number) => void;
+  onDragState: (dragging: boolean, index: number | null) => void;
   onClose: () => void;
 }) {
-  return <Draggable dropRect={dropRect} isPortrait={isPortrait} onPlace={onPlace} onDragState={onDragState} style={[styles.tab, active && styles.tabActive]} testID={`tab-${session.sessionId}`}>
+  return <Draggable dropRect={dropRect} isPortrait={isPortrait} isWeb={isWeb} onPlace={onPlace} onDragState={onDragState} style={[styles.tab, active && styles.tabActive]} testID={`tab-${session.sessionId}`}>
     <Pressable onPress={onSelect} accessibilityLabel={`Show ${session.name}`} style={styles.tabSelect}>
       <Text style={[styles.tabName, active && styles.tabNameActive]} numberOfLines={1}>{session.name}</Text>
     </Pressable>
@@ -150,33 +161,35 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
   const { width, height } = useWindowDimensions();
   const isPortrait = height > width;
+  const isWeb = Platform.OS === 'web';
+  const slotCount = auxSlotCount(isWeb) + 1;
   const sessionList = Object.values(sessions);
   const sessionIds = sessionList.map(({ sessionId }) => sessionId);
-  const [layout, setLayout] = useState<SplitLayout>(() => ({ left: sessionIds[0] ?? null, right: null }));
+  const [layout, setLayout] = useState<SplitLayout>(() => reconcileSplit([], sessionIds, slotCount));
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(sessionIds[0] ?? null);
   const [dragging, setDragging] = useState(false);
-  const [dropSide, setDropSide] = useState<SplitSide | null>(null);
+  const [dropSlotIndex, setDropSlotIndex] = useState<number | null>(null);
   const terminalRefs = useRef<Record<string, TerminalHandle>>({});
   const terminalRegionRef = useRef<View>(null);
   const [dropRect, setDropRect] = useState<DropRect | null>(null);
 
   useEffect(() => {
-    setLayout((current) => reconcileSplit(current, sessionIds));
+    setLayout((current) => reconcileSplit(current, sessionIds, slotCount));
     setFocusedSessionId((current) => (current && sessionIds.includes(current) ? current : sessionIds[0] ?? null));
-  }, [sessions]);
+  }, [sessions, slotCount]);
 
   const measureTerminalRegion = () => {
-    terminalRegionRef.current?.measureInWindow((x, y, width, height) => setDropRect({ x, y, width, height }));
+    terminalRegionRef.current?.measureInWindow((x, y, measuredWidth, measuredHeight) => setDropRect({ x, y, width: measuredWidth, height: measuredHeight }));
   };
   const selectTab = (sessionId: string) => {
-    setLayout({ left: sessionId, right: null });
+    setLayout(reconcileSplit([sessionId], sessionIds, slotCount));
     setFocusedSessionId(sessionId);
   };
-  const placeTab = (sessionId: string, side: SplitSide) => {
-    setLayout((current) => placeInSplit(current, sessionId, side));
+  const placeTab = (sessionId: string, index: number) => {
+    setLayout((current) => placeInSplit(current, sessionId, index));
     setFocusedSessionId(sessionId);
   };
-  const visibleSessions = [layout.left, layout.right]
+  const visibleSessions = layout
     .filter((id): id is string => id !== null)
     .map((id) => sessions[id])
     .filter((session): session is MultiSessionState => Boolean(session));
@@ -184,23 +197,25 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
     const id = focusedSessionId ?? visibleSessions[0]?.sessionId;
     return id ? terminalRefs.current[id] : undefined;
   };
+  const dropLabels = isWeb ? ['Top left', 'Top right', 'Bottom left', 'Bottom right'] : isPortrait ? ['Top', 'Bottom'] : ['Left', 'Right'];
 
   return <View style={styles.container}>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabs} contentContainerStyle={styles.tabsContent}>
       {sessionList.map((session) => <DraggableTab
         key={session.sessionId}
         session={session}
-        active={layout.left === session.sessionId || layout.right === session.sessionId}
+        active={layout.includes(session.sessionId)}
         dropRect={dropRect}
         isPortrait={isPortrait}
+        isWeb={isWeb}
         onSelect={() => selectTab(session.sessionId)}
-        onPlace={(side) => placeTab(session.sessionId, side)}
-        onDragState={(isDragging, side) => { setDragging(isDragging); setDropSide(side); }}
+        onPlace={(index) => placeTab(session.sessionId, index)}
+        onDragState={(isDragging, index) => { setDragging(isDragging); setDropSlotIndex(index); }}
         onClose={() => onClose(session.sessionId)}
       />)}
     </ScrollView>
-    <View ref={terminalRegionRef} onLayout={measureTerminalRegion} testID="terminal-region" style={[styles.terminalRegion, { flexDirection: isPortrait ? 'column' : 'row' }]}>
-      {visibleSessions.map((session) => <Draggable key={session.sessionId} dropRect={dropRect} isPortrait={isPortrait} onPlace={(side) => placeTab(session.sessionId, side)} onDragState={(isDragging, side) => { setDragging(isDragging); setDropSide(side); }} style={styles.pane} testID={`terminal-pane-${session.sessionId}`}>
+    <View ref={terminalRegionRef} onLayout={measureTerminalRegion} testID="terminal-region" style={[styles.terminalRegion, { flexDirection: 'row', flexWrap: 'wrap' }]}>
+      {visibleSessions.map((session) => <Draggable key={session.sessionId} dropRect={dropRect} isPortrait={isPortrait} isWeb={isWeb} onPlace={(index) => placeTab(session.sessionId, index)} onDragState={(isDragging, index) => { setDragging(isDragging); setDropSlotIndex(index); }} style={[styles.pane, { flexBasis: isWeb || !isPortrait ? '50%' : '100%' }]} testID={`terminal-pane-${session.sessionId}`}>
         <View style={styles.pane} onTouchStart={() => setFocusedSessionId(session.sessionId)}>
           <Terminal
             ref={(handle) => { if (handle) terminalRefs.current[session.sessionId] = handle; else delete terminalRefs.current[session.sessionId]; }}
@@ -210,9 +225,8 @@ export function MultiTerminal({ sessions, onInput, onResize, onClose, bottomInse
           />
         </View>
       </Draggable>)}
-      {dragging && <View pointerEvents="none" style={[styles.dropZones, { flexDirection: isPortrait ? 'column' : 'row' }]}>
-        <View testID="drop-zone-left" style={[styles.dropZone, dropSide === 'left' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>{isPortrait ? 'Top' : 'Left'}</Text></View>
-        <View testID="drop-zone-right" style={[styles.dropZone, dropSide === 'right' && styles.dropZoneActive]}><Text style={styles.dropZoneText}>{isPortrait ? 'Bottom' : 'Right'}</Text></View>
+      {dragging && <View pointerEvents="none" style={[styles.dropZones, isWeb ? styles.webDropZones : { flexDirection: isPortrait ? 'column' : 'row' }]}>
+        {dropLabels.map((label, index) => <View key={label} testID={`drop-zone-${index}`} style={[styles.dropZone, isWeb && styles.webDropZone, dropSlotIndex === index + 1 && styles.dropZoneActive]}><Text style={styles.dropZoneText}>{label}</Text></View>)}
       </View>}
     </View>
     <ShortcutKeyboard
@@ -240,9 +254,11 @@ const styles = StyleSheet.create({
   tabNameActive: { color: '#F0F0F0' },
   tabClose: { width: 40, minHeight: 40, alignItems: 'center', justifyContent: 'center' },
   terminalRegion: { flex: 1, gap: 1, backgroundColor: '#262626' },
-  pane: { flex: 1, backgroundColor: '#0A0A0A' },
+  pane: { flex: 1, minWidth: 0, minHeight: 0, backgroundColor: '#0A0A0A' },
   dropZones: { ...StyleSheet.absoluteFill, padding: 12, gap: 12, backgroundColor: 'rgba(10,10,10,0.62)' },
+  webDropZones: { flexDirection: 'row', flexWrap: 'wrap' },
   dropZone: { flex: 1, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#666', borderRadius: 8, backgroundColor: 'rgba(24,24,24,0.9)' },
+  webDropZone: { flexBasis: '45%' },
   dropZoneActive: { borderColor: '#46B8C4', backgroundColor: 'rgba(38,78,84,0.95)' },
   dropZoneText: { color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
 });

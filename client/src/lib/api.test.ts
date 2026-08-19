@@ -76,6 +76,38 @@ describe('transport URLs', () => {
   });
 });
 
+describe('AgenticRemoteAPI ping', () => {
+  const connection = {
+    name: 'Daemon', endpoint: 'https://daemon.example', fingerprint: '',
+    skipFingerprintVerification: true, token: 'session-token', clientName: 'client',
+  };
+
+  it('uses the authenticated fetch path and accepts exact pong', async () => {
+    const fetch = jest.fn().mockResolvedValue({ ok: true, text: async () => 'pong' } as Response);
+    Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
+    const { AgenticRemoteAPI } = loadModule();
+    const controller = new AbortController();
+
+    await expect(new AgenticRemoteAPI(connection).ping(controller.signal)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith('https://daemon.example/ping', expect.objectContaining({
+      signal: controller.signal,
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+    }));
+  });
+
+  it('rejects failed and non-pong responses', async () => {
+    const fetch = jest.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, statusText: 'Unavailable', text: async () => 'offline' } as Response)
+      .mockResolvedValueOnce({ ok: true, text: async () => 'pong\n' } as Response);
+    Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
+    const { AgenticRemoteAPI } = loadModule();
+    const api = new AgenticRemoteAPI(connection);
+
+    await expect(api.ping()).rejects.toThrow('offline');
+    await expect(api.ping()).rejects.toThrow('Unexpected ping response');
+  });
+});
+
 
 describe('authenticatePairing HTTPS transport', () => {
   const authOk = (socket: MockWebSocket) => {

@@ -9,6 +9,7 @@ import { deleteConnection, getConnection, loadConnections, saveConnection, selec
 import type { PairingPayload, SessionSummary } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
+import { ConnectionStatusIndicator } from '../src/components/ConnectionStatusIndicator';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
@@ -143,13 +144,14 @@ export default function Dashboard() {
     .filter((session) => session.state !== 'exited')
     .filter((session) => `${session.name} ${session.command}`.toLowerCase().includes(query.trim().toLowerCase()));
   if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
-  if (!connection) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
+  if (!connection) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><ConnectionStatusIndicator api={null} /><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
 
   return <SafeAreaView style={styles.screen}>
   <View style={styles.topbar}>
     <View>
       <Text style={styles.wordmark}>agenticRemote</Text>
       <Text style={styles.endpoint}>{new URL(connection.endpoint).host}</Text>
+      <ConnectionStatusIndicator api={api} />
     </View>
     <View style={styles.actions}>
       <Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}>

@@ -23,7 +23,12 @@ export class APIError extends Error {
 
 export class AgenticRemoteAPI {
   constructor(private readonly connection: Connection) {}
-
+  async ping(signal?: AbortSignal): Promise<void> {
+    const response = await this.fetch('/ping', { signal });
+    const body = await response.text();
+    if (!response.ok) throw new APIError(response.status, body || response.statusText);
+    if (body !== 'pong') throw new Error('Unexpected ping response');
+  }
   async sessions(): Promise<SessionSummary[]> {
     return this.request('/v1/sessions');
   }
@@ -81,8 +86,8 @@ export class AgenticRemoteAPI {
     return (await this.request<ListShellsResponse>('/v1/shells')).shells;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(apiURL(this.connection.endpoint, path), {
+  private fetch(path: string, init: RequestInit = {}): Promise<Response> {
+    return fetch(apiURL(this.connection.endpoint, path), {
       ...init,
       headers: {
         Authorization: `Bearer ${this.connection.token}`,
@@ -90,6 +95,10 @@ export class AgenticRemoteAPI {
         ...init.headers,
       },
     });
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.fetch(path, init);
     if (response.status === 204) return undefined as T;
     const body = (await response.json()) as T | ErrorEnvelope;
     if (!response.ok) throw new APIError(response.status, (body as ErrorEnvelope).message || response.statusText);

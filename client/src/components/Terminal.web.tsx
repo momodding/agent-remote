@@ -78,13 +78,20 @@ export function Terminal({ onInput, onResize, output }: Props) {
     lastOutput.current = output;
   }, [output]);
 
-  return <div ref={container} style={style} />;
+  return <div style={wrapperStyle}><div ref={container} style={terminalStyle} /></div>;
 }
 
-const style: CSSProperties = {
+const wrapperStyle: CSSProperties = {
   flex: 1,
   width: '100%',
   height: '100%',
   minHeight: 0,
+  padding: 8,
+  boxSizing: 'border-box',
   backgroundColor: '#0a0a0a',
+};
+
+const terminalStyle: CSSProperties = {
+  width: '100%',
+  height: '100%',
 };

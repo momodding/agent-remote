@@ -26,7 +26,9 @@ const mockDeleteConnection = jest.fn();
 const mockSessions = jest.fn();
 const mockCreateSession = jest.fn();
 const mockCloseSession = jest.fn();
+const mockPing = jest.fn();
 const mockAgenticRemoteAPI = jest.fn((connection: Connection) => ({
+  ping: (signal?: AbortSignal) => mockPing(connection, signal),
   sessions: () => mockSessions(connection),
   createSession: (request: unknown) => mockCreateSession(connection, request),
   closeSession: (id: string) => mockCloseSession(connection, id),
@@ -107,6 +109,7 @@ beforeEach(() => {
   mockSelectConnection.mockResolvedValue(storeB);
   mockDeleteConnection.mockResolvedValue(storeA);
   mockSessions.mockImplementation(async (connection: Connection) => connection.endpoint === second.endpoint ? [] : []);
+  mockPing.mockResolvedValue(undefined);
   mockCreateSession.mockResolvedValue(session('created-shell', 'running'));
   mockCloseSession.mockResolvedValue(undefined);
   mockAuthenticatePairing.mockResolvedValue({
@@ -128,6 +131,15 @@ describe('dashboard empty state', () => {
     expect(mockPairingProps!.visible).toBe(true);
     act(() => tree.unmount());
   });
+
+  it('shows Error without polling when no daemon is selected', async () => {
+    mockLoadConnections.mockResolvedValue({ connections: [], selectedEndpoint: null });
+    const tree = await renderDashboard();
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Error' })).toBeTruthy();
+    expect(mockPing).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
 });
 
 afterEach(() => {
@@ -142,6 +154,7 @@ describe('dashboard saved-daemon lifecycle', () => {
     expect(mockAuthenticatePairing).not.toHaveBeenCalled();
     expect(mockSessions).toHaveBeenCalledWith(first);
     expect(tree.root.findByProps({ accessibilityLabel: 'Open restored-shell' })).toBeTruthy();
+    expect(tree.root.findByProps({ testID: 'connection-status' }).props.accessibilityLabel).toBe('Ready');
     act(() => tree.unmount());
   });
 
