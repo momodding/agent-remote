@@ -1,15 +1,6 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
-import { WebView, type WebViewMessageEvent } from 'react-native-webview';
-import * as Clipboard from 'expo-clipboard';
-
-import { terminalHTML } from './terminal_html';
-
-type TerminalMessage =
-  | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number }
-  | { type: 'copy'; data: string }
-  | { type: 'requestPaste' };
+import { NativeTerminal, type NativeTerminalHandle } from '@next_term/native';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
 
 export type TerminalHandle = {
   copy: () => void;
@@ -25,74 +16,51 @@ type Props = {
   output: string;
 };
 
-export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ onInput, onResize, output }, ref) {
-  const web = useRef<WebView>(null);
-  const lastOutput = useRef('');
-  const currentOutput = useRef(output);
-  currentOutput.current = output;
+const decoder = new TextDecoder();
 
-  const injectMessage = (obj: object) =>
-    web.current?.injectJavaScript(
-      `window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify(obj))}}));true;`
-    );
+export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ onInput, onResize, output }, ref) {
+  const terminal = useRef<NativeTerminalHandle>(null);
+  const lastOutput = useRef('');
+  const [size, setSize] = useState({ cols: 80, rows: 24 });
 
   useEffect(() => {
-    if (output === lastOutput.current) return;
-    if (output.length < lastOutput.current.length) {
-      injectMessage({ type: 'clear' });
-      lastOutput.current = '';
-    }
-    if (!output) return;
-    const data = output.slice(lastOutput.current.length);
+    const previous = lastOutput.current;
+    const data = output.startsWith(previous) ? output.slice(previous.length) : output;
     lastOutput.current = output;
-    injectMessage({ type: 'output', data });
+    if (data) terminal.current?.write(data);
   }, [output]);
 
-  const onMessage = useCallback(
-    async ({ nativeEvent }: WebViewMessageEvent) => {
-      const message = JSON.parse(nativeEvent.data) as TerminalMessage;
-      if (message.type === 'input') onInput(message.data);
-      if (message.type === 'resize') onResize(message.cols, message.rows);
-      if (message.type === 'copy') await Clipboard.setStringAsync(message.data);
-      if (message.type === 'requestPaste') {
-        const text = await Clipboard.getStringAsync();
-        injectMessage({ type: 'paste', data: text });
-      }
-    },
-    [onInput, onResize],
-  );
-
   useImperativeHandle(ref, () => ({
-    copy: () => {
-      web.current?.injectJavaScript(
-        `window.ReactNativeWebView.postMessage(JSON.stringify({type:'copy',data:terminal.getSelection()||''}));true;`
-      );
-    },
-    paste: () => {
-      web.current?.injectJavaScript(
-        `window.ReactNativeWebView.postMessage(JSON.stringify({type:'requestPaste'}));true;`
-      );
-    },
-    selectAll: () => {
-      web.current?.injectJavaScript(`terminal.selectAll();true;`);
-    },
-    blur: () => web.current?.injectJavaScript('if(typeof terminal !== "undefined") terminal.blur(); document.activeElement && document.activeElement.blur(); true;'),
-    focus: () => web.current?.injectJavaScript('if(typeof terminal !== "undefined") terminal.focus(); true;'),
+    copy: () => {},
+    paste: () => {},
+    selectAll: () => {},
+    blur: () => terminal.current?.blur(),
+    focus: () => terminal.current?.focus(),
   }));
 
-  if (Platform.OS === 'web') return <View style={styles.unavailable} />;
+  const resize = ({ nativeEvent: { layout } }: LayoutChangeEvent) => {
+    const cols = Math.max(2, Math.floor(layout.width / 9));
+    const rows = Math.max(1, Math.floor(layout.height / 17));
+    if (cols === size.cols && rows === size.rows) return;
+    terminal.current?.resize(cols, rows);
+    setSize({ cols, rows });
+    onResize(cols, rows);
+  };
 
   return (
-    <WebView ref={web} source={{ html: terminalHTML }} onLoadEnd={() => {
-      lastOutput.current = '';
-      if (currentOutput.current) {
-        injectMessage({ type: 'output', data: currentOutput.current });
-      }
-    }} onMessage={onMessage} originWhitelist={['*']} style={styles.webview} />
+    <View onLayout={resize} style={styles.container}>
+      <NativeTerminal
+        ref={terminal}
+        cols={size.cols}
+        rows={size.rows}
+        fontSize={14}
+        onData={(data) => onInput(decoder.decode(data))}
+        theme={{ background: '#0A0A0A', foreground: '#F5F5F5' }}
+      />
+    </View>
   );
 });
 
 const styles = StyleSheet.create({
-  webview: { flex: 1, backgroundColor: '#0A0A0A' },
-  unavailable: { flex: 1, backgroundColor: '#0A0A0A' },
+  container: { flex: 1, backgroundColor: '#0A0A0A', overflow: 'hidden' },
 });
