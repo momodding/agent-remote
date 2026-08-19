@@ -72,6 +72,19 @@ Keep existing boring separation; add no framework:
 25. Remove only proven-dead mobile bridge code/dependency and spike-only config. Search all imports before deletion. Keep web xterm and backend persistence.
 26. Update existing user/developer docs and changelog only where they already describe Expo Go, mobile terminal runtime, build prerequisites, or previews: native mobile terminal requires dev/production build; web still uses xterm; daemon owns persistent scrollback/preview. No new architecture document.
 
+## Spike result — no-go
+
+Tested exact `@next_term/native@0.1.0-next.22` package metadata and compiled a minimal adapter against Expo SDK 57 / React Native 0.86. TypeScript compilation passed, but package implementation fails required gates before device testing:
+
+- `NativeTerminal` returns an empty `RCTView`; render commands have no bundled visual consumer.
+- `TerminalSurface` documents and implements a placeholder `RCTView`, not a native Fabric/Skia surface.
+- `resize()` replaces `BufferSet` and `VTParser`, discarding displayed content.
+- imperative handle exposes only `write`, `resize`, `focus`, and `blur`; no selection, copy, paste, or select-all APIs exist.
+- scroll, word selection, and long-press selection callbacks are placeholders.
+- `focus()` and `blur()` only toggle unused React state; no native or hidden text input opens the software keyboard.
+
+Physical device gates therefore cannot pass without writing a renderer, emulating missing selection/clipboard, or patching package internals—all forbidden by stop/go gate. Host also lacks `adb` and `xcodebuild`, so no unsupported device claim is made. Spike dependency and adapter were reverted; current WebView mobile terminal and xterm web terminal remain production paths.
+
 ## Acceptance criteria
 
 - Android native terminal renders real PTY output and supports interactive input, resize, scrollback, focus, selection, copy/paste/select-all, reconnect replay, shortcuts, and two isolated panes without WebView.
