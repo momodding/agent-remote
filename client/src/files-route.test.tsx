@@ -50,8 +50,8 @@ const mockShareAsync = jest.fn(async (_url: string, _options: unknown) => undefi
 const mockGetContentUriAsync = jest.fn(async () => 'content://cache/readme.txt');
 const mockRequestDirectoryPermissionsAsync = jest.fn(async () => ({ granted: true, directoryUri: 'content://downloads' }));
 const mockCreateFileAsync = jest.fn(async (_directoryUri: string, _fileName: string, _mimeType: string) => 'content://downloads/readme.txt');
-const mockCopyAsync = jest.fn(async (_options: unknown) => undefined);
-const mockStartActivityAsync = jest.fn(async (_action: string, _params: unknown) => undefined);
+const mockReadAsStringAsync = jest.fn(async (_uri: string, _options: unknown) => 'base64data');
+const mockWriteAsStringAsync = jest.fn(async (_uri: string, _content: string, _options: unknown) => undefined);
 const mockFiles = jest.fn(async (path: string) => {
   if (path === 'docs') return mockDocsEntries;
   if (path === '/') return mockHostEntries;
@@ -92,15 +92,13 @@ jest.mock('expo-file-system', () => ({
 jest.mock('expo-file-system/legacy', () => ({
   __esModule: true,
   getContentUriAsync: () => mockGetContentUriAsync(),
+  EncodingType: { Base64: 'base64' },
   StorageAccessFramework: {
     requestDirectoryPermissionsAsync: () => mockRequestDirectoryPermissionsAsync(),
     createFileAsync: (directoryUri: string, fileName: string, mimeType: string) => mockCreateFileAsync(directoryUri, fileName, mimeType),
   },
-  copyAsync: (options: unknown) => mockCopyAsync(options),
-}));
-jest.mock('expo-intent-launcher', () => ({
-  __esModule: true,
-  startActivityAsync: (action: string, params: unknown) => mockStartActivityAsync(action, params),
+  readAsStringAsync: (uri: string, options: unknown) => mockReadAsStringAsync(uri, options),
+  writeAsStringAsync: (uri: string, content: string, options: unknown) => mockWriteAsStringAsync(uri, content, options),
 }));
 jest.mock('expo-sharing', () => ({
   __esModule: true,
@@ -237,7 +235,7 @@ it('downloads and opens files with native sharing from the long-press menu', asy
   expect(mockShareAsync).toHaveBeenLastCalledWith('file:///cache/readme.txt', { dialogTitle: 'Open with…', mimeType: 'application/octet-stream' });
 });
 
-it('downloads with Android SAF and opens with ACTION_VIEW', async () => {
+it('downloads with Android SAF and opens with Sharing.shareAsync', async () => {
   Object.defineProperty(Platform, 'OS', { value: 'android' });
   const tree = await renderScreen();
   await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
@@ -247,20 +245,14 @@ it('downloads with Android SAF and opens with ACTION_VIEW', async () => {
   await act(async () => { press(tree, 'Download readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
   expect(mockRequestDirectoryPermissionsAsync).toHaveBeenCalledTimes(1);
   expect(mockCreateFileAsync).toHaveBeenCalledWith('content://downloads', 'readme.txt', 'application/octet-stream');
-  expect(mockCopyAsync).toHaveBeenCalledWith({ from: 'file:///cache/readme.txt', to: 'content://downloads/readme.txt' });
+  expect(mockReadAsStringAsync).toHaveBeenCalledWith('file:///cache/readme.txt', { encoding: 'base64' });
+  expect(mockWriteAsStringAsync).toHaveBeenCalledWith('content://downloads/readme.txt', 'base64data', { encoding: 'base64' });
   expect(mockRequestDirectoryPermissionsAsync.mock.invocationCallOrder[0]).toBeLessThan(mockCreateFileAsync.mock.invocationCallOrder[0]);
-  expect(mockCreateFileAsync.mock.invocationCallOrder[0]).toBeLessThan(mockCopyAsync.mock.invocationCallOrder[0]);
+  expect(mockCreateFileAsync.mock.invocationCallOrder[0]).toBeLessThan(mockReadAsStringAsync.mock.invocationCallOrder[0]);
   expect(mockShareAsync).not.toHaveBeenCalled();
 
   act(() => longPress(tree, 'Open file readme.txt'));
   act(() => press(tree, 'More actions readme.txt'));
   await act(async () => { press(tree, 'Open with readme.txt'); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
-  expect(mockGetContentUriAsync).toHaveBeenCalledTimes(1);
-  expect(mockStartActivityAsync).toHaveBeenCalledWith('android.intent.action.VIEW', {
-    data: 'content://cache/readme.txt',
-    type: 'application/octet-stream',
-    flags: 1,
-  });
-  expect(mockGetContentUriAsync.mock.invocationCallOrder[0]).toBeLessThan(mockStartActivityAsync.mock.invocationCallOrder[0]);
-  expect(mockShareAsync).not.toHaveBeenCalled();
+  expect(mockShareAsync).toHaveBeenLastCalledWith('file:///cache/readme.txt', { dialogTitle: 'Open with…', mimeType: 'application/octet-stream' });
 });
