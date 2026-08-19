@@ -4,6 +4,12 @@ import { Alert, Modal, Pressable, Switch, type AlertButton, TextInput } from 're
 
 import { ConnectionSheet } from './ConnectionSheet';
 import type { Connection, ConnectionStore } from '../lib/connection';
+import type { AgenticRemoteAPI } from '../lib/api';
+
+const mockPing = jest.fn(async () => undefined);
+jest.mock('../lib/api', () => ({
+  AgenticRemoteAPI: function AgenticRemoteAPI() { return { ping: mockPing } as unknown as AgenticRemoteAPI; },
+}));
 
 function isType(node: { type: unknown }, Component: unknown): boolean {
   if (node.type === Component) return true;
@@ -49,6 +55,7 @@ function actionFor(tree: ReactTestRenderer, label: string) {
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert');
+  mockPing.mockResolvedValue(undefined);
 });
 
 afterEach(() => {

@@ -3,7 +3,9 @@ import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressa
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 
+import { AgenticRemoteAPI } from '../lib/api';
 import type { Connection, ConnectionStore } from '../lib/connection';
+import { ConnectionStatusIndicator } from './ConnectionStatusIndicator';
 
 type Props = {
   visible: boolean;
@@ -67,6 +69,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
                     <View style={styles.rowMain}>
                       <Text style={[styles.name, { color: palette.text }]} numberOfLines={1}>{connection.name}</Text>
                       <Text style={[styles.endpoint, { color: palette.textSecondary }]} numberOfLines={1}>{connection.endpoint}</Text>
+                      <ConnectionStatusIndicator api={new AgenticRemoteAPI(connection)} showLatency />
                       {connection.endpoint === store.selectedEndpoint && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
                     </View>
                     <View style={styles.rowActions}>
