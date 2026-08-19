@@ -271,3 +271,17 @@ describe('dashboard saved-daemon lifecycle', () => {
     act(() => tree.unmount());
   });
 });
+
+describe('dashboard session previews', () => {
+  it('renders daemon preview lines and empty fallback', async () => {
+    mockSessions.mockResolvedValue([
+      { ...session('with-output', 'running'), preview: ['first line', 'last line'] },
+      session('without-output', 'running'),
+    ]);
+    const tree = await renderDashboard();
+
+    expect(tree.root.findByProps({ children: 'first line\nlast line' })).toBeTruthy();
+    expect(tree.root.findByProps({ children: 'No output yet' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
+});
