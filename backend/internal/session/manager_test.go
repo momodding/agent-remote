@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 )
@@ -152,4 +154,52 @@ func TestAvailableShellsNonEmpty(t *testing.T) {
 			t.Errorf("shell at index %d is empty string", i)
 		}
 	}
+}
+
+// TestManagerCreateSetsTermAndPreservesEnv verifies the child PTY receives a
+// real TERM capability plus the full inherited daemon environment, guarding
+// against a regression that replaces os.Environ() with a TERM-only slice.
+func TestManagerCreateSetsTermAndPreservesEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	defaultHome := filepath.Join(tmpDir, "home")
+	if err := os.MkdirAll(defaultHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(tmpDir, "state")
+	workspaceRoot := filepath.Join(tmpDir, "workspace")
+
+	t.Setenv("AGENTIC_REMOTE_TEST_SENTINEL", "sentinel-value-123")
+
+	manager, err := NewManager(defaultHome, stateDir, workspaceRoot, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test",
+		Command: "sh",
+		Args:    []string{"-c", "echo TERM=$TERM SENTINEL=$AGENTIC_REMOTE_TEST_SENTINEL"},
+		CWD:     defaultHome,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	defer manager.Close(summary.ID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		preview := strings.Join(manager.List(context.Background())[0].Preview, "\n")
+		if strings.Contains(preview, "SENTINEL=") {
+			if !strings.Contains(preview, "TERM=xterm-256color") {
+				t.Fatalf("expected TERM=xterm-256color in preview, got %q", preview)
+			}
+			if !strings.Contains(preview, "SENTINEL=sentinel-value-123") {
+				t.Fatalf("expected inherited sentinel env var in preview, got %q", preview)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(ctx.Err())
 }

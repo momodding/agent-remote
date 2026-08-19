@@ -120,6 +120,7 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	}
 	cmd := exec.Command(command, req.Args...)
 	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
 		return nil, err
