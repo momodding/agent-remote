@@ -203,3 +203,48 @@ func TestManagerCreateSetsTermAndPreservesEnv(t *testing.T) {
 	}
 	t.Fatal(ctx.Err())
 }
+
+func TestManagerRestoresPreviewFromScrollback(t *testing.T) {
+	tmpDir := t.TempDir()
+	defaultHome := filepath.Join(tmpDir, "home")
+	if err := os.MkdirAll(defaultHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(tmpDir, "state")
+
+	manager, err := NewManager(defaultHome, stateDir, filepath.Join(tmpDir, "workspace"), 1<<20, 256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name: "persisted", Command: "sh", Args: []string{"-c", "printf 'preview survives restart\\n'"}, CWD: defaultHome,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		current := manager.List(context.Background())[0]
+		if current.State == string(StateExited) && strings.Contains(strings.Join(current.Preview, "\n"), "preview survives restart") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+
+	restored, err := NewManager(defaultHome, stateDir, filepath.Join(tmpDir, "workspace"), 1<<20, 256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := restored.List(context.Background())
+	if len(sessions) != 1 || sessions[0].ID != created.ID {
+		t.Fatalf("expected restored session %q, got %+v", created.ID, sessions)
+	}
+	if preview := strings.Join(sessions[0].Preview, "\n"); !strings.Contains(preview, "preview survives restart") {
+		t.Fatalf("expected restored preview, got %q", preview)
+	}
+}
