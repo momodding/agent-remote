@@ -2,9 +2,8 @@ import type { SessionSocket } from './session-socket';
 
 export const MAX_MULTI_SESSIONS = 5;
 
-export type SplitSide = 'left' | 'right';
-
-export type SplitLayout = { left: string | null; right: string | null };
+// Slot 0 is the primary pane; the remaining entries are auxiliary split panes.
+export type SplitLayout = Array<string | null>;
 
 export type MultiSessionState = {
   sessionId: string;
@@ -14,22 +13,35 @@ export type MultiSessionState = {
   socket?: SessionSocket;
 };
 
-export function placeInSplit(layout: SplitLayout, sessionId: string, side: SplitSide): SplitLayout {
-  if (layout[side] === sessionId) return layout;
-  const currentSide = layout.left === sessionId ? 'left' : layout.right === sessionId ? 'right' : null;
-  if (currentSide) return { ...layout, [side]: sessionId, [currentSide]: layout[side] };
-  if (!layout.left || !layout.right) return side === 'left'
-    ? { left: sessionId, right: layout.left ?? layout.right }
-    : { left: layout.left ?? layout.right, right: sessionId };
-  return { ...layout, [side]: sessionId };
+export function auxSlotCount(isWeb: boolean): number {
+  return isWeb ? 4 : 2;
 }
 
-export function reconcileSplit(layout: SplitLayout, orderedSessionIds: string[]): SplitLayout {
-  const left = layout.left && orderedSessionIds.includes(layout.left) ? layout.left : null;
-  const right = layout.right && orderedSessionIds.includes(layout.right) ? layout.right : null;
-  if (left) return { left, right };
-  if (right) return { left: right, right: null };
-  return { left: orderedSessionIds[0] ?? null, right: null };
+export function placeInSplit(layout: SplitLayout, sessionId: string, index: number): SplitLayout {
+  if (layout[index] === sessionId) return layout;
+  const next = [...layout];
+  const currentIndex = layout.indexOf(sessionId);
+  if (currentIndex >= 0) next[currentIndex] = next[index];
+  next[index] = sessionId;
+  return next;
+}
+
+export function reconcileSplit(layout: SplitLayout, orderedSessionIds: string[], slotCount: number): SplitLayout {
+  const seen = new Set<string>();
+  const occupied: string[] = [];
+  for (const id of layout) {
+    if (id && orderedSessionIds.includes(id) && !seen.has(id)) {
+      seen.add(id);
+      occupied.push(id);
+    }
+  }
+  const next: SplitLayout = occupied.slice(0, slotCount);
+  while (next.length < slotCount) next.push(null);
+  if (!next[0]) {
+    const fallback = orderedSessionIds.find((id) => !seen.has(id));
+    if (fallback) next[0] = fallback;
+  }
+  return next;
 }
 
 export function addSession(

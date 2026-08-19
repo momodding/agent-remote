@@ -48,12 +48,13 @@ jest.mock('./ShortcutKeyboard', () => {
 });
 jest.mock('react-native', () => {
   const React = require('react');
-  const dimensionsState = { current: { width: 200, height: 100 } }; // ponytail: landscape default keeps existing X-axis drag tests unchanged
+  const dimensionsState = { current: { width: 200, height: 100 } };
+  const platformState = { current: 'android' };
   const View = React.forwardRef(({ children, ...props }: { children?: React.ReactNode }, ref: React.ForwardedRef<{ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => void }>) => {
     React.useImperativeHandle(ref, () => ({ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(0, 0, 100, 100) }));
     return React.createElement('View', props, children);
   });
-  return { View, Text: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Text', props, children), ScrollView: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('ScrollView', props, children), Pressable: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Pressable', props, children), StyleSheet: { create: <T,>(styles: T) => styles, absoluteFill: {} }, useWindowDimensions: () => dimensionsState.current, __setWindowDimensions: (next: { width: number; height: number }) => { dimensionsState.current = next; } };
+  return { Platform: { get OS() { return platformState.current; } }, View, Text: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Text', props, children), ScrollView: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('ScrollView', props, children), Pressable: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('Pressable', props, children), StyleSheet: { create: <T,>(styles: T) => styles, absoluteFill: {} }, useWindowDimensions: () => dimensionsState.current, __setWindowDimensions: (next: { width: number; height: number }) => { dimensionsState.current = next; }, __setPlatform: (next: string) => { platformState.current = next; } };
 });
 
 describe('MultiTerminal', () => {
@@ -89,12 +90,12 @@ describe('MultiTerminal', () => {
     expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
   });
 
-  it('reactivates a drop zone on repeated drags to the same side', () => {
+  it('reactivates a native drop zone on repeated drags to the same slot', () => {
     const tree = render({ s1: session('s1'), s2: session('s2') });
     act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
     const drag = mockGestures['tab-s2'];
     const update = () => drag._onUpdate({ absoluteX: 0, absoluteY: 50, translationX: 0, translationY: 0 });
-    const leftZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
+    const leftZone = () => tree.root.findByProps({ testID: 'drop-zone-0' });
 
     act(() => { drag._onBegin(); update(); });
     expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
@@ -103,45 +104,27 @@ describe('MultiTerminal', () => {
     expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
   });
 
-  it('shows Top/Bottom drop-zone labels and splits on Y-axis in portrait', () => {
+  it('shows two native targets and splits on Y-axis in portrait', () => {
     const { __setWindowDimensions } = require('react-native');
     __setWindowDimensions({ width: 100, height: 200 });
     try {
       const tree = render({ s1: session('s1'), s2: session('s2') });
       act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
       const drag = mockGestures['tab-s2'];
-      const topZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
-      const bottomZone = () => tree.root.findByProps({ testID: 'drop-zone-right' });
-
       act(() => {
         drag._onBegin();
         drag._onUpdate({ absoluteX: 50, absoluteY: 10, translationX: 0, translationY: 0 });
       });
-      expect(topZone().findByType(require('react-native').Text).props.children).toBe('Top');
-      expect(bottomZone().findByType(require('react-native').Text).props.children).toBe('Bottom');
-      expect(topZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
+      const zones = tree.root.findAll((node) => node.type === require('react-native').View && typeof node.props.testID === 'string' && node.props.testID.startsWith('drop-zone-'));
+      expect(zones).toHaveLength(2);
+      expect(zones.map((zone) => zone.findByType(require('react-native').Text).props.children)).toEqual(['Top', 'Bottom']);
+      expect(zones[0].props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
     } finally {
       __setWindowDimensions({ width: 200, height: 100 });
     }
   });
 
-  it('shows Left/Right drop-zone labels and splits on X-axis in landscape', () => {
-    const tree = render({ s1: session('s1'), s2: session('s2') });
-    act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
-    const drag = mockGestures['tab-s2'];
-    const leftZone = () => tree.root.findByProps({ testID: 'drop-zone-left' });
-    const rightZone = () => tree.root.findByProps({ testID: 'drop-zone-right' });
-
-    act(() => {
-      drag._onBegin();
-      drag._onUpdate({ absoluteX: 10, absoluteY: 50, translationX: 0, translationY: 0 });
-    });
-    expect(leftZone().findByType(require('react-native').Text).props.children).toBe('Left');
-    expect(rightZone().findByType(require('react-native').Text).props.children).toBe('Right');
-    expect(leftZone().props.style).toContainEqual(expect.objectContaining({ borderColor: '#46B8C4' }));
-  });
-
-  it('keeps five tabs while replacing only target pane', () => {
+  it('shows two native targets and limits visible sessions to primary plus two auxiliaries', () => {
     const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3'), s4: session('s4'), s5: session('s5') });
     act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
     const dragTo = (testID: string, absoluteX: number) => act(() => {
@@ -151,10 +134,35 @@ describe('MultiTerminal', () => {
     });
     dragTo('tab-s2', 0);
     dragTo('tab-s3', 100);
-    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s2', 'output-s3']);
+    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s1', 'output-s2', 'output-s3']);
     for (const sessionId of ['s1', 's2', 's3', 's4', 's5']) expect(tree.root.findByProps({ testID: `tab-${sessionId}` })).toBeDefined();
-    dragTo('terminal-pane-s2', 100);
-    expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s3', 'output-s2']);
+    act(() => {
+      mockGestures['tab-s4']._onBegin();
+      mockGestures['tab-s4']._onUpdate({ absoluteX: 50, absoluteY: 50, translationX: 0, translationY: 0 });
+    });
+    expect(tree.root.findAll((node) => node.type === require('react-native').View && typeof node.props.testID === 'string' && node.props.testID.startsWith('drop-zone-'))).toHaveLength(2);
+  });
+
+  it('shows four web quadrant targets and fills all five terminal slots', () => {
+    const { __setPlatform } = require('react-native');
+    __setPlatform('web');
+    try {
+      const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3'), s4: session('s4'), s5: session('s5') });
+      act(() => tree.root.findByProps({ testID: 'terminal-region' }).props.onLayout());
+      const coordinates = [[10, 10], [90, 10], [10, 90], [90, 90]];
+      coordinates.forEach(([absoluteX, absoluteY], index) => {
+        const drag = mockGestures[`tab-s${index + 2}`];
+        act(() => {
+          drag._onBegin();
+          drag._onUpdate({ absoluteX, absoluteY, translationX: 0, translationY: 0 });
+        });
+        expect(tree.root.findAll((node) => node.type === require('react-native').View && typeof node.props.testID === 'string' && node.props.testID.startsWith('drop-zone-'))).toHaveLength(4);
+        act(() => drag._onEnd({ absoluteX, absoluteY }));
+      });
+      expect(tree.root.findAllByType(require('./Terminal').Terminal).map((node) => node.props.output)).toEqual(['output-s1', 'output-s2', 'output-s3', 'output-s4', 'output-s5']);
+    } finally {
+      __setPlatform('android');
+    }
   });
 
   it('closes sessions from tab controls', () => {
