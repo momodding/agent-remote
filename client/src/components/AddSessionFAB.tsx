@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import Feather from '@expo/vector-icons/Feather';
-import { Alert, Pressable, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, useColorScheme, View } from 'react-native';
 import { BottomSheetScrollView, BottomSheetTextInput, TouchableOpacity } from '@gorhom/bottom-sheet';
 import type { AgenticRemoteAPI } from '../lib/api';
 import { GlassBottomSheet, type GlassBottomSheetHandle } from './GlassBottomSheet';
+
 
 type Props = {
   api: AgenticRemoteAPI;
@@ -13,6 +14,8 @@ type Props = {
 };
 
 export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
+  // ponytail: bottom-sheet's TextInput calls RNTextInput.State.currentlyFocusedInput(), unimplemented on web.
+  const NameInput = Platform.OS === 'web' ? TextInput : BottomSheetTextInput;
   const colorScheme = useColorScheme();
   const palette = colorScheme === 'dark'
     ? { text: '#F0F0F0', border: '#3A3A3A', accent: '#46B8C4' }
@@ -57,7 +60,7 @@ export function AddSessionFAB({ api, onAdd, disabled, bottomInset }: Props) {
     <GlassBottomSheet title="New Session" onDismiss={() => setVisible(false)} ref={sheetRef}>
       <BottomSheetScrollView style={{ flex: 1 }} contentContainerStyle={[styles.form, { paddingBottom: bottomInset + 24 }]} keyboardShouldPersistTaps="handled">
         <Text style={[styles.label, { color: palette.text }]}>Name</Text>
-        <BottomSheetTextInput
+        <NameInput
           style={[styles.input, { color: palette.text, borderColor: palette.border }]}
           value={name}
           onChangeText={setName}

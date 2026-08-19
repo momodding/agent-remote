@@ -74,7 +74,7 @@ jest.mock('./lib/connection', () => ({
 jest.mock('./lib/api', () => ({
   AgenticRemoteAPI: jest.fn(() => ({
     files: mockFiles,
-    searchFiles: jest.fn(),
+    searchFiles: jest.fn(async (path: string, query: string) => (path === 'docs' ? mockDocsEntries : mockRootEntries).filter((e) => e.name.includes(query))),
     gitStatus: mockGitStatus,
     readFile: jest.fn(),
     writeFile: jest.fn(),
@@ -147,6 +147,18 @@ it('shows daemon files and supports breadcrumb, parent, current refresh, and clo
 
   act(() => tree.root.findByProps({ accessibilityLabel: 'Close file manager' }).props.onPress());
   expect(router.replace).toHaveBeenCalledWith('/');
+});
+
+it('renders with a search query, no selection, and no git status without an unexpected text node', async () => {
+  const tree = await renderScreen();
+  await act(async () => { press(tree, 'Open folder docs'); await Promise.resolve(); });
+  await act(async () => {
+    tree.root.findByProps({ placeholder: 'Search files…' }).props.onChangeText('readme');
+    await Promise.resolve();
+  });
+  // git status resolves with no entries, selectedEntry/menuEntry stay null, and the query is non-empty:
+  // every previously-&&-guarded branch above renders here without throwing "Unexpected text node".
+  expect(tree.root.findAllByType(Text).some((node) => node.props.children === 'readme.txt')).toBe(true);
 });
 
 it('opens typed absolute paths and host root', async () => {

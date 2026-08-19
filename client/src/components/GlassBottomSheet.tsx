@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
-import { StyleSheet, Text, useColorScheme } from 'react-native';
+import { Platform, StyleSheet, Text, useColorScheme } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   BottomSheetBackdrop,
@@ -26,7 +26,8 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
 ) {
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
-  const snapPoints = useMemo(() => ['55%', '100%'], []);
+  // ponytail: web's browser chrome eats the top of a 100% sheet; native keeps full-height expansion.
+  const snapPoints = useMemo(() => (Platform.OS === 'web' ? ['55%', '90%'] : ['55%', '100%']), []);
   const sheetRef = useRef<BottomSheetModal>(null);
 
   useImperativeHandle(ref, () => ({

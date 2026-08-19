@@ -193,7 +193,7 @@ export default function FilesScreen() {
       data={breadcrumbs}
       keyExtractor={(item) => item.target || '/'}
       renderItem={({ item, index }) => <Pressable accessibilityLabel={`Navigate to ${item.label}`} style={styles.breadcrumb} onPress={() => void navigate(item.target)}>
-        {index > 0 && <Feather name="chevron-right" size={16} color="#666" />}
+        {index > 0 ? <Feather name="chevron-right" size={16} color="#666" /> : null}
         <Text style={[styles.breadcrumbText, item.target === path && styles.breadcrumbActive]}>{item.label}</Text>
       </Pressable>}
     />
@@ -209,13 +209,13 @@ export default function FilesScreen() {
       <Feather name="corner-up-left" size={18} color={parentPath != null ? '#F0F0F0' : '#666'} />
       <Text style={styles.parentText}>Parent directory</Text>
     </Pressable>
-    {clipboard && <View style={styles.pasteBar}>
+    {clipboard ? <View style={styles.pasteBar}>
       <Text style={styles.pasteText} numberOfLines={1}>{clipboard.mode === 'copy' ? 'Copy' : 'Cut'} {clipboard.entry.name}</Text>
       <Pressable accessibilityLabel="Paste into current directory" style={styles.smallBtn} onPress={() => void paste()}><Text style={styles.smallBtnText}>Paste</Text></Pressable>
       <Pressable accessibilityLabel="Cancel paste" style={styles.ghostBtn} onPress={() => setClipboard(null)}><Text style={styles.ghostBtnText}>Cancel</Text></Pressable>
-    </View>}
-    {loading && <ActivityIndicator color="#46B8C4" style={styles.loader} />}
-    {!loading && entries.length === 0 && <Text style={styles.empty}>{query ? 'No matching files' : 'No files in this directory'}</Text>}
+    </View> : null}
+    {loading ? <ActivityIndicator color="#46B8C4" style={styles.loader} /> : null}
+    {!loading && entries.length === 0 ? <Text style={styles.empty}>{query ? 'No matching files' : 'No files in this directory'}</Text> : null}
     <FlatList
       data={entries}
       keyExtractor={(item) => item.path}
@@ -223,18 +223,18 @@ export default function FilesScreen() {
         <Feather name={item.isDir ? 'folder' : 'file'} size={20} color={item.isDir ? '#46B8C4' : '#888'} />
         <View style={styles.entryInfo}>
           <Text style={styles.entryName} numberOfLines={1}>{item.name}</Text>
-          {query && <Text style={styles.entryPath} numberOfLines={1}>{item.path}</Text>}
+          {query ? <Text style={styles.entryPath} numberOfLines={1}>{item.path}</Text> : null}
         </View>
-        {gitCodes.has(item.path) && <Text style={styles.gitCode}>{gitCodes.get(item.path)}</Text>}
-        {!item.isDir && item.size != null && <Text style={styles.size}>{formatBytes(item.size)}</Text>}
-        {selectedEntry?.path === item.path && <View style={styles.entryActions}>
+        {gitCodes.has(item.path) ? <Text style={styles.gitCode}>{gitCodes.get(item.path)}</Text> : null}
+        {!item.isDir && item.size != null ? <Text style={styles.size}>{formatBytes(item.size)}</Text> : null}
+        {selectedEntry?.path === item.path ? <View style={styles.entryActions}>
           <Pressable accessibilityLabel={`More actions ${item.name}`} style={styles.actionBtn} onPress={() => setMenuEntry(item)}>
             <Feather name="more-vertical" size={19} color="#D9FAFF" />
           </Pressable>
           <Pressable accessibilityLabel="Cancel selection" style={styles.actionBtn} onPress={() => setSelectedEntry(null)}>
             <Feather name="x" size={19} color="#D9FAFF" />
           </Pressable>
-        </View>}
+        </View> : null}
       </Pressable>}
     />
     <Modal visible={renameTarget != null} animationType="slide" onRequestClose={() => setRenameTarget(null)}>
@@ -252,15 +252,15 @@ export default function FilesScreen() {
     <Modal transparent visible={menuEntry != null} animationType="fade" onRequestClose={() => setMenuEntry(null)}>
       <Pressable style={styles.menuBackdrop} onPress={() => setMenuEntry(null)}>
         <View style={styles.menu}>
-          {menuEntry && <>
+          {menuEntry ? <>
             <Text style={styles.menuTitle} numberOfLines={1}>{menuEntry.name}</Text>
             <MenuButton label={`Copy ${menuEntry.name}`} icon="copy" onPress={() => { setClipboard({ mode: 'copy', entry: menuEntry }); setMenuEntry(null); }} />
             <MenuButton label={`Cut ${menuEntry.name}`} icon="scissors" onPress={() => { setClipboard({ mode: 'cut', entry: menuEntry }); setMenuEntry(null); }} />
             <MenuButton label={`Rename ${menuEntry.name}`} icon="edit-2" onPress={() => { setRenameTarget(menuEntry); setRenameText(menuEntry.name); setMenuEntry(null); }} />
-            {!menuEntry.isDir && <MenuButton label={`Download ${menuEntry.name}`} icon="download" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'download'); }} />}
-            {!menuEntry.isDir && <MenuButton label={`Open with ${menuEntry.name}`} icon="external-link" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'open'); }} />}
+            {!menuEntry.isDir ? <MenuButton label={`Download ${menuEntry.name}`} icon="download" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'download'); }} /> : null}
+            {!menuEntry.isDir ? <MenuButton label={`Open with ${menuEntry.name}`} icon="external-link" onPress={() => { const entry = menuEntry; setMenuEntry(null); void download(entry, 'open'); }} /> : null}
             <MenuButton label={`Delete ${menuEntry.name}`} icon="trash-2" onPress={() => { const entry = menuEntry; setMenuEntry(null); deleteEntry(entry); }} />
-          </>}
+          </> : null}
         </View>
       </Pressable>
     </Modal>
