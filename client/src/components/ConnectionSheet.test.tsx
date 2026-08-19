@@ -1,6 +1,18 @@
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: jest.requireActual("react-native").View }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
+import { Alert, Linking, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
+
+let mockPermission: { granted: boolean; canAskAgain: boolean } | null = { granted: true, canAskAgain: true };
+const mockRequestPermission = jest.fn();
+let mockScanned: ((event: { data: string }) => void) | undefined;
+
+jest.mock('expo-camera', () => ({
+  useCameraPermissions: () => [mockPermission, mockRequestPermission],
+  CameraView: (props: { onBarcodeScanned?: (event: { data: string }) => void }) => {
+    mockScanned = props.onBarcodeScanned;
+    return null;
+  },
+}));
 
 import { ConnectionSheet } from './ConnectionSheet';
 import type { Connection, ConnectionStore } from '../lib/connection';
@@ -25,6 +37,16 @@ const second: Connection = {
   skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
 const store: ConnectionStore = { connections: [first, second], selectedEndpoint: first.endpoint };
+
+const pairingPayload = JSON.stringify({
+  v: 2,
+  endpoint: 'https://imported.example:9999/path',
+  fingerprint: 'sha256:imported',
+  skipFingerprintVerification: false,
+  pairingId: 'pair-1',
+  token: 'pairing-token',
+  expiresAt: '2030-01-01T00:00:00Z',
+});
 
 function makeProps(overrides: Partial<Parameters<typeof ConnectionSheet>[0]> = {}) {
   return {
@@ -55,7 +77,10 @@ function actionFor(tree: ReactTestRenderer, label: string) {
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert');
+  jest.spyOn(Linking, 'openSettings').mockResolvedValue();
   mockPing.mockResolvedValue(undefined);
+  mockPermission = { granted: true, canAskAgain: true };
+  mockScanned = undefined;
 });
 
 afterEach(() => {
@@ -141,3 +166,58 @@ describe('ConnectionSheet editor', () => {
     act(() => tree.unmount());
   });
 });
+
+  it('imports raw JSON into the draft without saving and preserves the draft on invalid input', async () => {
+    const props = makeProps();
+    const tree = await renderSheet(props);
+    act(() => actionFor(tree, `Edit ${first.endpoint}`)());
+    const input = (placeholder: string) => tree.root.findByProps({ placeholder });
+
+    act(() => input('Paste pairing JSON').props.onChangeText(pairingPayload));
+    act(() => actionFor(tree, 'Apply JSON')());
+    expect(input('Name').props.value).toBe('imported.example:9999');
+    expect(input('Endpoint').props.value).toBe('https://imported.example:9999');
+    expect(input('Fingerprint').props.value).toBe('sha256:imported');
+    expect(input('Session token').props.value).toBe('pairing-token');
+    expect(props.onSave).not.toHaveBeenCalled();
+
+    act(() => input('Paste pairing JSON').props.onChangeText('{'));
+    act(() => actionFor(tree, 'Apply JSON')());
+    expect(tree.root.findByProps({ accessibilityLabel: 'pairing-import-error' })).toBeTruthy();
+    expect(input('Endpoint').props.value).toBe('https://imported.example:9999');
+
+    await act(async () => { actionFor(tree, 'Save')(); await Promise.resolve(); });
+    expect(props.onSave).toHaveBeenCalledWith(first.endpoint, expect.objectContaining({
+      name: 'imported.example:9999', endpoint: 'https://imported.example:9999', fingerprint: 'sha256:imported', token: 'pairing-token', skipFingerprintVerification: false,
+    }));
+    act(() => tree.unmount());
+  });
+
+  it('imports one QR scan and closes the scanner', async () => {
+    const props = makeProps();
+    const tree = await renderSheet(props);
+    act(() => actionFor(tree, `Edit ${first.endpoint}`)());
+    act(() => actionFor(tree, 'Scan QR')());
+
+    expect(mockScanned).toBeDefined();
+    act(() => { mockScanned?.({ data: pairingPayload }); mockScanned?.({ data: '{' }); });
+    expect(tree.root.findByProps({ placeholder: 'Endpoint' }).props.value).toBe('https://imported.example:9999');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Cancel scan' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'pairing-import-error' })).toHaveLength(0);
+    expect(props.onSave).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('keeps JSON import available when camera permission is denied', async () => {
+    mockPermission = { granted: false, canAskAgain: false };
+    const props = makeProps();
+    const tree = await renderSheet(props);
+    act(() => actionFor(tree, `Edit ${first.endpoint}`)());
+    act(() => actionFor(tree, 'Scan QR')());
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Open camera settings' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Apply JSON' })).toBeTruthy();
+    expect(tree.root.findByProps({ placeholder: 'Paste pairing JSON' })).toBeTruthy();
+    expect(mockRequestPermission).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
