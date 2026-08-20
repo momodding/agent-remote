@@ -78,10 +78,12 @@ func NewService(home string, provider RunnerProvider) *Service {
 
 // Install prepares the managed layout and systemd unit (Linux) or launchd plist (Darwin).
 func (s *Service) Install(ctx context.Context, opts InstallOptions) error {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if runtime.GOOS == "darwin" {
+		return s.installDarwin(ctx, opts)
+	}
+	if runtime.GOOS != "linux" {
 		return errors.New("install: unsupported platform")
 	}
-
 
 	// Validate home exists and is a directory.
 	stat, err := os.Stat(s.Home)
@@ -197,10 +199,12 @@ func (s *Service) Install(ctx context.Context, opts InstallOptions) error {
 
 // Uninstall stops and removes the service (Linux) or launchd plist (Darwin).
 func (s *Service) Uninstall(ctx context.Context, opts UninstallOptions) error {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if runtime.GOOS == "darwin" {
+		return s.uninstallDarwin(ctx, opts)
+	}
+	if runtime.GOOS != "linux" {
 		return errors.New("uninstall: unsupported platform")
 	}
-
 
 	managed := filepath.Join(s.Home, ".remote")
 	marker, err := readMarker(managed)
@@ -234,7 +238,6 @@ func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return errors.New("update: unsupported platform")
 	}
-
 
 	managed := filepath.Join(s.Home, ".remote")
 	marker, err := readMarker(managed)
@@ -329,11 +332,11 @@ func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
 	}
 
 	// Restart service with health check.
-	if err := s.systemctl(ctx, "restart", "agenticremote.service"); err != nil {
+	if err := s.restartManaged(ctx); err != nil {
 		// Try to restore and rollback on restart failure.
 		_ = os.Rename(marker.BinaryPath, stagePath)
 		_ = os.Rename(backupPath, marker.BinaryPath)
-		_ = s.systemctl(ctx, "restart", "agenticremote.service")
+		_ = s.restartManaged(ctx)
 		return fmt.Errorf("update: restart service: %w", err)
 	}
 
@@ -359,8 +362,15 @@ func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
 	// Health check failed; rollback.
 	_ = os.Rename(marker.BinaryPath, stagePath)
 	_ = os.Rename(backupPath, marker.BinaryPath)
-	_ = s.systemctl(ctx, "restart", "agenticremote.service")
+	_ = s.restartManaged(ctx)
 	return errors.New("update: health check failed, rolled back")
+}
+
+func (s *Service) restartManaged(ctx context.Context) error {
+	if runtime.GOOS == "darwin" {
+		return s.restartDarwin(ctx)
+	}
+	return s.systemctl(ctx, "restart", "agenticremote.service")
 }
 
 func (s *Service) systemctl(ctx context.Context, args ...string) error {

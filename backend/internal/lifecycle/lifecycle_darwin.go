@@ -1,155 +1,159 @@
+//go:build darwin
 // +build darwin
 
 package lifecycle
 
-// Darwin-specific lifecycle support for LaunchAgents.
-
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
+	"html"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 )
 
-func (s *Service) Install(ctx context.Context, opts InstallOptions) error {
+const launchAgentLabel = "com.agenticremote.daemon"
+
+func (s *Service) installDarwin(ctx context.Context, opts InstallOptions) error {
 	info, err := os.Stat(s.Home)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("daemon home is not a valid directory")
+		return fmt.Errorf("install: daemon home is not a valid directory: %s", s.Home)
 	}
 
-	binDir := filepath.Join(s.Home, "bin")
-	stateDir := filepath.Join(s.Home, "state")
-	for _, dir := range []string{binDir, stateDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
+	managed := filepath.Join(s.Home, ".remote")
+	if err := os.MkdirAll(filepath.Join(managed, "bin"), 0o700); err != nil {
+		return fmt.Errorf("install: create bin directory: %w", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("install: cannot determine executable path: %w", err)
+	}
+	binaryPath := filepath.Join(managed, "bin", "agenticRemote")
+	stagePath := binaryPath + ".staging"
+	if err := copyFileAtomic(exe, stagePath, 0o755); err != nil {
+		return fmt.Errorf("install: stage binary: %w", err)
+	}
+	if _, err := s.RunnerProvider.Command(ctx, stagePath, "version").CombinedOutput(); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("install: verify binary failed: %w", err)
+	}
+	if err := os.Rename(stagePath, binaryPath); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("install: atomic rename: %w", err)
+	}
+
+	configPath := filepath.Join(managed, "config.json")
+	if _, err := os.Stat(configPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("install: inspect config: %w", err)
+		}
+		if err := writeConfig(configPath, newDefaultConfig(s.Home, opts.Config)); err != nil {
+			return fmt.Errorf("install: write config: %w", err)
 		}
 	}
+	stateDirName := opts.Config.StateDir
+	if stateDirName == "" {
+		stateDirName = "state"
+	}
+	stateDir := filepath.Join(managed, stateDirName)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fmt.Errorf("install: create state dir: %w", err)
+	}
 
-	executable, err := os.Executable()
+	unitPath, err := launchAgentPath()
 	if err != nil {
-		return fmt.Errorf("could not resolve executable: %w", err)
+		return fmt.Errorf("install: resolve LaunchAgents directory: %w", err)
 	}
-	installPath := filepath.Join(binDir, "agenticRemote")
-
-	staged := installPath + ".staged"
-	if err := copyFileAtomic(executable, staged, 0o755); err != nil {
-		return fmt.Errorf("stage binary: %w", err)
+	unitContent := renderLaunchAgent(binaryPath, configPath, stateDir)
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		return fmt.Errorf("install: create LaunchAgents directory: %w", err)
 	}
-
-	runner := s.RunnerProvider.Command(ctx, staged, "version")
-	if out, err := runner.CombinedOutput(); err != nil || !strings.Contains(string(out), "agenticRemote") {
-		_ = os.Remove(staged)
-		return fmt.Errorf("verify binary failed: %v", err)
+	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
+		return fmt.Errorf("install: write LaunchAgent plist: %w", err)
 	}
 
-	if err := os.Rename(staged, installPath); err != nil {
-		return fmt.Errorf("install binary: %w", err)
-	}
-
-	configPath := filepath.Join(s.Home, "config.json")
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		opts.Config.StateDir = stateDir
-		if err := writeJSONAtomic(configPath, opts.Config, 0o600); err != nil {
-			return fmt.Errorf("write config: %w", err)
-		}
-	}
-
-	binHash, _ := hashFile(installPath)
-	cfgHash, _ := hashFile(configPath)
-
-	userHome, err := os.UserHomeDir()
+	binaryHash, err := hashFile(binaryPath)
 	if err != nil {
-		return fmt.Errorf("user home: %w", err)
+		return fmt.Errorf("install: hash binary: %w", err)
 	}
-	unitDir := filepath.Join(userHome, "Library", "LaunchAgents")
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir launchagents: %w", err)
+	configHash, err := hashFile(configPath)
+	if err != nil {
+		return fmt.Errorf("install: hash config: %w", err)
 	}
-
-	plistPath := filepath.Join(unitDir, "com.agenticremote.daemon.plist")
-	plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.agenticremote.daemon</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>%s</string>
-        <string>start</string>
-        <string>--config</string>
-        <string>%s</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>%s/daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>%s/daemon.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    </dict>
-</dict>
-</plist>`, installPath, configPath, stateDir, stateDir)
-
-	if err := os.WriteFile(plistPath, []byte(plistContent), 0o644); err != nil {
-		return fmt.Errorf("write plist: %w", err)
+	marker := &Marker{
+		SchemaVersion: 1,
+		ManagedRoot:   managed,
+		BinaryPath:    binaryPath,
+		ConfigPath:    configPath,
+		StatePath:     stateDir,
+		UnitPath:      unitPath,
+		BinaryHash:    binaryHash,
+		ConfigHash:    configHash,
+		UnitHash:      hashSHA256([]byte(unitContent)),
+	}
+	if err := writeMarker(managed, marker); err != nil {
+		return fmt.Errorf("install: write marker: %w", err)
 	}
 
-	unitHash, _ := hashFile(plistPath)
-
-	marker := Marker{
-		SchemaVersion:    1,
-		ManagedRoot:      s.Home,
-		BinaryPath:       installPath,
-		ConfigPath:       configPath,
-		StatePath:        stateDir,
-		UnitPath:         plistPath,
-		InstalledVersion: "local",
-		BinaryHash:       binHash,
-		ConfigHash:       cfgHash,
-		UnitHash:         unitHash,
+	_ = s.launchctl(ctx, "bootout", launchAgentDomain())
+	if err := s.launchctl(ctx, "bootstrap", launchAgentDomain(), unitPath); err != nil {
+		return fmt.Errorf("install: bootstrap LaunchAgent: %w", err)
 	}
-
-	markerPath := filepath.Join(s.Home, "install.json")
-	if err := writeJSONAtomic(markerPath, marker, 0o644); err != nil {
-		return fmt.Errorf("write marker: %w", err)
-	}
-
-	_ = s.RunnerProvider.Command(ctx, "launchctl", "unload", plistPath).CombinedOutput()
-	if _, err := s.RunnerProvider.Command(ctx, "launchctl", "load", "-w", plistPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("launchctl load: %w", err)
-	}
-
 	return nil
+}
 
-func (s *Service) Uninstall(ctx context.Context, opts UninstallOptions) error {
-	markerPath := filepath.Join(s.Home, "install.json")
-	var marker Marker
-	if err := readJSON(markerPath, &marker); err != nil {
-		return fmt.Errorf("invalid marker: %w", err)
+func (s *Service) uninstallDarwin(ctx context.Context, opts UninstallOptions) error {
+	managed := filepath.Join(s.Home, ".remote")
+	marker, err := readMarker(managed)
+	if err != nil {
+		return fmt.Errorf("uninstall: invalid marker: %w", err)
 	}
-
-	_ = s.RunnerProvider.Command(ctx, "launchctl", "unload", "-w", marker.UnitPath).CombinedOutput()
-	_ = os.Remove(marker.UnitPath)
-
+	_ = s.launchctl(ctx, "bootout", launchAgentDomain())
+	if err := os.Remove(marker.UnitPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("uninstall: remove LaunchAgent plist: %w", err)
+	}
 	if opts.Purge {
-		return os.RemoveAll(s.Home)
+		if err := os.RemoveAll(managed); err != nil {
+			return fmt.Errorf("uninstall: purge managed root: %w", err)
+		}
 	}
 	return nil
+}
 
-func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
-	return fmt.Errorf("not implemented")
+func (s *Service) restartDarwin(ctx context.Context) error {
+	return s.launchctl(ctx, "kickstart", "-k", launchAgentDomain())
+}
 
-
-	// Re-using common util from linux
+func (s *Service) launchctl(ctx context.Context, args ...string) error {
+	out, err := s.RunnerProvider.Command(ctx, "launchctl", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w", string(out), err)
+	}
 	return nil
+}
+
+func launchAgentPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist"), nil
+}
+
+func launchAgentDomain() string {
+	return fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
+}
+
+func renderLaunchAgent(binaryPath, configPath, stateDir string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>%s</string>
+<key>ProgramArguments</key><array><string>%s</string><string>serve</string><string>--config</string><string>%s</string></array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>%s/daemon.log</string>
+<key>StandardErrorPath</key><string>%s/daemon.log</string>
+</dict></plist>
+`, launchAgentLabel, html.EscapeString(binaryPath), html.EscapeString(configPath), html.EscapeString(stateDir), html.EscapeString(stateDir))
+}
