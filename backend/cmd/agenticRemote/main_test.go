@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -29,13 +30,28 @@ func TestRunServeRequiresConfig(t *testing.T) {
 	}
 }
 
-func TestConfigInitAcceptsDirectoryAndReinitializes(t *testing.T) {
+func TestConfigInitAcceptsDirectoryAndPreservesConfiguredValues(t *testing.T) {
 	dir := t.TempDir()
 	if err := run([]string{"config", "init", "--path", dir}); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(dir, "config.json")
-	if _, err := os.Stat(configPath); err != nil {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	values["listenAddr"] = json.RawMessage(`"127.0.0.1:9999"`)
+	delete(values, "vncPort")
+	values["customExtension"] = json.RawMessage(`{"keep":true}`)
+	data, err = json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, file := range []string{"tls/cert.pem", "auth/sessions.json", "sessions/sessions.json"} {
@@ -49,6 +65,23 @@ func TestConfigInitAcceptsDirectoryAndReinitializes(t *testing.T) {
 	}
 	if err := run([]string{"config", "init", "--path", dir}); err != nil {
 		t.Fatal(err)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(values["listenAddr"]); got != `"127.0.0.1:9999"` {
+		t.Fatalf("listenAddr overwritten: %s", got)
+	}
+	if _, ok := values["vncPort"]; !ok {
+		t.Fatal("vncPort was not added")
+	}
+	var keep struct{ Keep bool `json:"keep"` }
+	if err := json.Unmarshal(values["customExtension"], &keep); err != nil || !keep.Keep {
+		t.Fatalf("customExtension removed or corrupted: %s", string(values["customExtension"]))
 	}
 	for _, name := range []string{"tls", "auth", "sessions"} {
 		if _, err := os.Stat(filepath.Join(dir, ".agenticremote", name)); !os.IsNotExist(err) {

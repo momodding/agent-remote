@@ -150,3 +150,40 @@ func WriteSample(path string, cfg Config) error {
 	}
 	return os.Chmod(path, 0o600)
 }
+
+// AppendDefaults adds new default keys without altering existing JSON values.
+func AppendDefaults(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var existing map[string]json.RawMessage
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return err
+	}
+	if existing == nil {
+		return errors.New("config must be a JSON object")
+	}
+	defaultData, err := json.Marshal(Default())
+	if err != nil {
+		return err
+	}
+	var defaults map[string]json.RawMessage
+	if err := json.Unmarshal(defaultData, &defaults); err != nil {
+		return err
+	}
+	for key, value := range defaults {
+		if _, ok := existing[key]; !ok {
+			existing[key] = value
+		}
+	}
+	data, err = json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}

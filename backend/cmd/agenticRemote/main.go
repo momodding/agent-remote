@@ -151,18 +151,21 @@ func run(args []string) error {
 			return err
 		}
 		if _, err := os.Stat(configPath); err == nil {
+			if _, err := config.Load(configPath); err != nil {
+				return fmt.Errorf("loading existing config: %w", err)
+			}
 			if err := config.CleanState(configPath); err != nil {
 				return fmt.Errorf("cleaning state: %w", err)
 			}
 			fmt.Fprintln(os.Stderr, "existing config found; TLS certificates, pairings, auth sessions, and PTY sessions removed")
+			return config.AppendDefaults(configPath)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		cfg := config.Default()
 		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 			return err
 		}
-		return config.WriteSample(configPath, cfg)
+		return config.WriteSample(configPath, config.Default())
 	case "install":
 		return installCommand(args[1:])
 	case "uninstall":
