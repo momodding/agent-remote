@@ -703,6 +703,7 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorEnvelope{Type: "error", Code: "vnc_unavailable", Message: "VNC server is not running"})
 		return
 	}
+	defer tcpConn.Close()
 
 	// 4. Disable global write timeouts on the HTTP connection
 	rc := http.NewResponseController(w)
@@ -718,18 +719,67 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	wsConn, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
-		tcpConn.Close()
 		log.Printf("[ERROR] VNC proxy: websocket accept: %v", err)
 		return
 	}
 
-	nc := websocket.NetConn(r.Context(), wsConn, websocket.MessageBinary)
+	// 6. Bridge: concurrent pump loops with half-close semantics
+	var wsMux sync.Mutex
+	errc := make(chan error, 1)
 
-	// 6. Bridge
-	errc := make(chan error, 2)
-	go func() { defer tcpConn.Close(); _, err := io.Copy(tcpConn, nc); errc <- err }()
-	go func() { defer wsConn.Close(websocket.StatusNormalClosure, ""); _, err := io.Copy(nc, tcpConn); errc <- err }()
-	<-errc
+	// TCP → WebSocket pump (in goroutine)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := tcpConn.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("[DEBUG] VNC proxy: TCP read error: %v", err)
+				}
+				wsMux.Lock()
+				wsConn.Close(websocket.StatusNormalClosure, "")
+				wsMux.Unlock()
+				return
+			}
+			if n > 0 {
+				wsMux.Lock()
+				writeErr := wsConn.Write(r.Context(), websocket.MessageBinary, buf[:n])
+				wsMux.Unlock()
+				if writeErr != nil {
+					log.Printf("[DEBUG] VNC proxy: WebSocket write error: %v", writeErr)
+					return
+				}
+			}
+		}
+	}()
+
+	// WebSocket → TCP pump (foreground)
+	for {
+		_, data, err := wsConn.Read(r.Context())
+		if err != nil {
+			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				// Half-close TCP write side to allow remaining data to flush
+				if tcpTCP, ok := tcpConn.(*net.TCPConn); ok {
+					_ = tcpTCP.CloseWrite()
+				}
+				// Let TCP→WS loop continue until EOF
+				errc <- nil
+				return
+			}
+			log.Printf("[DEBUG] VNC proxy: WebSocket read error: %v", err)
+			errc <- err
+			return
+		}
+
+		if len(data) > 0 {
+			_, writeErr := tcpConn.Write(data)
+			if writeErr != nil {
+				log.Printf("[DEBUG] VNC proxy: TCP write error: %v", writeErr)
+				errc <- writeErr
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {

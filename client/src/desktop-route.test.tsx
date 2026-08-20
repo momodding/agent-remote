@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 
 async function renderScreen(): Promise<ReactTestRenderer> {
-  const DesktopScreen = require('../app/desktop').default;
+  const DesktopScreen = require(Platform.OS === 'web' ? '../app/desktop.web' : '../app/desktop').default;
   let tree!: ReactTestRenderer;
   await act(async () => { tree = create(<DesktopScreen />); await Promise.resolve(); });
   return tree;

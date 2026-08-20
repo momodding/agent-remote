@@ -139,4 +139,26 @@ describe('SessionSocket', () => {
     socket.onerror?.();
     expect(onError).toHaveBeenCalledWith('Terminal connection lost', 'connection_lost');
   });
+
+  it('reassembles a Unicode scalar split across two pty.output frames', () => {
+    const onOutput = jest.fn();
+    const session = new SessionSocket(connection, 'session', onOutput, jest.fn(), jest.fn());
+    session.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const bytes = utf8('λ');
+    expect(bytes.length).toBe(2);
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'pty.output', sessionId: 'session', data: base64(bytes.slice(0, 1)), seq: 1 }),
+    });
+    expect(onOutput).not.toHaveBeenCalled();
+
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'pty.output', sessionId: 'session', data: base64(bytes.slice(1)), seq: 2 }),
+    });
+    expect(onOutput).toHaveBeenCalledTimes(1);
+    expect(onOutput).toHaveBeenCalledWith('λ');
+    expect(onOutput.mock.calls.every(([chunk]) => !chunk.includes('\uFFFD'))).toBe(true);
+  });
 });

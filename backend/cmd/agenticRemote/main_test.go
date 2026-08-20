@@ -146,6 +146,26 @@ func TestServeListenerAcceptsTLS(t *testing.T) {
 	}
 }
 
+func TestResolveConfiguredPath(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	absolute := filepath.Join(t.TempDir(), "workspace")
+	for _, test := range []struct {
+		name       string
+		configured string
+		want       string
+	}{
+		{name: "relative", configured: "workspace", want: filepath.Join(configDir, "workspace")},
+		{name: "clean relative", configured: "workspace/../project", want: filepath.Join(configDir, "project")},
+		{name: "absolute", configured: absolute, want: absolute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resolveConfiguredPath(configDir, test.configured); got != test.want {
+				t.Fatalf("resolveConfiguredPath(%q, %q) = %q, want %q", configDir, test.configured, got, test.want)
+			}
+		})
+	}
+}
+
 func writeConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
