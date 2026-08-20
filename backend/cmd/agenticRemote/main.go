@@ -260,6 +260,15 @@ func updateCommand(args []string) error {
 	return nil
 }
 
+// resolveConfiguredPath keeps an already-absolute configured path as-is instead of
+// nesting it under the daemon config directory; a relative path stays anchored there.
+func resolveConfiguredPath(configDir, configured string) string {
+	if filepath.IsAbs(configured) {
+		return filepath.Clean(configured)
+	}
+	return filepath.Join(configDir, configured)
+}
+
 func serve(configPath string) error {
 	configPath, err := filepath.Abs(configPath)
 	if err != nil {
@@ -279,7 +288,7 @@ func serve(configPath string) error {
 	}
 	configDir := filepath.Dir(configPath)
 	stateDir := filepath.Join(configDir, cfg.StateDir)
-	workspaceRoot := filepath.Join(configDir, cfg.WorkspaceRoot)
+	workspaceRoot := resolveConfiguredPath(configDir, cfg.WorkspaceRoot)
 	tlsMaterial, err := security.EnsureTLS(stateDir, cfg.ListenAddr, cfg.PublicEndpoint)
 	if err != nil {
 		return err
