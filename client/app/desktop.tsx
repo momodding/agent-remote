@@ -65,6 +65,7 @@ const channel = {
 
 // Getter/setter for onmessage that enables frame flushing when receiver is ready
 Object.defineProperty(channel, 'onmessage', {
+  enumerable: true,
   get() { return this._onmessage; },
   set(fn) {
     this._onmessage = fn;

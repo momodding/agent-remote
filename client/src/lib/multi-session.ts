@@ -14,7 +14,7 @@ export type MultiSessionState = {
 };
 
 export function auxSlotCount(isWeb: boolean): number {
-  return isWeb ? 4 : 2;
+  return isWeb ? 4 : 1;
 }
 
 export function placeInSplit(layout: SplitLayout, sessionId: string, index: number): SplitLayout {

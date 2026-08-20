@@ -134,6 +134,13 @@ it('uses WebSocket ready states for the noVNC raw channel', async () => {
   expect(html).not.toContain("readyState: 'open'");
 });
 
+it('exposes noVNC raw channel message receiver as an own enumerable property', async () => {
+  const tree = await renderScreen();
+  const html = tree.root.findByType('WebView' as never).props.source.html as string;
+  expect(html).toContain("Object.defineProperty(channel, 'onmessage', {");
+  expect(html).toContain('enumerable: true');
+});
+
 it('renders the VNC control menu on native and web', async () => {
   let tree = await renderScreen();
   expect(tree.root.findByType('WebView' as never).props.source.html).toContain('Ctrl+Alt+Del');

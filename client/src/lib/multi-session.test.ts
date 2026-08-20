@@ -19,10 +19,11 @@ describe('multi-session state', () => {
     expect(updateOutput(sessions, 's1', 'new output').s1.output).toBe('new output');
   });
 
-  it('allows five open tabs with four web or two native auxiliary slots', () => {
+  it('allows five open tabs with four web or one native auxiliary slots', () => {
     expect(MAX_MULTI_SESSIONS).toBe(5);
-    expect(auxSlotCount(true)).toBe(4);
-    expect(auxSlotCount(false)).toBe(2);
+    expect(auxSlotCount({ OS: 'web' } as any)).toBe(4);
+    expect(auxSlotCount({ OS: 'android' } as any)).toBe(1);
+    expect(auxSlotCount({ OS: 'ios' } as any)).toBe(1);
   });
 
   it('places an inactive tab into only the indexed slot', () => {
