@@ -1,5 +1,5 @@
 import type { Connection } from './connection';
-import { base64, decodeBase64, text, utf8 } from './bytes';
+import { base64, decodeBase64, utf8 } from './bytes';
 import type { SessionSummary, WaitState } from '../protocol';
 
 const wsURL = (endpoint: string, id: string) => `${endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/sessions/${encodeURIComponent(id)}`;
@@ -14,8 +14,8 @@ type ResizeFrame = { type: 'pty.resize'; sessionId: string; cols: number; rows: 
 
 export class SessionSocket {
   private socket?: WebSocket;
+  private decoder = new TextDecoder();
   private pendingInput: InputFrame[] = [];
-  private pendingResize?: ResizeFrame;
 
   constructor(
     private readonly connection: Connection,
@@ -27,8 +27,8 @@ export class SessionSocket {
 
   connect(): void {
     this.close();
+    this.decoder = new TextDecoder();
     this.pendingInput = [];
-    this.pendingResize = undefined;
     const socket = new WebSocket(wsURL(this.connection.endpoint, this.sessionId));
     this.socket = socket;
     socket.onopen = () => {
@@ -46,7 +46,10 @@ export class SessionSocket {
     socket.onmessage = ({ data }) => {
       if (this.socket !== socket) return;
       const frame = JSON.parse(String(data)) as SessionFrame;
-      if (frame.type === 'pty.output') this.onOutput(text(decodeBase64(frame.data)));
+      if (frame.type === 'pty.output') {
+        const chunk = this.decoder.decode(decodeBase64(frame.data), { stream: true });
+        if (chunk) this.onOutput(chunk);
+      }
       if (frame.type === 'session.state') this.onState(frame.state, frame.waitState);
       if (frame.type === 'error') this.onError(frame.message, frame.code);
     };
@@ -63,6 +66,7 @@ export class SessionSocket {
   close(): void {
     this.socket?.close();
     this.socket = undefined;
+    this.decoder = new TextDecoder();
     this.pendingInput = [];
     this.pendingResize = undefined;
   }
