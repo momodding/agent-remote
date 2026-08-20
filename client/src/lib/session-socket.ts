@@ -16,6 +16,7 @@ export class SessionSocket {
   private socket?: WebSocket;
   private decoder = new TextDecoder();
   private pendingInput: InputFrame[] = [];
+  private pendingResize?: ResizeFrame;
 
   constructor(
     private readonly connection: Connection,
