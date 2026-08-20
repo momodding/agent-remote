@@ -76,11 +76,12 @@ func NewService(home string, provider RunnerProvider) *Service {
 	}
 }
 
-// Install prepares the managed layout and systemd unit. Linux-only.
+// Install prepares the managed layout and systemd unit (Linux) or launchd plist (Darwin).
 func (s *Service) Install(ctx context.Context, opts InstallOptions) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("install: unsupported platform (requires Linux with user systemd)")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return errors.New("install: unsupported platform")
 	}
+
 
 	// Validate home exists and is a directory.
 	stat, err := os.Stat(s.Home)
@@ -194,11 +195,12 @@ func (s *Service) Install(ctx context.Context, opts InstallOptions) error {
 	return nil
 }
 
-// Uninstall stops and removes the service. Linux-only.
+// Uninstall stops and removes the service (Linux) or launchd plist (Darwin).
 func (s *Service) Uninstall(ctx context.Context, opts UninstallOptions) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("uninstall: unsupported platform (requires Linux with user systemd)")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return errors.New("uninstall: unsupported platform")
 	}
+
 
 	managed := filepath.Join(s.Home, ".remote")
 	marker, err := readMarker(managed)
@@ -227,11 +229,12 @@ func (s *Service) Uninstall(ctx context.Context, opts UninstallOptions) error {
 	return nil
 }
 
-// Update fetches a release, verifies checksum, stages, and atomically swaps. Linux-only.
+// Update fetches a release, verifies checksum, stages, and atomically swaps.
 func (s *Service) Update(ctx context.Context, opts UpdateOptions) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("update: unsupported platform (requires Linux with user systemd)")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return errors.New("update: unsupported platform")
 	}
+
 
 	managed := filepath.Join(s.Home, ".remote")
 	marker, err := readMarker(managed)

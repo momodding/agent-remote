@@ -10,6 +10,8 @@ import { AgenticRemoteAPI } from '../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
 import type { FileEntry, GitStatus, ReadFileResponse } from '../src/protocol';
 
+
+
 export default function FilesScreen() {
   const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
   const [connection, setConnection] = useState<Connection | null>(null);
@@ -266,15 +268,6 @@ export default function FilesScreen() {
     </Modal>
   </SafeAreaView>;
 }
-
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, unit);
-  return `${Number.isInteger(value) ? value : value.toFixed(1)} ${units[unit]}`;
-}
-
 function buildBreadcrumbs(path: string) {
   if (path.startsWith('/')) {
     const segments = path.split('/').filter(Boolean);
@@ -282,6 +275,14 @@ function buildBreadcrumbs(path: string) {
   }
   const segments = path.split('/').filter(Boolean);
   return [{ label: 'Workspace', target: '' }, ...segments.map((segment, index) => ({ label: segment, target: segments.slice(0, index + 1).join('/') }))];
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, unit);
+  return `${Number.isInteger(value) ? value : Number(value.toFixed(1))} ${units[unit]}`;
 }
 
 function getParentPath(path: string) {

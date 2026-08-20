@@ -9,13 +9,6 @@ import { base64, decodeBase64 } from '../src/lib/bytes';
 import noVNCScript from '../src/generated/novnc_script';
 
 
-// ponytail: one shared VNC control menu (Ctrl+Alt+Del/Esc/Tab) rendered identically by both HTML builders.
-const VNC_CONTROLS_STYLE = '#vnc-controls{position:fixed;top:10px;right:10px;display:flex;gap:6px;z-index:20}#vnc-controls button{background:rgba(20,20,20,.85);color:#d9faff;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:12px}';
-const VNC_CONTROLS_HTML = '<div id="vnc-controls"><button id="vnc-esc">Esc</button><button id="vnc-tab">Tab</button><button id="vnc-cad">Ctrl+Alt+Del</button></div>';
-const VNC_CONTROLS_SCRIPT = `
-    document.getElementById('vnc-esc').addEventListener('click', () => rfb.sendKey(0xff1b, 'Escape'));
-    document.getElementById('vnc-tab').addEventListener('click', () => rfb.sendKey(0xff09, 'Tab'));
-    document.getElementById('vnc-cad').addEventListener('click', () => rfb.sendCtrlAltDel());`;
 
 
 
@@ -27,10 +20,8 @@ function buildBridgedDesktopHTML(): string {
 html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;color:#d9faff;font-family:system-ui,sans-serif}
 #status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000}
 #screen.connected+#status{display:none}
-${VNC_CONTROLS_STYLE}
 </style>
 </head><body><div id="screen"></div><div id="status">Connecting to desktop…</div>
-${VNC_CONTROLS_HTML}
 <script>${noVNCScript}</script>
 <script>
 const screen = document.getElementById('screen');
@@ -106,12 +97,12 @@ window.addEventListener('message', (event) => {
 });
 
 try {
-  const rfb = new window.RFB(screen, channel);
+  const rfb = window.rfb = new window.RFB(screen, channel);
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
   rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
   rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));${VNC_CONTROLS_SCRIPT}
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
 } catch (error) {
   report(error?.message || 'Could not load noVNC client');
 }
@@ -161,6 +152,8 @@ export default function DesktopScreen() {
     }
   }, []);
 
+  const sendKey = (keysym: number, name: string) => webRef.current?.injectJavaScript(`window.rfb?.sendKey(${keysym}, ${JSON.stringify(name)});true;`);
+
   if (!connection) return <SafeAreaView style={styles.screen}><Text style={styles.text}>Loading...</Text></SafeAreaView>;
   return (
     <SafeAreaView style={styles.screen}>
@@ -173,12 +166,15 @@ export default function DesktopScreen() {
       <WebView ref={webRef} source={{ html: bridgedHTML, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
         javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage} onLoadEnd={connectSocket}
         onError={(event) => setStatus(event.nativeEvent.description)} />
+      <View testID="vnc-shortcut-dock" style={styles.dock}>
+        <Pressable accessibilityLabel="Escape" style={styles.key} onPress={() => sendKey(0xff1b, 'Escape')}><Text style={styles.keyText}>Esc</Text></Pressable>
+        <Pressable accessibilityLabel="Tab" style={styles.key} onPress={() => sendKey(0xff09, 'Tab')}><Text style={styles.keyText}>Tab</Text></Pressable>
+        <Pressable accessibilityLabel="Ctrl Alt Delete" style={styles.key} onPress={() => webRef.current?.injectJavaScript('window.rfb?.sendCtrlAltDel();true;')}><Text style={styles.keyText}>Ctrl+Alt+Del</Text></Pressable>
+      </View>
       {status !== 'Desktop connected' && <Text style={styles.status}>{status}</Text>}
     </SafeAreaView>
   );
 }
-export { VNC_CONTROLS_STYLE, VNC_CONTROLS_HTML, VNC_CONTROLS_SCRIPT };
-
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0A0A0A' },
   topbar: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12, borderBottomWidth: 1, borderColor: '#262626' },
@@ -187,4 +183,7 @@ const styles = StyleSheet.create({
   text: { color: '#888', textAlign: 'center', marginTop: 40 },
   webview: { flex: 1, backgroundColor: '#000' },
   status: { position: 'absolute', left: 16, right: 16, bottom: 18, color: '#D9FAFF', textAlign: 'center' },
+  dock: { flexDirection: 'row', justifyContent: 'center', gap: 8, padding: 8, backgroundColor: '#181818', borderTopWidth: 1, borderColor: '#262626' },
+  key: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 6, backgroundColor: '#333' },
+  keyText: { color: '#F0F0F0', fontSize: 13, fontWeight: '600' },
 });

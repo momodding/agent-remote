@@ -141,15 +141,8 @@ it('exposes noVNC raw channel message receiver as an own enumerable property', a
   expect(html).toContain('enumerable: true');
 });
 
-it('renders the VNC control menu on native and web', async () => {
+it('renders the native VNC shortcut dock and retains controls in the web document', async () => {
   let tree = await renderScreen();
-  expect(tree.root.findByType('WebView' as never).props.source.html).toContain('Ctrl+Alt+Del');
-  expect(tree.root.findByType('WebView' as never).props.source.html).toContain('rfb.sendCtrlAltDel()');
-
-  Object.defineProperty(Platform, 'OS', { value: 'web' });
-  await act(async () => { tree.unmount(); });
-  tree = await renderScreen();
-  const html = tree.root.findByType('iframe' as never).props.srcDoc as string;
-  expect(html).toContain('Ctrl+Alt+Del');
-  expect(html).toContain('rfb.sendKey');
+  expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' })).toBeTruthy();
 });

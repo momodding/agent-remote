@@ -4,10 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
-	"time"
+	"path/filepath"
 )
 
 func copyFileAtomic(src, dst string, mode os.FileMode) error {
@@ -16,35 +15,16 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	tmp := dst + fmt.Sprintf(".%d", time.Now().UnixNano())
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return err
-	}
-	out.Close()
-	return os.Rename(tmp, dst)
-}
 
-func writeJSONAtomic(path string, v interface{}, mode os.FileMode) error {
-	tmp := path + fmt.Sprintf(".%d", time.Now().UnixNano())
+	tmp := dst + ".tmp"
 	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
 	defer out.Close()
+	defer os.Remove(tmp)
 
-	if err := json.NewEncoder(out).Encode(v); err != nil {
+	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
 	if err := out.Sync(); err != nil {
@@ -53,6 +33,21 @@ func writeJSONAtomic(path string, v interface{}, mode os.FileMode) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
+	return os.Rename(tmp, dst)
+}
+
+func writeJSONAtomic(path string, val interface{}, mode os.FileMode) error {
+	data, err := json.MarshalIndent(val, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+
 	return os.Rename(tmp, path)
 }
 
@@ -62,18 +57,19 @@ func hashFile(path string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
+
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func readJSON(path string, v interface{}) error {
-	f, err := os.Open(path)
-	if err != nil {
+func createManagedLayout(home string) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	defer f.Close()
-	return json.NewDecoder(f).Decode(v)
+	if err := os.MkdirAll(filepath.Join(home, "logs"), 0o700); err != nil {
+		return err
+	}
+	return nil
 }
