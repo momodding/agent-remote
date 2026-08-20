@@ -78,16 +78,42 @@ describe('MultiTerminal', () => {
   it('shows first tab in one pane and keeps other sessions as tabs', () => {
     const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3') });
     expect(tree.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Show Shell s3' })).toBeDefined();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Restore Shell s3' })).toBeDefined();
   });
 
-  it('collapses to selected tab and routes input to it', () => {
+  it('minimizes tab and focuses remaining pane without closing it', () => {
     const onInput = jest.fn();
     let tree: ReactTestRenderer;
     act(() => { tree = create(<MultiTerminal sessions={{ s1: session('s1'), s2: session('s2') }} onInput={onInput} onResize={jest.fn()} onClose={jest.fn()} />); });
-    const tab = tree!.root.findByProps({ accessibilityLabel: 'Show Shell s2' });
-    act(() => tab.props.onPress());
+    act(() => tree!.root.findByProps({ accessibilityLabel: 'Restore Shell s2' }).props.onPress());
+    act(() => tree!.root.findByProps({ accessibilityLabel: 'Minimize Shell s1' }).props.onPress());
+
     expect(tree!.root.findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Restore Shell s1' })).toBeDefined();
+
+    act(() => mockTerminalOnInput?.('c'));
+    expect(onInput).toHaveBeenCalledWith('s2', 'modified:c');
+  });
+
+  it('restores inactive tab to first empty slot without rebuilding full layout', () => {
+    const { __setPlatform } = require('react-native');
+    __setPlatform('web');
+    try {
+      const tree = render({ s1: session('s1'), s2: session('s2'), s3: session('s3') });
+      act(() => tree.root.findByProps({ accessibilityLabel: 'Restore Shell s2' }).props.onPress());
+      act(() => tree.root.findByProps({ accessibilityLabel: 'Restore Shell s3' }).props.onPress());
+      act(() => tree.root.findByProps({ accessibilityLabel: 'Minimize Shell s2' }).props.onPress());
+
+      const slots = tree.root.findAll((node) => node.type === require('react-native').View && typeof node.props.testID === 'string' && node.props.testID.startsWith('terminal-slot-'));
+      expect(slots).toHaveLength(5);
+      expect(slots[1].findAllByType(require('./Terminal').Terminal)).toHaveLength(0);
+
+      act(() => tree.root.findByProps({ accessibilityLabel: 'Restore Shell s2' }).props.onPress());
+      const newSlots = tree.root.findAll((node) => node.type === require('react-native').View && typeof node.props.testID === 'string' && node.props.testID.startsWith('terminal-slot-'));
+      expect(newSlots[1].findAllByType(require('./Terminal').Terminal)).toHaveLength(1);
+    } finally {
+      __setPlatform('android');
+    }
   });
 
   it('reactivates a native drop zone on repeated drags to the same slot', () => {
