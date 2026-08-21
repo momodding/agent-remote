@@ -108,6 +108,7 @@ window.addEventListener('message', (event) => {
       channel.readyState = 3;
       channel.onclose?.({ code: msg.code || 1000, reason: '' });
     } else if (msg.type === 'vnc-error') {
+      report('WebSocket connection failed');
       channel.onerror?.(new Event('error'));
     }
   } catch (error) {
@@ -151,17 +152,30 @@ export default function DesktopScreen() {
 
   const connectSocket = useCallback(() => {
     if (!connection) return;
+    const current = socketRef.current;
+    if (current && current.readyState <= WebSocket.OPEN) current.close(1000, 'desktop view reloaded');
     const wsBase = connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '');
     const ws = new WebSocket(`${wsBase}/v1/ws/vnc?token=${encodeURIComponent(connection.token)}`);
     ws.binaryType = 'arraybuffer';
     socketRef.current = ws;
-    ws.onopen = () => webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-open' }))}}));true;`);
+    ws.onopen = () => {
+      if (socketRef.current !== ws) return;
+      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-open' }))}}));true;`);
+    };
     ws.onmessage = (event) => {
+      if (socketRef.current !== ws) return;
       const data = base64(new Uint8Array(event.data as ArrayBuffer));
       webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc', data }))}}));true;`);
     };
-    ws.onclose = (event) => webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-close', code: event.code }))}}));true;`);
-    ws.onerror = () => webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-error' }))}}));true;`);
+    ws.onclose = (event) => {
+      if (socketRef.current !== ws) return;
+      socketRef.current = null;
+      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-close', code: event.code }))}}));true;`);
+    };
+    ws.onerror = () => {
+      if (socketRef.current !== ws) return;
+      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-error' }))}}));true;`);
+    };
   }, [connection]);
 
   const onMessage = useCallback(({ nativeEvent }: WebViewMessageEvent) => {

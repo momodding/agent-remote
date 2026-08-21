@@ -152,6 +152,23 @@ it('uses WebView-safe microtask scheduling without setImmediate', async () => {
   expect(html).toContain('flushScheduled');
 });
 
+it('keeps ordered transport stages and reports socket failures without secrets', async () => {
+  const tree = await renderScreen();
+  const html = tree.root.findByType('WebView' as never).props.source.html as string;
+  expect(html.indexOf('Loading noVNC…')).toBeLessThan(html.indexOf('Creating RFB…'));
+  expect(html.indexOf('Creating RFB…')).toBeLessThan(html.indexOf('Connecting WebSocket…'));
+  expect(html).toContain('WebSocket connection failed');
+  expect(html).not.toContain(mockConnection.token);
+});
+
+it('closes the previous socket before reconnecting the WebView', async () => {
+  const tree = await renderScreen();
+  const webview = tree.root.findByType('WebView' as never);
+  await act(async () => { webview.props.onLoadEnd(); });
+  expect(mockClose).toHaveBeenCalledWith(1000, 'desktop view reloaded');
+  expect(MockWebSocket).toHaveBeenCalledTimes(2);
+});
+
 it('exposes noVNC raw channel message receiver as an own enumerable property', async () => {
   const tree = await renderScreen();
   const html = tree.root.findByType('WebView' as never).props.source.html as string;
