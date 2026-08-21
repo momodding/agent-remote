@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client help
+.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client run-client-web help
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
@@ -194,6 +194,9 @@ run-daemon:
 run-client:
 	cd client && bun start
 
+run-client-web:
+	cd client && BROWSER=none bun run web
+
 help:
 	@echo 'Targets:'; \
 	echo '  backend-test          run backend Go tests'; \
@@ -210,4 +213,5 @@ help:
 	echo '  test                  run backend and client tests'; \
 	echo '  lint                  run backend vet and client typecheck'; \
 	echo '  run-daemon            run daemon using examples/config.local.json'; \
-	echo '  run-client            start Expo client'
+	echo '  run-client            start Expo client'; \
+	echo '  run-client-web        start Expo client with the web target'
