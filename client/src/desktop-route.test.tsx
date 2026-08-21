@@ -25,8 +25,9 @@ const mockClose = jest.fn();
 let mockWsInstance: {
   binaryType: string;
   readyState: number;
+  onopen: (() => void) | null;
   onmessage: ((event: { data: ArrayBuffer }) => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event: { code: number }) => void) | null;
   onerror: (() => void) | null;
   send: jest.Mock;
   close: jest.Mock;
@@ -35,6 +36,7 @@ const MockWebSocket = jest.fn().mockImplementation(() => {
   mockWsInstance = {
     binaryType: 'blob',
     readyState: 1,
+    onopen: null,
     onmessage: null,
     onclose: null,
     onerror: null,
@@ -127,11 +129,27 @@ it('renders bridged HTML without wsURL on native', async () => {
   expect(html).not.toContain('wss://daemon.test');
 });
 
-it('uses WebSocket ready states for the noVNC raw channel', async () => {
+it('opens the noVNC raw channel only after the RN WebSocket connects', async () => {
   const tree = await renderScreen();
   const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain('readyState: 1');
+  expect(html).toContain('readyState: 0');
+  expect(html).toContain('channel.readyState = 1');
   expect(html).not.toContain("readyState: 'open'");
+});
+
+it('forwards the RN WebSocket open event to noVNC', async () => {
+  await renderScreen();
+  await act(async () => { mockWsInstance.onopen?.(); });
+  expect(mockInjectJavaScript).toHaveBeenCalledWith(expect.stringContaining('vnc-open'));
+});
+
+it('uses WebView-safe microtask scheduling without setImmediate', async () => {
+  const tree = await renderScreen();
+  const html = tree.root.findByType('WebView' as never).props.source.html as string;
+  expect(html).toContain("typeof queueMicrotask === 'function'");
+  expect(html).toContain('Promise.resolve().then(callback)');
+  expect(html).not.toContain('setImmediate');
+  expect(html).toContain('flushScheduled');
 });
 
 it('exposes noVNC raw channel message receiver as an own enumerable property', async () => {
