@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -674,6 +676,55 @@ func TestHandleVNCProxyBytesFlow(t *testing.T) {
 	}
 	if string(reply) != "PONG" {
 		t.Fatalf("expected PONG, got %s", reply)
+	}
+}
+
+func TestHandleVNCProxyHalfClosesUpstreamOnClientClose(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	received := make(chan string, 1)
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			received <- "read error: " + err.Error()
+			return
+		}
+		one := make([]byte, 1)
+		if _, err := conn.Read(one); err != io.EOF {
+			received <- fmt.Sprintf("expected EOF, got %v", err)
+			return
+		}
+		received <- string(buf)
+	}()
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("PING")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-received; got != "PING" {
+		t.Fatalf("upstream did not receive payload followed by EOF: %s", got)
 	}
 }
 
