@@ -1,14 +1,15 @@
-// ponytail: web path uses standard ESM import and a direct WebSocket.
-import { useEffect, useState } from 'react';
+// ponytail: web path uses the same generated noVNC bundle as native.
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
-
+import noVNCScript from '../src/generated/novnc_script';
 
 export default function DesktopScreenWeb() {
   const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [connection, setConnection] = useState<Connection | null>(null);
 
   useEffect(() => {
@@ -30,26 +31,35 @@ export default function DesktopScreenWeb() {
 <style>
 html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;color:#d9faff;font-family:system-ui,sans-serif}
 #status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000}
+#screen.connected+#status{display:none}
 </style>
-<script type="module">
-import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/lib/rfb.min.js';
+</head><body><div id="screen"></div><div id="status">Loading noVNC…</div>
+<script>${noVNCScript}</script>
+<script>
 const screen = document.getElementById('screen');
 const status = document.getElementById('status');
 const wsURL = ${JSON.stringify(wsURL)};
 const report = (message) => status.textContent = message;
-
-window.addEventListener('error', (event) => report(event.message || 'Desktop view failed'));
-window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
+window.addEventListener('error', () => report('Desktop view failed'));
+window.addEventListener('unhandledrejection', () => report('Desktop view failed'));
+window.addEventListener('message', (event) => {
+  if (event.data?.type === 'key') window.rfb?.sendKey(event.data.keysym, event.data.name);
+  else if (event.data?.type === 'ctrl-alt-delete') window.rfb?.sendCtrlAltDel();
+});
 try {
-  const rfb = new RFB(screen, wsURL);
+  report('Creating RFB…');
+  const rfb = window.rfb = new window.RFB(screen, wsURL);
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
   rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
   rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-} catch (error) {
-  report(error?.message || 'Could not load noVNC client');
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
+  report('Connecting WebSocket…');
+} catch {
+  report('Could not load noVNC client');
 }
 </script></body></html>`;
+  const send = (message: object) => iframeRef.current?.contentWindow?.postMessage(message, '*');
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.topbar}>
@@ -58,7 +68,12 @@ try {
         </Pressable>
         <Text style={styles.title}>Remote Desktop</Text>
       </View>
-      <iframe srcDoc={webHTML} style={{ flex: 1, border: 'none', width: '100%', height: '100%' }} />
+      <iframe ref={iframeRef} title="Remote Desktop" srcDoc={webHTML} style={{ flex: 1, border: 'none', width: '100%', height: '100%' }} />
+      <View testID="vnc-shortcut-dock" style={styles.dock}>
+        <Pressable accessibilityLabel="Escape" style={styles.key} onPress={() => send({ type: 'key', keysym: 0xff1b, name: 'Escape' })}><Text style={styles.keyText}>Esc</Text></Pressable>
+        <Pressable accessibilityLabel="Tab" style={styles.key} onPress={() => send({ type: 'key', keysym: 0xff09, name: 'Tab' })}><Text style={styles.keyText}>Tab</Text></Pressable>
+        <Pressable accessibilityLabel="Ctrl Alt Delete" style={styles.key} onPress={() => send({ type: 'ctrl-alt-delete' })}><Text style={styles.keyText}>Ctrl+Alt+Del</Text></Pressable>
+      </View>
     </SafeAreaView>
   );
 }
@@ -70,4 +85,7 @@ const styles = StyleSheet.create({
   back: { padding: 6 },
   title: { color: '#F0F0F0', fontSize: 17, fontWeight: '700' },
   text: { color: '#888', textAlign: 'center', marginTop: 40 },
+  dock: { flexDirection: 'row', justifyContent: 'center', gap: 8, padding: 8, backgroundColor: '#181818', borderTopWidth: 1, borderColor: '#262626' },
+  key: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 6, backgroundColor: '#333' },
+  keyText: { color: '#F0F0F0', fontSize: 13, fontWeight: '600' },
 });

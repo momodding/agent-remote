@@ -181,3 +181,15 @@ it('renders the native VNC shortcut dock and retains controls in the web documen
   expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
   expect(tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' })).toBeTruthy();
 });
+
+it('renders web Remote Desktop from the local noVNC bundle with native shortcut parity', async () => {
+  Object.defineProperty(Platform, 'OS', { value: 'web' });
+  const tree = await renderScreen();
+  const frame = tree.root.findByType('iframe' as never);
+  expect(frame.props.srcDoc).toContain('/* novnc */');
+  expect(frame.props.srcDoc).not.toContain('cdn.jsdelivr.net');
+  expect(frame.props.srcDoc).toContain('Creating RFB…');
+  expect(frame.props.srcDoc).toContain('Connecting WebSocket…');
+  expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' })).toBeTruthy();
+});
