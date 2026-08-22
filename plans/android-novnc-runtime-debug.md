@@ -25,3 +25,18 @@ Continue the Android Remote Desktop noVNC investigation from the verified transp
 ## Assumptions & contingencies
 
 - No Android runtime is available because `adb` is not installed. The native bridge is therefore verified by unit tests and the web runtime; the visible RFB stage identifies the first remaining Android-only failure.
+
+## PR Description
+
+**Title**: fix: Fix Android noVNC Connection Dropping (macrotask batching #2)
+
+### What?
+Fixes random and silent dropping of the Android noVNC connection in the Expo/React Native bridging layer, and stabilizes backend proxy teardowns.
+
+### Why?
+noVNC parses TCP websocket payloads inside an internal queue, assuming single-threaded event loop access. The previous bridging implementation passed array-buffers downstream via single-shot `queueMicrotask` ticks without pausing to drain, which starved the React Native UI bridge under high WebSocket load from the daemon proxy (especially during the initial framebuffer chunk spray) causing Android WebSockets to be forcefully closed by the Android JS VM without a close frame. Additionally, the backend server did not support native half-closing logic, leading to proxy disconnections prematurely when client side websockets disconnected.
+
+### How?
+- Swapped `queueMicrotask` in the `channel._queue` drain processor on the Android bridge (in `client/app/desktop.tsx`) to `setImmediate` (macrotasks) to de-starve the RN UI event loop and allow sequential payload ingestion.
+- Refactored the VNC WS<->TCP proxy (`backend/internal/server/server.go`) to split `readPump` and `writePump` into concurrent goroutines, supporting standard POSIX half-close semantics: when the client websocket closes, a native `TCPConn.CloseWrite()` ensures framebuffers drain sequentially before backend unloads the connection.
+- Added missing unit test coverage against local TCP listener in `server_test.go` to assert EOF and teardown correctness on the websocket shim.
