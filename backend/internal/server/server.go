@@ -723,12 +723,11 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Bridge: concurrent pump loops with half-close semantics
+	// 6. Bridge: keep TCP reads alive after a clean WebSocket close.
 	var wsMux sync.Mutex
-	errc := make(chan error, 1)
-
-	// TCP → WebSocket pump (in goroutine)
+	tcpToWS := make(chan struct{})
 	go func() {
+		defer close(tcpToWS)
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := tcpConn.Read(buf)
@@ -737,47 +736,42 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 					log.Printf("[DEBUG] VNC proxy: TCP read error: %v", err)
 				}
 				wsMux.Lock()
-				wsConn.Close(websocket.StatusNormalClosure, "")
+				_ = wsConn.Close(websocket.StatusNormalClosure, "")
 				wsMux.Unlock()
 				return
 			}
-			if n > 0 {
-				wsMux.Lock()
-				writeErr := wsConn.Write(r.Context(), websocket.MessageBinary, buf[:n])
-				wsMux.Unlock()
-				if writeErr != nil {
-					log.Printf("[DEBUG] VNC proxy: WebSocket write error: %v", writeErr)
-					return
-				}
+			if n == 0 {
+				continue
+			}
+			wsMux.Lock()
+			writeErr := wsConn.Write(r.Context(), websocket.MessageBinary, buf[:n])
+			wsMux.Unlock()
+			if writeErr != nil {
+				log.Printf("[DEBUG] VNC proxy: WebSocket write error: %v", writeErr)
+				return
 			}
 		}
 	}()
 
-	// WebSocket → TCP pump (foreground)
 	for {
 		_, data, err := wsConn.Read(r.Context())
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
-				// Half-close TCP write side to allow remaining data to flush
 				if tcpTCP, ok := tcpConn.(*net.TCPConn); ok {
 					_ = tcpTCP.CloseWrite()
 				}
-				// Let TCP→WS loop continue until EOF
-				errc <- nil
+				<-tcpToWS
 				return
 			}
 			log.Printf("[DEBUG] VNC proxy: WebSocket read error: %v", err)
-			errc <- err
 			return
 		}
-
-		if len(data) > 0 {
-			_, writeErr := tcpConn.Write(data)
-			if writeErr != nil {
-				log.Printf("[DEBUG] VNC proxy: TCP write error: %v", writeErr)
-				errc <- writeErr
-				return
-			}
+		if len(data) == 0 {
+			continue
+		}
+		if _, err := tcpConn.Write(data); err != nil {
+			log.Printf("[DEBUG] VNC proxy: TCP write error: %v", err)
+			return
 		}
 	}
 }
