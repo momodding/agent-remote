@@ -34,9 +34,18 @@ window.addEventListener('error', (event) => report(event.message || 'Desktop vie
 window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
 
 const MAX_QUEUED_BYTES = 16 * 1024 * 1024;
-const scheduleMicrotask = typeof queueMicrotask === 'function'
-  ? queueMicrotask
-  : (callback) => Promise.resolve().then(callback);
+const scheduleFlush = (callback) => {
+  if (typeof setImmediate === 'function') setImmediate(callback);
+  else setTimeout(callback, 0);
+};
+let lastRFBStage = '';
+function traceRFBStage() {
+  const stage = window.rfb?._rfbInitState || 'waiting for protocol';
+  if (stage !== lastRFBStage) {
+    lastRFBStage = stage;
+    report('RFB stage: ' + stage);
+  }
+}
 let flushScheduled = false;
 let queuedBytes = 0;
 
@@ -76,13 +85,14 @@ Object.defineProperty(channel, 'onmessage', {
 function flush() {
   if (!channel._onmessage || !channel._queue.length || flushScheduled) return;
   flushScheduled = true;
-  scheduleMicrotask(() => {
+  scheduleFlush(() => {
     flushScheduled = false;
     const onmessage = channel._onmessage;
     while (onmessage && channel._queue.length) {
       const data = channel._queue.shift();
       queuedBytes -= data.byteLength;
       onmessage({ data });
+      traceRFBStage();
     }
     flush();
   });
@@ -95,6 +105,7 @@ window.addEventListener('message', (event) => {
       if (channel.readyState !== 0) return;
       channel.readyState = 1;
       channel.onopen?.();
+      traceRFBStage();
     } else if (msg.type === 'vnc' && msg.data) {
       const raw = atob(msg.data);
       const buf = new ArrayBuffer(raw.length);
@@ -106,6 +117,7 @@ window.addEventListener('message', (event) => {
       flush();
     } else if (msg.type === 'vnc-close') {
       channel.readyState = 3;
+      traceRFBStage();
       channel.onclose?.({ code: msg.code || 1000, reason: '' });
     } else if (msg.type === 'vnc-error') {
       report('WebSocket connection failed');
@@ -123,8 +135,8 @@ try {
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
   rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
+  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected at RFB stage: ' + (lastRFBStage || 'waiting for protocol') : 'Desktop disconnected unexpectedly at RFB stage: ' + (lastRFBStage || 'waiting for protocol')));
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed at RFB stage: ' + (lastRFBStage || 'waiting for protocol')));
   report('Connecting WebSocket…');
 } catch (error) {
   report(error?.message || 'Could not load noVNC client');

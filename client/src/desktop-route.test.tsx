@@ -143,12 +143,12 @@ it('forwards the RN WebSocket open event to noVNC', async () => {
   expect(mockInjectJavaScript).toHaveBeenCalledWith(expect.stringContaining('vnc-open'));
 });
 
-it('uses WebView-safe microtask scheduling without setImmediate', async () => {
+it('uses WebView-safe macrotask scheduling for queued VNC frames', async () => {
   const tree = await renderScreen();
   const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain("typeof queueMicrotask === 'function'");
-  expect(html).toContain('Promise.resolve().then(callback)');
-  expect(html).not.toContain('setImmediate');
+  expect(html).toContain('const scheduleFlush = (callback) =>');
+  expect(html).toContain("typeof setImmediate === 'function'");
+  expect(html).toContain('setTimeout(callback, 0)');
   expect(html).toContain('flushScheduled');
 });
 
@@ -159,6 +159,14 @@ it('keeps ordered transport stages and reports socket failures without secrets',
   expect(html.indexOf('Creating RFB…')).toBeLessThan(html.indexOf('Connecting WebSocket…'));
   expect(html).toContain('WebSocket connection failed');
   expect(html).not.toContain(mockConnection.token);
+});
+
+it('reports the last noVNC RFB stage without exposing VNC data', async () => {
+  const tree = await renderScreen();
+  const html = tree.root.findByType('WebView' as never).props.source.html as string;
+  expect(html).toContain("report('RFB stage: ' + stage)");
+  expect(html).toContain('Desktop disconnected unexpectedly at RFB stage:');
+  expect(html).not.toContain('console.log');
 });
 
 it('closes the previous socket before reconnecting the WebView', async () => {
