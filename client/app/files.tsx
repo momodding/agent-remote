@@ -6,14 +6,14 @@ import { Directory, File, Paths } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import Feather from '@expo/vector-icons/Feather';
-import { AgenticRemoteAPI } from '../src/lib/api';
+import { AgenticRemoteAPI, APIError } from '../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
 import type { FileEntry, GitStatus, ReadFileResponse } from '../src/protocol';
 
 
 
 export default function FilesScreen() {
-  const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
+  const { hostId } = useLocalSearchParams<{ hostId: string }>();
   const [connection, setConnection] = useState<Connection | null>(null);
   const [api, setAPI] = useState<AgenticRemoteAPI | null>(null);
   const [path, setPath] = useState('');
@@ -21,6 +21,7 @@ export default function FilesScreen() {
   const [query, setQuery] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [git, setGit] = useState<GitStatus | null>(null);
+  const [capabilities, setCapabilities] = useState<string[]>([]);
   const [file, setFile] = useState<ReadFileResponse | null>(null);
   const [clipboard, setClipboard] = useState<null | { mode: 'copy' | 'cut'; entry: FileEntry }>(null);
   const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
@@ -32,28 +33,49 @@ export default function FilesScreen() {
 
   const reload = useCallback(async (client = api, location = path, search = query) => {
     if (!client) return false;
-    const request = ++requestRef.current;
     setLoading(true);
+    const request = ++requestRef.current;
     try {
+      let enabled = capabilities;
+      if (!enabled.length) {
+        try {
+          enabled = (await client.capabilities()).capabilities.filter((capability) => capability.enabled).map((capability) => capability.name);
+        } catch (error) {
+          if (!(error instanceof APIError) || error.status !== 404) throw error;
+          enabled = ['files'];
+        }
+        if (request !== requestRef.current) return false;
+        setCapabilities(enabled);
+      }
+      if (!enabled.includes('files')) {
+        Alert.alert('Files unavailable', 'This daemon does not support file access.');
+        return false;
+      }
       const [nextEntries, status] = await Promise.all([
         search ? client.searchFiles(location, search) : client.files(location),
-        client.gitStatus(location),
+        search ? Promise.resolve(null) : client.gitStatus(location).catch(() => null),
       ]);
       if (request !== requestRef.current) return false;
       setEntries(nextEntries);
       setGit(status);
       return true;
     } catch (error) {
-      if (request === requestRef.current) Alert.alert('Could not load files', error instanceof Error ? error.message : 'Unknown error');
+      if (request !== requestRef.current) return false;
+      if (error instanceof APIError && error.status === 401) {
+        Alert.alert('Authentication expired', 'Pair this daemon again to access files.');
+        router.replace('/');
+      } else {
+        Alert.alert('Could not load files', error instanceof Error ? error.message : 'Unknown error');
+      }
       return false;
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
-  }, [api, path, query]);
+  }, [api, capabilities, path, query]);
 
   useEffect(() => {
     void loadConnections().then((store) => {
-      const nextConnection = getConnection(store, connectionEndpoint ?? null);
+      const nextConnection = getConnection(store, hostId ?? null);
       if (!nextConnection) {
         setLoading(false);
         Alert.alert('Could not load daemon connection');
@@ -65,7 +87,7 @@ export default function FilesScreen() {
       setAPI(client);
       void reload(client, '', '');
     });
-  }, [connectionEndpoint]);
+  }, [hostId]);
 
   const gitCodes = useMemo(() => new Map(git?.entries.map((entry) => [entry.path, entry.code]) ?? []), [git]);
   const navigate = async (location: string) => {

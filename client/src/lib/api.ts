@@ -1,6 +1,7 @@
 import type {
   CopyFileRequest,
   CreateSessionRequest,
+  DaemonCapabilities,
   ErrorEnvelope,
   FileEntry,
   GitStatus,
@@ -22,13 +23,17 @@ export class APIError extends Error {
 }
 
 export class AgenticRemoteAPI {
-  constructor(private readonly connection: Connection) {}
+  constructor(private readonly connection: Pick<Connection, 'endpoint' | 'token'>) {}
   async ping(signal?: AbortSignal): Promise<void> {
     const response = await this.fetch('/ping', { signal });
     const body = await response.text();
     if (!response.ok) throw new APIError(response.status, body || response.statusText);
     if (body !== 'pong') throw new Error('Unexpected ping response');
   }
+  async capabilities(): Promise<DaemonCapabilities> {
+    return this.request('/v1/daemon/identity');
+  }
+
   async sessions(): Promise<SessionSummary[]> {
     return this.request('/v1/sessions');
   }
@@ -214,5 +219,19 @@ export async function authenticatePairing(payload: PairingPayload, rawClientName
   diagnostic('Executing Auth-v2 Challenge...');
   const token = await attemptAuth(endpoint, payload, clientName);
   diagnostic('Session Established');
-  return { endpoint, fingerprint: payload.fingerprint, skipFingerprintVerification: payload.skipFingerprintVerification ?? false, token, clientName };
+  // Query daemon identity after authentication; fingerprint remains legacy fallback.
+  const connectionMock = { endpoint, token };
+  let hostId = payload.fingerprint;
+  try {
+    const api = new AgenticRemoteAPI(connectionMock);
+    const daemonInfo = await api.capabilities();
+    if (daemonInfo?.identity?.hostId) {
+      hostId = daemonInfo.identity.hostId;
+    }
+  } catch (error) {
+    // Fallback to fingerprint if the capabilities query fails
+    console.warn('[pairing] Capability fetch failed during connection discovery:', error);
+  }
+
+  return { endpoint, fingerprint: payload.fingerprint, hostId, skipFingerprintVerification: payload.skipFingerprintVerification ?? false, token, clientName };
 }

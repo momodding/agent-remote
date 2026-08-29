@@ -29,14 +29,14 @@ function isType(node: { type: unknown }, Component: unknown): boolean {
 }
 
 const first: Connection = {
-  name: 'Primary daemon', endpoint: 'https://daemon.example:8765', fingerprint: 'sha256:first',
+  name: 'Primary daemon', endpoint: 'https://daemon.example:8765', hostId: 'host-a', fingerprint: 'sha256:first',
   skipFingerprintVerification: true, token: 'first-token', clientName: 'test-client',
 };
 const second: Connection = {
-  name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', fingerprint: '',
+  name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', hostId: 'host-b', fingerprint: '',
   skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
-const store: ConnectionStore = { connections: [first, second], selectedEndpoint: first.endpoint };
+const store: ConnectionStore = { connections: [first, second], selectedHostId: first.hostId };
 
 const pairingPayload = JSON.stringify({
   v: 2,
@@ -100,7 +100,7 @@ describe('ConnectionSheet row actions', () => {
     expect(isType(tree.root.findByProps({ accessibilityLabel: 'Done' }), Pressable)).toBe(true);
 
     act(() => actionFor(tree, `Select ${second.endpoint}`)());
-    expect(props.onSelect).toHaveBeenCalledWith(second.endpoint);
+    expect(props.onSelect).toHaveBeenCalledWith(second.hostId);
     expect(props.onSave).not.toHaveBeenCalled();
     expect(props.onDelete).not.toHaveBeenCalled();
 
@@ -121,7 +121,7 @@ describe('ConnectionSheet row actions', () => {
     expect(props.onDelete).not.toHaveBeenCalled();
 
     act(() => { buttons[1].onPress?.(); });
-    expect(props.onDelete).toHaveBeenCalledWith(second.endpoint);
+    expect(props.onDelete).toHaveBeenCalledWith(second.hostId);
     act(() => tree.unmount());
   });
 });
@@ -150,7 +150,7 @@ describe('ConnectionSheet editor', () => {
     act(() => { byPlaceholder('Name').props.onChangeText('Renamed daemon'); });
     await act(async () => { actionFor(tree, 'Save')(); await Promise.resolve(); });
 
-    expect(props.onSave).toHaveBeenCalledWith(first.endpoint, { ...first, name: 'Renamed daemon' });
+    expect(props.onSave).toHaveBeenCalledWith(first.hostId, { ...first, name: 'Renamed daemon' });
     act(() => tree.unmount());
   });
 
@@ -187,8 +187,8 @@ describe('ConnectionSheet editor', () => {
     expect(input('Endpoint').props.value).toBe('https://imported.example:9999');
 
     await act(async () => { actionFor(tree, 'Save')(); await Promise.resolve(); });
-    expect(props.onSave).toHaveBeenCalledWith(first.endpoint, expect.objectContaining({
-      name: 'imported.example:9999', endpoint: 'https://imported.example:9999', fingerprint: 'sha256:imported', token: 'pairing-token', skipFingerprintVerification: false,
+    expect(props.onSave).toHaveBeenCalledWith(first.hostId, expect.objectContaining({
+      name: 'imported.example:9999', endpoint: 'https://imported.example:9999', hostId: first.hostId, fingerprint: 'sha256:imported', token: 'pairing-token', skipFingerprintVerification: false,
     }));
     act(() => tree.unmount());
   });

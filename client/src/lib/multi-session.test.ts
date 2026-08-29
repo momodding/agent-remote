@@ -9,8 +9,8 @@ import {
   type MultiSessionState,
 } from './multi-session';
 describe('multi-session state', () => {
-  const session1: MultiSessionState = { sessionId: 's1', name: 'Shell 1', connectionEndpoint: 'https://example.com', output: 'output1' };
-  const session2: MultiSessionState = { sessionId: 's2', name: 'Shell 2', connectionEndpoint: 'https://example.com', output: 'output2' };
+  const session1: MultiSessionState = { sessionId: 's1', name: 'Shell 1', hostId: 'first-host', output: 'output1' };
+  const session2: MultiSessionState = { sessionId: 's2', name: 'Shell 2', hostId: 'first-host', output: 'output2' };
 
   it('adds, closes, and updates sessions', () => {
     const sessions = addSession({}, session1);

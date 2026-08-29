@@ -13,9 +13,9 @@ type Props = {
   visible: boolean;
   store: ConnectionStore;
   onDismiss: () => void;
-  onSelect: (endpoint: string) => Promise<void>;
-  onSave: (originalEndpoint: string, replacement: Connection) => Promise<void>;
-  onDelete: (endpoint: string) => Promise<void>;
+  onSelect: (hostId: string) => Promise<void>;
+  onSave: (originalHostId: string, replacement: Connection) => Promise<void>;
+  onDelete: (hostId: string) => Promise<void>;
   onAdd: () => void;
 };
 
@@ -37,7 +37,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
   const remove = (connection: Connection) => {
     Alert.alert('Delete daemon?', 'Pairing credentials for this daemon will be removed from this device.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => void onDelete(connection.endpoint) },
+      { text: 'Delete', style: 'destructive', onPress: () => void onDelete(connection.hostId) },
     ]);
   };
 
@@ -58,7 +58,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
                 onCancel={() => setEditing(null)}
                 onSave={async (replacement) => {
                   try {
-                    await onSave(editing.endpoint, replacement);
+                    await onSave(editing.hostId, replacement);
                     setEditing(null);
                   } catch (error) {
                     Alert.alert('Could not update daemon', error instanceof Error ? error.message : 'Unknown error');
@@ -68,15 +68,15 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
             ) : (
               <>
                 {store.connections.map((connection) => (
-                  <View key={connection.endpoint} style={[styles.row, { borderColor: palette.border }]}>
+                  <View key={connection.hostId} style={[styles.row, { borderColor: palette.border }]}>
                     <View style={styles.rowMain}>
                       <Text style={[styles.name, { color: palette.text }]} numberOfLines={1}>{connection.name}</Text>
                       <Text style={[styles.endpoint, { color: palette.textSecondary }]} numberOfLines={1}>{connection.endpoint}</Text>
                       <ConnectionStatusIndicator api={new AgenticRemoteAPI(connection)} showLatency />
-                      {connection.endpoint === store.selectedEndpoint && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
+                      {connection.hostId === store.selectedHostId && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
                     </View>
                     <View style={styles.rowActions}>
-                      <Pressable style={styles.iconBtn} accessibilityLabel={`Select ${connection.endpoint}`} onPress={() => void onSelect(connection.endpoint)}><Feather name="check-circle" size={20} color={palette.accent} /></Pressable>
+                      <Pressable style={styles.iconBtn} accessibilityLabel={`Select ${connection.endpoint}`} onPress={() => void onSelect(connection.hostId)}><Feather name="check-circle" size={20} color={palette.accent} /></Pressable>
                       <Pressable style={styles.iconBtn} accessibilityLabel={`Edit ${connection.endpoint}`} onPress={() => setEditing(connection)}><Feather name="edit-2" size={20} color={palette.accent} /></Pressable>
                       <Pressable style={styles.iconBtn} accessibilityLabel={`Delete ${connection.endpoint}`} onPress={() => remove(connection)}><Feather name="trash-2" size={20} color={palette.danger} /></Pressable>
                     </View>
@@ -140,7 +140,7 @@ function Editor({ connection, palette, onCancel, onSave }: { connection: Connect
   const save = async () => {
     setSaving(true);
     try {
-      await onSave({ name, endpoint, fingerprint, clientName, token, skipFingerprintVerification: skip });
+      await onSave({ name, endpoint, hostId: connection.hostId, fingerprint, clientName, token, skipFingerprintVerification: skip });
     } finally {
       setSaving(false);
     }

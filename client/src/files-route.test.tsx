@@ -28,12 +28,13 @@ import type { FileEntry } from './protocol';
 const mockConnection: Connection = {
   name: 'Test daemon',
   endpoint: 'https://daemon.test:8765',
+  hostId: 'mock-host-id',
   token: 'secret',
   fingerprint: '',
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
+const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
 const mockRootEntries: FileEntry[] = [{ path: 'docs', name: 'docs', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockDocsEntries: FileEntry[] = [{ path: 'docs/readme.txt', name: 'readme.txt', isDir: false, size: 12, mode: '-rw-r--r--' }];
 const mockHostEntries: FileEntry[] = [{ path: '/tmp', name: 'tmp', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
@@ -65,24 +66,35 @@ const mockGitStatus = jest.fn(async () => ({ available: true, entries: [] }));
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   router: { replace: jest.fn() },
-  useLocalSearchParams: () => ({ connectionEndpoint: mockConnection.endpoint }),
+  useLocalSearchParams: () => ({ hostId: mockConnection.hostId }),
 }));
 jest.mock('./lib/connection', () => ({
   loadConnections: jest.fn(async () => mockStore),
   getConnection: jest.fn(() => mockConnection),
 }));
-jest.mock('./lib/api', () => ({
-  AgenticRemoteAPI: jest.fn(() => ({
-    files: mockFiles,
-    searchFiles: jest.fn(async (path: string, query: string) => (path === 'docs' ? mockDocsEntries : mockRootEntries).filter((e) => e.name.includes(query))),
-    gitStatus: mockGitStatus,
-    readFile: jest.fn(),
-    writeFile: jest.fn(),
-    renameFile: mockRenameFile,
-    copyFile: mockCopyFile,
-    downloadRequest: mockDownloadRequest,
-  })),
-}));
+jest.mock('./lib/api', () => {
+  class APIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return {
+    APIError,
+    AgenticRemoteAPI: jest.fn(() => ({
+      files: mockFiles,
+      searchFiles: jest.fn(async (path: string, query: string) => (path === 'docs' ? mockDocsEntries : mockRootEntries).filter((e) => e.name.includes(query))),
+      gitStatus: mockGitStatus,
+      readFile: jest.fn(),
+      writeFile: jest.fn(),
+      renameFile: mockRenameFile,
+      copyFile: mockCopyFile,
+      downloadRequest: mockDownloadRequest,
+      capabilities: jest.fn(async () => ({ capabilities: [{ name: 'files', enabled: true }] })),
+    })),
+  };
+});
 jest.mock('expo-file-system', () => ({
   __esModule: true,
   Directory: jest.fn().mockImplementation(function () { return { create: mockDirectoryCreate }; }),

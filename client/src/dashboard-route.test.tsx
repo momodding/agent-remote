@@ -1,4 +1,5 @@
 jest.mock("react-native-safe-area-context", () => ({ ...jest.requireActual("react-native-safe-area-context"), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, type AlertButton, TextInput } from 'react-native';
 import { router } from 'expo-router';
@@ -8,15 +9,15 @@ import type { Connection, ConnectionStore, PairedConnection } from './lib/connec
 import type { PairingPayload, SessionSummary } from './protocol';
 
 const first: Connection = {
-  name: 'Primary daemon', endpoint: 'https://daemon-a.test:8765', fingerprint: 'sha256:first',
+  name: 'Primary daemon', endpoint: 'https://daemon-a.test:8765', hostId: 'hostA', fingerprint: 'sha256:first',
   skipFingerprintVerification: false, token: 'first-token', clientName: 'test-client',
 };
 const second: Connection = {
-  name: 'Backup daemon', endpoint: 'https://daemon-b.test:8766', fingerprint: 'sha256:second',
+  name: 'Backup daemon', endpoint: 'https://daemon-b.test:8766', hostId: 'hostB', fingerprint: 'sha256:second',
   skipFingerprintVerification: true, token: 'second-token', clientName: 'test-client',
 };
-const storeA: ConnectionStore = { connections: [first, second], selectedEndpoint: first.endpoint };
-const storeB: ConnectionStore = { connections: [first, second], selectedEndpoint: second.endpoint };
+const storeA: ConnectionStore = { connections: [first, second], selectedHostId: first.hostId };
+const storeB: ConnectionStore = { connections: [first, second], selectedHostId: second.hostId };
 
 const mockLoadConnections = jest.fn();
 const mockSaveConnection = jest.fn();
@@ -29,6 +30,7 @@ const mockCloseSession = jest.fn();
 const mockPing = jest.fn();
 const mockAgenticRemoteAPI = jest.fn((connection: Connection) => ({
   ping: (signal?: AbortSignal) => mockPing(connection, signal),
+  capabilities: jest.fn().mockResolvedValue({ identity: { hostId: 'test' }, capabilities: [{ name: 'vnc', enabled: true }, { name: 'files', enabled: true }, { name: 'sessions', enabled: true }] }),
   sessions: () => mockSessions(connection),
   createSession: (request: unknown) => mockCreateSession(connection, request),
   closeSession: (id: string) => mockCloseSession(connection, id),
@@ -49,8 +51,8 @@ jest.mock('./lib/connection', () => ({
   updateConnection: (...args: unknown[]) => mockUpdateConnection(...args),
   selectConnection: (...args: unknown[]) => mockSelectConnection(...args),
   deleteConnection: (...args: unknown[]) => mockDeleteConnection(...args),
-  getConnection: (store: ConnectionStore, endpoint: string | null = store.selectedEndpoint) =>
-    store.connections.find((connection) => connection.endpoint === endpoint) ?? null,
+  getConnection: (store: ConnectionStore, hostId: string | null = store.selectedHostId) =>
+    store.connections.find((connection) => connection.hostId === hostId) ?? null,
 }));
 jest.mock('./lib/api', () => {
   class APIError extends Error {
@@ -114,6 +116,7 @@ beforeEach(() => {
   mockCloseSession.mockResolvedValue(undefined);
   mockAuthenticatePairing.mockResolvedValue({
     endpoint: first.endpoint,
+    hostId: 'hostA',
     fingerprint: 'sha256:renewed',
     skipFingerprintVerification: false,
     token: 'renewed-token',
@@ -123,7 +126,7 @@ beforeEach(() => {
 
 describe('dashboard empty state', () => {
   it('opens the pairing sheet when no daemon is saved yet', async () => {
-    mockLoadConnections.mockResolvedValue({ connections: [], selectedEndpoint: null });
+    mockLoadConnections.mockResolvedValue({ connections: [], selectedHostId: null });
     const tree = await renderDashboard();
 
     expect(mockPairingProps!.visible).toBe(false);
@@ -133,7 +136,7 @@ describe('dashboard empty state', () => {
   });
 
   it('shows Error without polling when no daemon is selected', async () => {
-    mockLoadConnections.mockResolvedValue({ connections: [], selectedEndpoint: null });
+    mockLoadConnections.mockResolvedValue({ connections: [], selectedHostId: null });
     const tree = await renderDashboard();
 
     expect(tree.root.findByProps({ accessibilityLabel: 'Error' })).toBeTruthy();
@@ -168,7 +171,7 @@ describe('dashboard saved-daemon lifecycle', () => {
       await flush();
     });
 
-    expect(mockSelectConnection).toHaveBeenCalledWith(second.endpoint);
+    expect(mockSelectConnection).toHaveBeenCalledWith(second.hostId);
     expect(mockSessions).toHaveBeenLastCalledWith(second);
     expect(tree.root.findByProps({ accessibilityLabel: 'Open b-shell' })).toBeTruthy();
     act(() => tree.unmount());
@@ -178,12 +181,13 @@ describe('dashboard saved-daemon lifecycle', () => {
     const paired = {
       endpoint: first.endpoint,
       fingerprint: 'sha256:renewed',
+      hostId: 'hostA',
       skipFingerprintVerification: false,
       token: 'renewed-token',
       clientName: 'renewed-client',
     } satisfies PairedConnection;
     mockAuthenticatePairing.mockResolvedValue(paired);
-    mockSaveConnection.mockResolvedValue({ connections: [{ ...first, ...paired }], selectedEndpoint: first.endpoint });
+    mockSaveConnection.mockResolvedValue({ connections: [{ ...first, ...paired }], selectedHostId: first.hostId });
     const tree = await renderDashboard();
 
     await act(async () => {
@@ -214,8 +218,8 @@ describe('dashboard saved-daemon lifecycle', () => {
 
   it('edits and deletes through ConnectionSheet callbacks', async () => {
     const renamed = { ...first, name: 'Renamed daemon' };
-    mockUpdateConnection.mockResolvedValue({ connections: [renamed, second], selectedEndpoint: first.endpoint });
-    mockDeleteConnection.mockResolvedValue({ connections: [renamed], selectedEndpoint: renamed.endpoint });
+    mockUpdateConnection.mockResolvedValue({ connections: [renamed, second], selectedHostId: first.hostId });
+    mockDeleteConnection.mockResolvedValue({ connections: [renamed], selectedHostId: renamed.hostId });
     const tree = await renderDashboard();
 
     act(() => actionFor(tree, 'Daemons')());
@@ -226,14 +230,14 @@ describe('dashboard saved-daemon lifecycle', () => {
       actionFor(tree, 'Save')();
       await flush();
     });
-    expect(mockUpdateConnection).toHaveBeenCalledWith(first.endpoint, renamed);
+    expect(mockUpdateConnection).toHaveBeenCalledWith(first.hostId, renamed);
 
     act(() => actionFor(tree, `Delete ${second.endpoint}`)());
     await act(async () => {
       confirmation()[1].onPress?.();
       await flush();
     });
-    expect(mockDeleteConnection).toHaveBeenCalledWith(second.endpoint);
+    expect(mockDeleteConnection).toHaveBeenCalledWith(second.hostId);
     act(() => tree.unmount());
   });
 
@@ -250,7 +254,7 @@ describe('dashboard saved-daemon lifecycle', () => {
     act(() => tree.unmount());
   });
 
-  it('renders only active sessions and binds Files and terminal routes to the selected endpoint', async () => {
+  it('renders only active sessions and binds Files and terminal routes to the selected host', async () => {
     mockSessions.mockResolvedValue([
       session('running-shell', 'running'),
       session('waiting-shell', 'waiting'),
@@ -265,9 +269,9 @@ describe('dashboard saved-daemon lifecycle', () => {
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Open exited-shell' })).toHaveLength(0);
 
     act(() => actionFor(tree, 'Files')());
-    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/files', params: { connectionEndpoint: first.endpoint } });
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/files', params: { hostId: first.hostId } });
     act(() => actionFor(tree, 'Open running-shell')());
-    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/terminal/[id]', params: { id: 'running-shell', name: 'running-shell', connectionEndpoint: first.endpoint } });
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/terminal/[id]', params: { id: 'running-shell', name: 'running-shell', hostId: first.hostId } });
     act(() => tree.unmount());
   });
 });

@@ -35,6 +35,7 @@ globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 const connection: Connection = {
   name: 'Test daemon',
   endpoint: 'https://daemon.test',
+  hostId: 'mock-host-id',
   token: 'secret',
   fingerprint: '',
   skipFingerprintVerification: false,

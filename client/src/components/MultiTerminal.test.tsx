@@ -58,7 +58,7 @@ jest.mock('react-native', () => {
 });
 
 describe('MultiTerminal', () => {
-  const session = (sessionId: string): MultiSessionState => ({ sessionId, name: `Shell ${sessionId}`, connectionEndpoint: 'https://example.com', output: `output-${sessionId}` });
+  const session = (sessionId: string): MultiSessionState => ({ sessionId, name: `Shell ${sessionId}`, hostId: 'first-host', output: `output-${sessionId}` });
   const render = (sessions: Record<string, MultiSessionState>, onClose = jest.fn()) => {
     let tree: ReactTestRenderer;
     act(() => { tree = create(<MultiTerminal sessions={sessions} onInput={jest.fn()} onResize={jest.fn()} onClose={onClose} />); });

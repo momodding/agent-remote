@@ -17,7 +17,7 @@ import { MAX_MULTI_SESSIONS, addSession, closeSession, updateOutput, type MultiS
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
   const Wrapper = SafeAreaView;
-  const { id, name, connectionEndpoint, mode } = useLocalSearchParams<{ id: string; name: string; connectionEndpoint: string; mode?: string }>();
+  const { id, name, hostId, mode } = useLocalSearchParams<{ id: string; name: string; hostId: string; mode?: string }>();
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
@@ -71,7 +71,7 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     void loadConnections().then((store) => {
-      const resolved = getConnection(store, connectionEndpoint ?? null);
+      const resolved = getConnection(store, hostId ?? null);
       if (!resolved) {
         Alert.alert('Could not load daemon connection');
         router.replace('/');
@@ -81,7 +81,7 @@ export default function TerminalScreen() {
       if (!isMultiModeCheck) connect(resolved);
     });
     return () => socket.current?.close();
-  }, [connect, connectionEndpoint]);
+  }, [connect, hostId]);
   useEffect(() => {
     const listener = AppState.addEventListener('change', (state) => {
       if (state === 'active' && connection) {
@@ -168,7 +168,7 @@ export default function TerminalScreen() {
     const newSession: MultiSessionState = {
       sessionId,
       name: sessionName,
-      connectionEndpoint: connection.endpoint,
+      hostId: connection.hostId,
       output: '',
     };
     const newSocket = new SessionSocket(
