@@ -5,15 +5,9 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
-import { base64, decodeBase64 } from '../src/lib/bytes';
 import noVNCScript from '../src/generated/novnc_script';
 
-
-
-
-
-/** HTML for native WebView — noVNC gets a WebSocket-like channel bridged through postMessage. */
-function buildBridgedDesktopHTML(): string {
+function buildDesktopHTML(wsURL: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -30,177 +24,48 @@ const report = (message) => {
   status.textContent = message;
   window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message }));
 };
-window.addEventListener('error', (event) => report(event.message || 'Desktop view failed'));
-window.addEventListener('unhandledrejection', (event) => report(event.reason?.message || String(event.reason || 'Desktop view failed')));
-
-const MAX_QUEUED_BYTES = 16 * 1024 * 1024;
-const scheduleFlush = (callback) => {
-  if (typeof setImmediate === 'function') setImmediate(callback);
-  else setTimeout(callback, 0);
-};
-let lastRFBStage = '';
-function traceRFBStage() {
-  const stage = window.rfb?._rfbInitState || 'waiting for protocol';
-  if (stage !== lastRFBStage) {
-    lastRFBStage = stage;
-    report('RFB stage: ' + stage);
-  }
-}
-let flushScheduled = false;
-let queuedBytes = 0;
-
-// WebSocket-compatible raw channel required by @novnc/novnc/lib/websock.js.
-const channel = {
-  binaryType: 'arraybuffer',
-  protocol: '',
-  readyState: 0,
-  onopen: null,
-  _onmessage: null,
-  onerror: null,
-  onclose: null,
-  _queue: [],
-  send(data) {
-    if (this.readyState !== 1) throw new Error('VNC transport is not open');
-    let raw = '';
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    for (let i = 0; i < bytes.length; i++) raw += String.fromCharCode(bytes[i]);
-    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'vnc', data: btoa(raw) }));
-  },
-  close() {
-    if (this.readyState >= 2) return;
-    this.readyState = 2;
-    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'vnc-close' }));
-  },
-};
-
-Object.defineProperty(channel, 'onmessage', {
-  enumerable: true,
-  get() { return this._onmessage; },
-  set(fn) {
-    this._onmessage = fn;
-    flush();
-  }
-});
-
-function flush() {
-  if (!channel._onmessage || !channel._queue.length || flushScheduled) return;
-  flushScheduled = true;
-  scheduleFlush(() => {
-    flushScheduled = false;
-    const onmessage = channel._onmessage;
-    while (onmessage && channel._queue.length) {
-      const data = channel._queue.shift();
-      queuedBytes -= data.byteLength;
-      onmessage({ data });
-      traceRFBStage();
-    }
-    flush();
-  });
-}
-
-window.addEventListener('message', (event) => {
-  try {
-    const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-    if (msg.type === 'vnc-open') {
-      if (channel.readyState !== 0) return;
-      channel.readyState = 1;
-      channel.onopen?.();
-      traceRFBStage();
-    } else if (msg.type === 'vnc' && msg.data) {
-      const raw = atob(msg.data);
-      const buf = new ArrayBuffer(raw.length);
-      const view = new Uint8Array(buf);
-      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
-      if (queuedBytes + buf.byteLength > MAX_QUEUED_BYTES) throw new Error('VNC receive queue exceeded 16 MiB');
-      channel._queue.push(buf);
-      queuedBytes += buf.byteLength;
-      flush();
-    } else if (msg.type === 'vnc-close') {
-      channel.readyState = 3;
-      traceRFBStage();
-      channel.onclose?.({ code: msg.code || 1000, reason: '' });
-    } else if (msg.type === 'vnc-error') {
-      report('WebSocket connection failed');
-      channel.onerror?.(new Event('error'));
-    }
-  } catch (error) {
-    report(error?.message || 'VNC transport failed');
-    channel.onerror?.(new Event('error'));
-  }
-});
-
+window.addEventListener('error', () => report('Desktop view failed'));
+window.addEventListener('unhandledrejection', () => report('Desktop view failed'));
+const wsURL = ${JSON.stringify(wsURL)};
 try {
   report('Creating RFB…');
-  const rfb = window.rfb = new window.RFB(screen, channel);
+  const rfb = window.rfb = new window.RFB(screen, wsURL);
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
   rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected at RFB stage: ' + (lastRFBStage || 'waiting for protocol') : 'Desktop disconnected unexpectedly at RFB stage: ' + (lastRFBStage || 'waiting for protocol')));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed at RFB stage: ' + (lastRFBStage || 'waiting for protocol')));
+  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
   report('Connecting WebSocket…');
-} catch (error) {
-  report(error?.message || 'Could not load noVNC client');
+} catch {
+  report('Could not load noVNC client');
 }
 </script></body></html>`;
 }
+
 export default function DesktopScreen() {
-  const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
+  const { hostId } = useLocalSearchParams<{ hostId: string }>();
   const [connection, setConnection] = useState<Connection | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
   const webRef = useRef<WebView>(null);
-  const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    loadConnections().then((store) => setConnection(getConnection(store, connectionEndpoint) ?? null));
-  }, [connectionEndpoint]);
+    void loadConnections().then((store) => setConnection(getConnection(store, hostId) ?? null));
+  }, [hostId]);
 
-  useEffect(() => () => {
-    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) {
-      socketRef.current.close(1000, 'desktop route closed');
-    }
-  }, []);
-
-  const bridgedHTML = useMemo(() => connection ? buildBridgedDesktopHTML() : '', [connection]);
-
-  const connectSocket = useCallback(() => {
-    if (!connection) return;
-    const current = socketRef.current;
-    if (current && current.readyState <= WebSocket.OPEN) current.close(1000, 'desktop view reloaded');
+  const html = useMemo(() => {
+    if (!connection) return '';
     const wsBase = connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '');
-    const ws = new WebSocket(`${wsBase}/v1/ws/vnc?token=${encodeURIComponent(connection.token)}`);
-    ws.binaryType = 'arraybuffer';
-    socketRef.current = ws;
-    ws.onopen = () => {
-      if (socketRef.current !== ws) return;
-      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-open' }))}}));true;`);
-    };
-    ws.onmessage = (event) => {
-      if (socketRef.current !== ws) return;
-      const data = base64(new Uint8Array(event.data as ArrayBuffer));
-      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc', data }))}}));true;`);
-    };
-    ws.onclose = (event) => {
-      if (socketRef.current !== ws) return;
-      socketRef.current = null;
-      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-close', code: event.code }))}}));true;`);
-    };
-    ws.onerror = () => {
-      if (socketRef.current !== ws) return;
-      webRef.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(JSON.stringify({ type: 'vnc-error' }))}}));true;`);
-    };
+    return buildDesktopHTML(`${wsBase}/v1/ws/vnc?token=${encodeURIComponent(connection.token)}`);
   }, [connection]);
 
   const onMessage = useCallback(({ nativeEvent }: WebViewMessageEvent) => {
     try {
-      const message = JSON.parse(nativeEvent.data) as { type?: string; message?: string; data?: string };
+      const message = JSON.parse(nativeEvent.data) as { type?: string; message?: string };
       if (message.type === 'status' && message.message) setStatus(message.message);
-      else if (message.type === 'vnc' && message.data && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) socketRef.current.send(decodeBase64(message.data));
-      else if (message.type === 'vnc-close' && socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) socketRef.current.close(1000, 'desktop route closed');
     } catch {
       setStatus(nativeEvent.data);
     }
   }, []);
-
   const sendKey = (keysym: number, name: string) => webRef.current?.injectJavaScript(`window.rfb?.sendKey(${keysym}, ${JSON.stringify(name)});true;`);
 
   if (!connection) return <SafeAreaView style={styles.screen}><Text style={styles.text}>Loading...</Text></SafeAreaView>;
@@ -212,8 +77,8 @@ export default function DesktopScreen() {
         </Pressable>
         <Text style={styles.title}>Remote Desktop</Text>
       </View>
-      <WebView ref={webRef} source={{ html: bridgedHTML, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
-        javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage} onLoadEnd={connectSocket}
+      <WebView ref={webRef} source={{ html, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
+        javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage}
         onError={(event) => setStatus(event.nativeEvent.description)} />
       <View testID="vnc-shortcut-dock" style={styles.dock}>
         <Pressable accessibilityLabel="Escape" style={styles.key} onPress={() => sendKey(0xff1b, 'Escape')}><Text style={styles.keyText}>Esc</Text></Pressable>
@@ -224,6 +89,7 @@ export default function DesktopScreen() {
     </SafeAreaView>
   );
 }
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0A0A0A' },
   topbar: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12, borderBottomWidth: 1, borderColor: '#262626' },

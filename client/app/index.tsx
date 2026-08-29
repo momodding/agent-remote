@@ -14,13 +14,14 @@ import { ConnectionStatusIndicator } from '../src/components/ConnectionStatusInd
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
 export default function Dashboard() {
-  const [store, setStore] = useState<ConnectionStore>({ connections: [], selectedEndpoint: null });
+  const [store, setStore] = useState<ConnectionStore>({ connections: [], selectedHostId: null });
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [query, setQuery] = useState('');
   const [pairingOpen, setPairingOpen] = useState(false);
   const [daemonsOpen, setDaemonsOpen] = useState(false);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [capabilities, setCapabilities] = useState<string[]>([]);
   const { width } = useWindowDimensions();
   const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
   const connection = useMemo(() => getConnection(store), [store]);
@@ -33,19 +34,30 @@ export default function Dashboard() {
   const loadSessions = useCallback(async (target: Connection) => {
     const id = ++requestRef.current;
     try {
-      const result = await new AgenticRemoteAPI(target).sessions();
-      if (id === requestRef.current) setSessions(result);
+      const restAPI = new AgenticRemoteAPI(target);
+      const [result, caps] = await Promise.all([
+        restAPI.sessions(),
+        restAPI.capabilities().catch((error) => {
+          if (error instanceof APIError && error.status === 404) return { capabilities: [] };
+          throw error;
+        }),
+      ]);
+      if (id === requestRef.current) {
+        setSessions(result);
+        setCapabilities(caps?.capabilities?.filter((c: { enabled: boolean; name: string }) => c.enabled).map((c: { name: string }) => c.name) || []);
+      }
     } catch (error) {
       if (id !== requestRef.current) return;
       if (error instanceof APIError && error.status === 401) {
         setSessions([]);
+        setCapabilities([]);
         Alert.alert('Authentication expired. Pair this daemon again or edit its saved credentials.');
       } else {
         Alert.alert('Could not load sessions', error instanceof Error ? error.message : 'Unknown error');
       }
     }
   }, []);
-  const clearSessions = useCallback(() => { requestRef.current += 1; setSessions([]); }, []);
+  const clearSessions = useCallback(() => { requestRef.current += 1; setSessions([]); setCapabilities([]); }, []);
   const refresh = useCallback(async () => { if (connection) await loadSessions(connection); }, [connection, loadSessions]);
 
   useEffect(() => {
@@ -71,10 +83,10 @@ export default function Dashboard() {
         setDiagnostics((items) => [...items, message]);
         onStage?.(message);
       });
-      const name = getConnection(store, paired.endpoint)?.name ?? new URL(paired.endpoint).host;
+      const name = getConnection(store, paired.hostId)?.name ?? new URL(paired.endpoint).host;
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
-      const reconnected = getConnection(nextStore, paired.endpoint);
+      const reconnected = getConnection(nextStore, paired.hostId);
       if (reconnected) await loadSessions(reconnected);
       setTimeout(() => setDiagnostics([]), 1500);
     } catch (error) {
@@ -83,22 +95,22 @@ export default function Dashboard() {
     }
   };
 
-  const selectDaemon = async (endpoint: string) => {
+  const selectDaemon = async (hostId: string) => {
     try {
-      const nextStore = await selectConnection(endpoint);
+      const nextStore = await selectConnection(hostId);
       setStore(nextStore);
       clearSessions();
       setDaemonsOpen(false);
-      const selected = getConnection(nextStore, endpoint);
+      const selected = getConnection(nextStore, hostId);
       if (selected) await loadSessions(selected);
     } catch (error) {
       Alert.alert('Could not switch daemon', error instanceof Error ? error.message : 'Unknown error');
     }
   };
 
-  const saveEdit = async (originalEndpoint: string, replacement: Connection) => {
-    const wasSelected = originalEndpoint === store.selectedEndpoint;
-    const nextStore = await updateConnection(originalEndpoint, replacement);
+  const saveEdit = async (originalHostId: string, replacement: Connection) => {
+    const wasSelected = originalHostId === store.selectedHostId;
+    const nextStore = await updateConnection(originalHostId, replacement);
     setStore(nextStore);
     if (wasSelected) {
       const selected = getConnection(nextStore);
@@ -106,10 +118,10 @@ export default function Dashboard() {
     }
   };
 
-  const removeDaemon = async (endpoint: string) => {
+  const removeDaemon = async (hostId: string) => {
     try {
-      const wasSelected = endpoint === store.selectedEndpoint;
-      const nextStore = await deleteConnection(endpoint);
+      const wasSelected = hostId === store.selectedHostId;
+      const nextStore = await deleteConnection(hostId);
       setStore(nextStore);
       if (wasSelected) {
         const selected = getConnection(nextStore);
@@ -127,7 +139,7 @@ export default function Dashboard() {
     try {
       const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
       setSessions((items) => [session, ...items]);
-      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, connectionEndpoint: connection.endpoint } });
+      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId: connection.hostId } });
     } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }
   };
 
@@ -136,7 +148,7 @@ export default function Dashboard() {
     try {
       const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
       setSessions((items) => [session, ...items]);
-      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, connectionEndpoint: connection.endpoint, mode: 'multi' } });
+      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId: connection.hostId, mode: 'multi' } });
     } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }
   };
 
@@ -157,30 +169,32 @@ export default function Dashboard() {
       <Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}>
         <Feather name="refresh-cw" size={18} color="#46B8C4" />
       </Pressable>
-      {process.env.EXPO_PUBLIC_ENABLE_NOVNC === 'true' && (
+      {capabilities.includes('vnc') && (
         <Pressable accessibilityLabel="Desktop" style={styles.action}
-          onPress={() => router.push({ pathname: '/desktop', params: { connectionEndpoint: connection.endpoint } })}>
+          onPress={() => router.push({ pathname: '/desktop', params: { hostId: connection.hostId } })}>
           <Feather name="monitor" size={18} color="#46B8C4" />
         </Pressable>
       )}
-      <Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { connectionEndpoint: connection.endpoint } })}>
-        <Feather name="folder" size={18} color="#46B8C4" />
-      </Pressable>
+      {capabilities.includes('files') && (
+        <Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { hostId: connection.hostId } })}>
+          <Feather name="folder" size={18} color="#46B8C4" />
+        </Pressable>
+      )}
       <Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}>
         <Feather name="server" size={18} color="#46B8C4" />
       </Pressable>
     </View>
   </View>
   <View style={styles.controls}><TextInput style={styles.search} value={query} onChangeText={setQuery} placeholder="Search sessions" placeholderTextColor="#888" /><View style={styles.createButtons}><Pressable accessibilityLabel="New shell" style={styles.primary} onPress={() => void create()}><Feather name="plus" size={18} color="#0A0A0A" /></Pressable><Pressable accessibilityLabel="New multi-session window" style={styles.secondary} onPress={() => void createMulti()}><Feather name="columns" size={18} color="#46B8C4" /></Pressable></View></View>
-    <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} connectionEndpoint={connection.endpoint} onClose={() => void refresh()} /> : null} />
+    <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} hostId={connection.hostId} onClose={() => void refresh()} /> : null} />
     {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
     <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
     <ConnectionSheet visible={daemonsOpen} store={store} onDismiss={() => setDaemonsOpen(false)} onSelect={selectDaemon} onSave={saveEdit} onDelete={removeDaemon} onAdd={addDaemon} />
   </SafeAreaView>;
 }
 
-function SessionCard({ session, api, connectionEndpoint, onClose }: { session: SessionSummary; api: AgenticRemoteAPI; connectionEndpoint: string; onClose: () => void }) {
-  const open = () => router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, connectionEndpoint } });
+function SessionCard({ session, api, hostId, onClose }: { session: SessionSummary; api: AgenticRemoteAPI; hostId: string; onClose: () => void }) {
+  const open = () => router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId } });
   return <Pressable accessibilityLabel={`Open ${session.name}`} style={styles.card} onPress={open}>
     <View style={styles.cardHead}><Text style={styles.cardTitle} numberOfLines={1}>{session.name}</Text><Text style={styles.status}>{session.state}</Text></View>
     <Text style={styles.command} numberOfLines={1}>{session.command}</Text>

@@ -26,6 +26,22 @@ export type SessionSummary = {
   preview: string[];
   waitState?: WaitState;
 };
+export type HostIdentity = {
+  hostId: string;
+  connectionId: string;
+  sessionId: string;
+};
+
+export type Capability = {
+  name: string;
+  enabled: boolean;
+};
+
+export type DaemonCapabilities = {
+  identity: HostIdentity;
+  capabilities: Capability[];
+};
+
 
 export type CreateSessionRequest = {
   name: string;

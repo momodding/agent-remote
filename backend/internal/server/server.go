@@ -82,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/fs/upload", s.withAuth(s.handleFSUpload))
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
+	mux.HandleFunc("/v1/daemon/identity", s.withAuth(s.handleDaemonIdentity))
 	if s.cfg.PairingPageUsername != "" && s.cfg.PairingPagePassword != "" {
 		mux.HandleFunc("/pairing", s.handlePairingPage)
 	}
@@ -185,6 +186,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("pong"))
+}
+
+func (s *Server) handleDaemonIdentity(w http.ResponseWriter, _ *http.Request) {
+	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
+	conn, err := net.DialTimeout("tcp", vncAddr, 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+	}
+	identity := protocol.HostIdentity{HostID: s.tls.Fingerprint, ConnectionID: s.tls.Fingerprint}
+	writeJSON(w, http.StatusOK, protocol.DaemonCapabilities{
+		Identity: identity,
+		Capabilities: []protocol.Capability{
+			{Name: "sessions", Enabled: true},
+			{Name: "files", Enabled: true},
+			{Name: "vnc", Enabled: err == nil},
+		},
+	})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

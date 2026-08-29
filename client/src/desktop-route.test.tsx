@@ -12,64 +12,36 @@ import type { Connection, ConnectionStore } from './lib/connection';
 const mockConnection: Connection = {
   name: 'Test daemon',
   endpoint: 'https://daemon.test:8765',
+  hostId: 'mock-host-id',
   token: 'secret',
   fingerprint: '',
   skipFingerprintVerification: true,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
-
-// Mock WebSocket
-const mockSend = jest.fn();
-const mockClose = jest.fn();
-let mockWsInstance: {
-  binaryType: string;
-  readyState: number;
-  onopen: (() => void) | null;
-  onmessage: ((event: { data: ArrayBuffer }) => void) | null;
-  onclose: ((event: { code: number }) => void) | null;
-  onerror: (() => void) | null;
-  send: jest.Mock;
-  close: jest.Mock;
-};
-const MockWebSocket = jest.fn().mockImplementation(() => {
-  mockWsInstance = {
-    binaryType: 'blob',
-    readyState: 1,
-    onopen: null,
-    onmessage: null,
-    onclose: null,
-    onerror: null,
-    send: mockSend,
-    close: mockClose,
-  };
-  return mockWsInstance;
-});
-Object.assign(MockWebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-(globalThis as unknown as Record<string, unknown>).WebSocket = MockWebSocket;
+const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
 
 const mockInjectJavaScript = jest.fn();
 jest.mock('react-native-webview', () => {
   const React = require('react');
-  const WebView = React.forwardRef((_props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+  const WebView = React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
     React.useImperativeHandle(ref, () => ({ injectJavaScript: mockInjectJavaScript }));
-    // Auto-fire onLoadEnd to trigger socket connection
-    React.useEffect(() => { if (_props.onLoadEnd) (_props.onLoadEnd as () => void)(); }, []);
-    return React.createElement('WebView', _props);
+    return React.createElement('WebView', props);
   });
   return { __esModule: true, WebView };
 });
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn() },
-  useLocalSearchParams: () => ({ connectionEndpoint: mockConnection.endpoint }),
+  useLocalSearchParams: () => ({ hostId: mockConnection.hostId }),
 }));
 jest.mock('./lib/connection', () => ({
   loadConnections: async () => mockStore,
-  getConnection: (_store: unknown, endpoint: string) => mockStore.connections.find((c) => c.endpoint === endpoint),
+  getConnection: (_store: unknown, hostId: string) => mockStore.connections.find((c) => c.hostId === hostId),
 }));
 jest.mock('./generated/novnc_script', () => ({ __esModule: true, default: '/* novnc */' }));
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
+
+const mockIframePostMessage = jest.fn();
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -79,125 +51,97 @@ beforeEach(() => {
 async function renderScreen(): Promise<ReactTestRenderer> {
   const DesktopScreen = require(Platform.OS === 'web' ? '../app/desktop.web' : '../app/desktop').default;
   let tree!: ReactTestRenderer;
-  await act(async () => { tree = create(<DesktopScreen />); await Promise.resolve(); });
+  await act(async () => {
+    tree = create(<DesktopScreen />, {
+      createNodeMock: (element) => (element.type === 'iframe' ? { contentWindow: { postMessage: mockIframePostMessage } } : null),
+    });
+    await Promise.resolve();
+  });
   return tree;
 }
 
-it('opens RN WebSocket with VNC URL on native platforms', async () => {
-  await renderScreen();
-  expect(MockWebSocket).toHaveBeenCalledWith('wss://daemon.test:8765/v1/ws/vnc?token=secret');
+describe('native (WebView) desktop', () => {
+  it('embeds the authenticated daemon WSS URL directly in the WebView HTML and constructs RFB against it', async () => {
+    const tree = await renderScreen();
+    const html = tree.root.findByType('WebView' as never).props.source.html as string;
+    expect(html).toContain('wss://daemon.test:8765/v1/ws/vnc?token=secret');
+    expect(html).toContain('new window.RFB(screen, wsURL)');
+  });
+
+  it('has no RN-side WebSocket construction, binary forwarding, base64, or bridge channel object', async () => {
+    const tree = await renderScreen();
+    const html = tree.root.findByType('WebView' as never).props.source.html as string;
+    expect(html).not.toMatch(/\bchannel\b/);
+    expect(html).not.toContain('atob(');
+    expect(html).not.toContain('btoa(');
+  });
+
+  it('reports transport stages in order', async () => {
+    const tree = await renderScreen();
+    const html = tree.root.findByType('WebView' as never).props.source.html as string;
+    expect(html.indexOf('Loading noVNC…')).toBeLessThan(html.indexOf('Creating RFB…'));
+    expect(html.indexOf('Creating RFB…')).toBeLessThan(html.indexOf('Connecting WebSocket…'));
+  });
+
+  it('shows the initial loading status, updates from parsed status messages, and hides once connected', async () => {
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ children: 'Loading noVNC…' })).toBeTruthy();
+    const webview = tree.root.findByType('WebView' as never);
+
+    await act(async () => {
+      webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'status', message: 'Connecting WebSocket…' }) } });
+    });
+    expect(tree.root.findByProps({ children: 'Connecting WebSocket…' })).toBeTruthy();
+
+    await act(async () => {
+      webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'status', message: 'Desktop connected' }) } });
+    });
+    expect(tree.root.findAllByProps({ children: 'Desktop connected' })).toHaveLength(0);
+  });
+
+  it('falls back to the raw posted body when the WebView message is not JSON', async () => {
+    const tree = await renderScreen();
+    const webview = tree.root.findByType('WebView' as never);
+    await act(async () => { webview.props.onMessage({ nativeEvent: { data: 'not json' } }); });
+    expect(tree.root.findByProps({ children: 'not json' })).toBeTruthy();
+  });
+
+  it('renders the shortcut dock and forwards key/Ctrl+Alt+Del presses via injectJavaScript', async () => {
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
+
+    act(() => { tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress(); });
+    expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendKey(65307, "Escape");true;');
+
+    act(() => { tree.root.findByProps({ accessibilityLabel: 'Tab' }).props.onPress(); });
+    expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendKey(65289, "Tab");true;');
+
+    act(() => { tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress(); });
+    expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendCtrlAltDel();true;');
+  });
 });
 
-it('forwards binary from RN WebSocket to WebView as base64', async () => {
-  await renderScreen();
-  // Simulate binary frame from server
-  const data = new Uint8Array([0x01, 0x02, 0x03]).buffer;
-  await act(async () => { mockWsInstance.onmessage?.({ data }); });
-  expect(mockInjectJavaScript).toHaveBeenCalledWith(
-    expect.stringContaining('vnc')
-  );
-  // Verify base64 payload is present (btoa of \x01\x02\x03 = AQID)
-  expect(mockInjectJavaScript).toHaveBeenCalledWith(
-    expect.stringContaining('AQID')
-  );
-});
+describe('web (iframe) desktop', () => {
+  beforeEach(() => { Object.defineProperty(Platform, 'OS', { value: 'web' }); });
 
-it('forwards outbound WebView binary to RN WebSocket', async () => {
-  const tree = await renderScreen();
-  const webview = tree.root.findByType('WebView' as never);
-  // Simulate noVNC sending base64-encoded data via postMessage
-  // btoa of \x04\x05 = BAU=
-  const message = JSON.stringify({ type: 'vnc', data: 'BAU=' });
-  await act(async () => { webview.props.onMessage({ nativeEvent: { data: message } }); });
-  expect(mockSend).toHaveBeenCalledTimes(1);
-  const sent = mockSend.mock.calls[0][0] as Uint8Array;
-  expect(Array.from(sent)).toEqual([0x04, 0x05]);
-});
+  it('renders the local generated noVNC bundle with the embedded WSS URL and no CDN fetch', async () => {
+    const tree = await renderScreen();
+    const html = tree.root.findByType('iframe' as never).props.srcDoc as string;
+    expect(html).toContain('/* novnc */');
+    expect(html).not.toContain('cdn.jsdelivr.net');
+    expect(html).toContain('wss://daemon.test:8765/v1/ws/vnc?token=secret');
+    expect(html).toContain('Creating RFB…');
+    expect(html).toContain('Connecting WebSocket…');
+  });
 
-it('closes RN WebSocket on unmount', async () => {
-  const tree = await renderScreen();
-  await act(async () => { tree.unmount(); });
-  expect(mockClose).toHaveBeenCalled();
-});
+  it('renders shortcut dock parity and posts key messages into the iframe window', async () => {
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
 
-it('renders bridged HTML without wsURL on native', async () => {
-  const tree = await renderScreen();
-  const webview = tree.root.findByType('WebView' as never);
-  const html = webview.props.source.html as string;
-  // Bridged HTML should NOT contain the wsURL directly; RFB gets a channel object
-  expect(html).toContain('const channel');
-  expect(html).not.toContain('wss://daemon.test');
-});
+    act(() => { tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress(); });
+    expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'key', keysym: 0xff1b, name: 'Escape' }, '*');
 
-it('opens the noVNC raw channel only after the RN WebSocket connects', async () => {
-  const tree = await renderScreen();
-  const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain('readyState: 0');
-  expect(html).toContain('channel.readyState = 1');
-  expect(html).not.toContain("readyState: 'open'");
-});
-
-it('forwards the RN WebSocket open event to noVNC', async () => {
-  await renderScreen();
-  await act(async () => { mockWsInstance.onopen?.(); });
-  expect(mockInjectJavaScript).toHaveBeenCalledWith(expect.stringContaining('vnc-open'));
-});
-
-it('uses WebView-safe macrotask scheduling for queued VNC frames', async () => {
-  const tree = await renderScreen();
-  const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain('const scheduleFlush = (callback) =>');
-  expect(html).toContain("typeof setImmediate === 'function'");
-  expect(html).toContain('setTimeout(callback, 0)');
-  expect(html).toContain('flushScheduled');
-});
-
-it('keeps ordered transport stages and reports socket failures without secrets', async () => {
-  const tree = await renderScreen();
-  const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html.indexOf('Loading noVNC…')).toBeLessThan(html.indexOf('Creating RFB…'));
-  expect(html.indexOf('Creating RFB…')).toBeLessThan(html.indexOf('Connecting WebSocket…'));
-  expect(html).toContain('WebSocket connection failed');
-  expect(html).not.toContain(mockConnection.token);
-});
-
-it('reports the last noVNC RFB stage without exposing VNC data', async () => {
-  const tree = await renderScreen();
-  const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain("report('RFB stage: ' + stage)");
-  expect(html).toContain('Desktop disconnected unexpectedly at RFB stage:');
-  expect(html).not.toContain('console.log');
-});
-
-it('closes the previous socket before reconnecting the WebView', async () => {
-  const tree = await renderScreen();
-  const webview = tree.root.findByType('WebView' as never);
-  await act(async () => { webview.props.onLoadEnd(); });
-  expect(mockClose).toHaveBeenCalledWith(1000, 'desktop view reloaded');
-  expect(MockWebSocket).toHaveBeenCalledTimes(2);
-});
-
-it('exposes noVNC raw channel message receiver as an own enumerable property', async () => {
-  const tree = await renderScreen();
-  const html = tree.root.findByType('WebView' as never).props.source.html as string;
-  expect(html).toContain("Object.defineProperty(channel, 'onmessage', {");
-  expect(html).toContain('enumerable: true');
-});
-
-it('renders the native VNC shortcut dock and retains controls in the web document', async () => {
-  let tree = await renderScreen();
-  expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
-  expect(tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' })).toBeTruthy();
-});
-
-it('renders web Remote Desktop from the local noVNC bundle with native shortcut parity', async () => {
-  Object.defineProperty(Platform, 'OS', { value: 'web' });
-  const tree = await renderScreen();
-  const frame = tree.root.findByType('iframe' as never);
-  expect(frame.props.srcDoc).toContain('/* novnc */');
-  expect(frame.props.srcDoc).not.toContain('cdn.jsdelivr.net');
-  expect(frame.props.srcDoc).toContain('Creating RFB…');
-  expect(frame.props.srcDoc).toContain('Connecting WebSocket…');
-  expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
-  expect(tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' })).toBeTruthy();
+    act(() => { tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress(); });
+    expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'ctrl-alt-delete' }, '*');
+  });
 });

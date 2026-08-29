@@ -6,6 +6,26 @@ type HealthResponse struct {
 	OK      bool   `json:"ok"`
 	Version string `json:"version"`
 }
+type Capability struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type CapabilitiesResponse struct {
+	Capabilities []Capability `json:"capabilities"`
+}
+
+type HostIdentity struct {
+	HostID       string `json:"hostId"`
+	ConnectionID string `json:"connectionId"`
+	SessionID    string `json:"sessionId"`
+}
+
+type DaemonCapabilities struct {
+	Identity     HostIdentity `json:"identity"`
+	Capabilities []Capability `json:"capabilities"`
+}
+
 
 type SessionSummary struct {
 	ID        string     `json:"id"`

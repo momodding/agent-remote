@@ -47,6 +47,32 @@ func TestSessionsRequiresBearer(t *testing.T) {
 	}
 }
 
+func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/daemon/identity", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var result protocol.DaemonCapabilities
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Identity.HostID != srv.tls.Fingerprint || result.Identity.ConnectionID != srv.tls.Fingerprint {
+		t.Fatalf("unexpected identity: %#v", result.Identity)
+	}
+	if len(result.Capabilities) != 3 || result.Capabilities[0].Name != "sessions" || !result.Capabilities[0].Enabled || result.Capabilities[1].Name != "files" || !result.Capabilities[1].Enabled || result.Capabilities[2].Name != "vnc" {
+		t.Fatalf("unexpected capabilities: %#v", result.Capabilities)
+	}
+}
+
 func TestHandleShellsRequiresBearerAndReturnsList(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/shells", nil)

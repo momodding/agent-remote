@@ -1,4 +1,6 @@
 jest.mock("react-native-safe-area-context", () => ({ ...jest.requireActual("react-native-safe-area-context"), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
+jest.mock('expo-blur', () => ({ BlurView: () => null }));
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, type AlertButton } from 'react-native';
@@ -17,14 +19,14 @@ let mockOnOutput: (data: string) => void = () => undefined;
 const mockConnection: Connection = {
   name: 'Test daemon',
   endpoint: 'https://daemon.test',
+  hostId: 'mock-host-id',
   token: 'secret',
   fingerprint: '',
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedEndpoint: mockConnection.endpoint };
-
-let mockParams = { id: 'session', name: 'Shell', connectionEndpoint: mockConnection.endpoint, mode: 'default' };
+const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
+let mockParams = { id: 'session', name: 'Shell', hostId: mockConnection.hostId, mode: 'default' };
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
@@ -33,8 +35,8 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('./lib/connection', () => ({
   loadConnections: jest.fn(async () => mockStore),
-  getConnection: jest.fn((s: ConnectionStore, endpoint: string | null) =>
-    s.connections.find((c) => c.endpoint === endpoint) ?? null),
+  getConnection: jest.fn((s: ConnectionStore, hostId: string | null) =>
+    s.connections.find((c) => c.hostId === hostId) ?? null),
 }));
 jest.mock('./lib/api', () => {
   class APIError extends Error {
@@ -105,7 +107,7 @@ describe('terminal route connection resolution', () => {
     jest.restoreAllMocks();
   });
 
-  it('alerts and redirects home when connectionEndpoint does not resolve', async () => {
+  it('alerts and redirects home when hostId does not resolve', async () => {
     const { getConnection } = jest.requireMock('./lib/connection') as { getConnection: jest.Mock };
     getConnection.mockReturnValueOnce(null);
 

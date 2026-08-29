@@ -8,13 +8,13 @@ import { getConnection, loadConnections, type Connection } from '../src/lib/conn
 import noVNCScript from '../src/generated/novnc_script';
 
 export default function DesktopScreenWeb() {
-  const { connectionEndpoint } = useLocalSearchParams<{ connectionEndpoint: string }>();
+  const { hostId } = useLocalSearchParams<{ hostId: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [connection, setConnection] = useState<Connection | null>(null);
 
   useEffect(() => {
-    loadConnections().then((store) => setConnection(getConnection(store, connectionEndpoint) ?? null));
-  }, [connectionEndpoint]);
+    loadConnections().then((store) => setConnection(getConnection(store, hostId) ?? null));
+  }, [hostId]);
 
   if (!connection) {
     return (

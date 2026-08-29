@@ -8,7 +8,7 @@ export type SplitLayout = Array<string | null>;
 export type MultiSessionState = {
   sessionId: string;
   name: string;
-  connectionEndpoint: string;
+  hostId: string;
   output: string;
   socket?: SessionSocket;
 };
