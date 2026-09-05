@@ -12,6 +12,7 @@ import { ConnectionStatusIndicator } from './ConnectionStatusIndicator';
 type Props = {
   visible: boolean;
   store: ConnectionStore;
+  selectedHostId: string | null;
   onDismiss: () => void;
   onSelect: (hostId: string) => Promise<void>;
   onSave: (originalHostId: string, replacement: Connection) => Promise<void>;
@@ -28,7 +29,7 @@ function usePalette(): Palette {
     : { text: '#1A1A1A', textSecondary: '#5A5A5A', border: '#D0D0D0', accent: '#0E8A96', danger: '#B23B3B', surface: '#EDEDED' };
 }
 
-export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, onDelete, onAdd }: Props) {
+export function ConnectionSheet({ visible, store, selectedHostId, onDismiss, onSelect, onSave, onDelete, onAdd }: Props) {
   const palette = usePalette();
   const [editing, setEditing] = useState<Connection | null>(null);
 
@@ -73,7 +74,7 @@ export function ConnectionSheet({ visible, store, onDismiss, onSelect, onSave, o
                       <Text style={[styles.name, { color: palette.text }]} numberOfLines={1}>{connection.name}</Text>
                       <Text style={[styles.endpoint, { color: palette.textSecondary }]} numberOfLines={1}>{connection.endpoint}</Text>
                       <ConnectionStatusIndicator api={new AgenticRemoteAPI(connection)} showLatency />
-                      {connection.hostId === store.selectedHostId && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
+                      {connection.hostId === selectedHostId && <Text style={[styles.selected, { color: palette.accent }]}>Selected</Text>}
                     </View>
                     <View style={styles.rowActions}>
                       <Pressable style={styles.iconBtn} accessibilityLabel={`Select ${connection.endpoint}`} onPress={() => void onSelect(connection.hostId)}><Feather name="check-circle" size={20} color={palette.accent} /></Pressable>

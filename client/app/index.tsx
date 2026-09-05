@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 
 import { AgenticRemoteAPI, APIError, authenticatePairing } from '../src/lib/api';
-import { deleteConnection, getConnection, loadConnections, saveConnection, selectConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
+import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
 import type { PairingPayload, SessionSummary } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
@@ -14,7 +14,8 @@ import { ConnectionStatusIndicator } from '../src/components/ConnectionStatusInd
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
 export default function Dashboard() {
-  const [store, setStore] = useState<ConnectionStore>({ connections: [], selectedHostId: null });
+  const [store, setStore] = useState<ConnectionStore>({ connections: [] });
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [query, setQuery] = useState('');
   const [pairingOpen, setPairingOpen] = useState(false);
@@ -24,7 +25,7 @@ export default function Dashboard() {
   const [capabilities, setCapabilities] = useState<string[]>([]);
   const { width } = useWindowDimensions();
   const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
-  const connection = useMemo(() => getConnection(store), [store]);
+  const connection = useMemo(() => getConnection(store, selectedHostId), [store, selectedHostId]);
   const api = useMemo(() => (connection ? new AgenticRemoteAPI(connection) : null), [connection?.endpoint, connection?.token]);
 
   const requestRef = useRef(0);
@@ -64,7 +65,8 @@ export default function Dashboard() {
     void loadConnections()
       .then(async (loaded) => {
         setStore(loaded);
-        const selected = getConnection(loaded);
+        const selected = loaded.connections[0] ?? null;
+        setSelectedHostId(selected?.hostId ?? null);
         if (selected) await loadSessions(selected);
       })
       .catch(() => Alert.alert('Could not load daemon connections'))
@@ -86,6 +88,7 @@ export default function Dashboard() {
       const name = getConnection(store, paired.hostId)?.name ?? new URL(paired.endpoint).host;
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
+      setSelectedHostId(paired.hostId);
       const reconnected = getConnection(nextStore, paired.hostId);
       if (reconnected) await loadSessions(reconnected);
       setTimeout(() => setDiagnostics([]), 1500);
@@ -97,35 +100,37 @@ export default function Dashboard() {
 
   const selectDaemon = async (hostId: string) => {
     try {
-      const nextStore = await selectConnection(hostId);
-      setStore(nextStore);
+      const selected = getConnection(store, hostId);
+      if (!selected) throw new Error('Daemon connection not found');
+      setSelectedHostId(hostId);
       clearSessions();
       setDaemonsOpen(false);
-      const selected = getConnection(nextStore, hostId);
-      if (selected) await loadSessions(selected);
+      await loadSessions(selected);
     } catch (error) {
       Alert.alert('Could not switch daemon', error instanceof Error ? error.message : 'Unknown error');
     }
   };
 
   const saveEdit = async (originalHostId: string, replacement: Connection) => {
-    const wasSelected = originalHostId === store.selectedHostId;
+    const wasSelected = originalHostId === selectedHostId;
     const nextStore = await updateConnection(originalHostId, replacement);
     setStore(nextStore);
     if (wasSelected) {
-      const selected = getConnection(nextStore);
+      setSelectedHostId(replacement.hostId);
+      const selected = getConnection(nextStore, replacement.hostId);
       if (selected) await loadSessions(selected);
     }
   };
 
   const removeDaemon = async (hostId: string) => {
     try {
-      const wasSelected = hostId === store.selectedHostId;
+      const wasSelected = hostId === selectedHostId;
       const nextStore = await deleteConnection(hostId);
       setStore(nextStore);
       if (wasSelected) {
-        const selected = getConnection(nextStore);
-        if (selected) await loadSessions(selected); else clearSessions();
+        const next = nextStore.connections[0] ?? null;
+        setSelectedHostId(next?.hostId ?? null);
+        if (next) await loadSessions(next); else clearSessions();
       }
     } catch (error) {
       Alert.alert('Could not delete daemon', error instanceof Error ? error.message : 'Unknown error');
@@ -189,7 +194,7 @@ export default function Dashboard() {
     <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} hostId={connection.hostId} onClose={() => void refresh()} /> : null} />
     {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
     <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
-    <ConnectionSheet visible={daemonsOpen} store={store} onDismiss={() => setDaemonsOpen(false)} onSelect={selectDaemon} onSave={saveEdit} onDelete={removeDaemon} onAdd={addDaemon} />
+    <ConnectionSheet visible={daemonsOpen} store={store} selectedHostId={selectedHostId} onDismiss={() => setDaemonsOpen(false)} onSelect={selectDaemon} onSave={saveEdit} onDelete={removeDaemon} onAdd={addDaemon} />
   </SafeAreaView>;
 }
 

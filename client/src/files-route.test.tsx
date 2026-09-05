@@ -34,7 +34,7 @@ const mockConnection: Connection = {
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
+const mockStore: ConnectionStore = { connections: [mockConnection] };
 const mockRootEntries: FileEntry[] = [{ path: 'docs', name: 'docs', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockDocsEntries: FileEntry[] = [{ path: 'docs/readme.txt', name: 'readme.txt', isDir: false, size: 12, mode: '-rw-r--r--' }];
 const mockHostEntries: FileEntry[] = [{ path: '/tmp', name: 'tmp', isDir: true, size: 0, mode: 'drwxr-xr-x' }];

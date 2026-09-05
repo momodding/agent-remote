@@ -18,7 +18,7 @@ const mockConnection: Connection = {
   skipFingerprintVerification: true,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
+const mockStore: ConnectionStore = { connections: [mockConnection] };
 
 const mockInjectJavaScript = jest.fn();
 jest.mock('react-native-webview', () => {

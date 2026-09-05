@@ -16,13 +16,11 @@ const second: Connection = {
   name: 'Backup daemon', endpoint: 'https://daemon-b.test:8766', hostId: 'hostB', fingerprint: 'sha256:second',
   skipFingerprintVerification: true, token: 'second-token', clientName: 'test-client',
 };
-const storeA: ConnectionStore = { connections: [first, second], selectedHostId: first.hostId };
-const storeB: ConnectionStore = { connections: [first, second], selectedHostId: second.hostId };
+const storeA: ConnectionStore = { connections: [first, second] };
 
 const mockLoadConnections = jest.fn();
 const mockSaveConnection = jest.fn();
 const mockUpdateConnection = jest.fn();
-const mockSelectConnection = jest.fn();
 const mockDeleteConnection = jest.fn();
 const mockSessions = jest.fn();
 const mockCreateSession = jest.fn();
@@ -49,9 +47,8 @@ jest.mock('./lib/connection', () => ({
   loadConnections: (...args: unknown[]) => mockLoadConnections(...args),
   saveConnection: (...args: unknown[]) => mockSaveConnection(...args),
   updateConnection: (...args: unknown[]) => mockUpdateConnection(...args),
-  selectConnection: (...args: unknown[]) => mockSelectConnection(...args),
   deleteConnection: (...args: unknown[]) => mockDeleteConnection(...args),
-  getConnection: (store: ConnectionStore, hostId: string | null = store.selectedHostId) =>
+  getConnection: (store: ConnectionStore, hostId: string | null) =>
     store.connections.find((connection) => connection.hostId === hostId) ?? null,
 }));
 jest.mock('./lib/api', () => {
@@ -108,7 +105,6 @@ beforeEach(() => {
   mockLoadConnections.mockResolvedValue(storeA);
   mockSaveConnection.mockResolvedValue(storeA);
   mockUpdateConnection.mockResolvedValue(storeA);
-  mockSelectConnection.mockResolvedValue(storeB);
   mockDeleteConnection.mockResolvedValue(storeA);
   mockSessions.mockImplementation(async (connection: Connection) => connection.endpoint === second.endpoint ? [] : []);
   mockPing.mockResolvedValue(undefined);
@@ -126,7 +122,7 @@ beforeEach(() => {
 
 describe('dashboard empty state', () => {
   it('opens the pairing sheet when no daemon is saved yet', async () => {
-    mockLoadConnections.mockResolvedValue({ connections: [], selectedHostId: null });
+    mockLoadConnections.mockResolvedValue({ connections: [] });
     const tree = await renderDashboard();
 
     expect(mockPairingProps!.visible).toBe(false);
@@ -136,7 +132,7 @@ describe('dashboard empty state', () => {
   });
 
   it('shows Error without polling when no daemon is selected', async () => {
-    mockLoadConnections.mockResolvedValue({ connections: [], selectedHostId: null });
+    mockLoadConnections.mockResolvedValue({ connections: [] });
     const tree = await renderDashboard();
 
     expect(tree.root.findByProps({ accessibilityLabel: 'Error' })).toBeTruthy();
@@ -171,7 +167,6 @@ describe('dashboard saved-daemon lifecycle', () => {
       await flush();
     });
 
-    expect(mockSelectConnection).toHaveBeenCalledWith(second.hostId);
     expect(mockSessions).toHaveBeenLastCalledWith(second);
     expect(tree.root.findByProps({ accessibilityLabel: 'Open b-shell' })).toBeTruthy();
     act(() => tree.unmount());
@@ -187,7 +182,7 @@ describe('dashboard saved-daemon lifecycle', () => {
       clientName: 'renewed-client',
     } satisfies PairedConnection;
     mockAuthenticatePairing.mockResolvedValue(paired);
-    mockSaveConnection.mockResolvedValue({ connections: [{ ...first, ...paired }], selectedHostId: first.hostId });
+    mockSaveConnection.mockResolvedValue({ connections: [{ ...first, ...paired }] });
     const tree = await renderDashboard();
 
     await act(async () => {
@@ -218,8 +213,8 @@ describe('dashboard saved-daemon lifecycle', () => {
 
   it('edits and deletes through ConnectionSheet callbacks', async () => {
     const renamed = { ...first, name: 'Renamed daemon' };
-    mockUpdateConnection.mockResolvedValue({ connections: [renamed, second], selectedHostId: first.hostId });
-    mockDeleteConnection.mockResolvedValue({ connections: [renamed], selectedHostId: renamed.hostId });
+    mockUpdateConnection.mockResolvedValue({ connections: [renamed, second] });
+    mockDeleteConnection.mockResolvedValue({ connections: [renamed] });
     const tree = await renderDashboard();
 
     act(() => actionFor(tree, 'Daemons')());

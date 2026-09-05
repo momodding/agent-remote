@@ -18,10 +18,9 @@ export type PairedConnection = Omit<Connection, 'name'>;
 
 export type ConnectionStore = {
   connections: Connection[];
-  selectedHostId: string | null;
 };
 
-const emptyStore = (): ConnectionStore => ({ connections: [], selectedHostId: null });
+const emptyStore = (): ConnectionStore => ({ connections: [] });
 
 function normalizeEndpoint(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Endpoint is required');
@@ -77,12 +76,7 @@ function normalizeStore(value: unknown): ConnectionStore {
   const connections = input.connections.map((connection) => normalizeConnection(connection));
   if (new Set(connections.map(({ endpoint }) => endpoint)).size !== connections.length) throw new Error('Duplicate daemon endpoint');
   if (new Set(connections.map(({ hostId }) => hostId)).size !== connections.length) throw new Error('Duplicate daemon host');
-  const selectedHostId = typeof input.selectedHostId === 'string'
-    ? input.selectedHostId
-    : typeof input.selectedEndpoint === 'string'
-      ? connections.find(({ endpoint }) => endpoint === normalizeEndpoint(input.selectedEndpoint))?.hostId ?? null
-      : null;
-  return { connections, selectedHostId: connections.some(({ hostId }) => hostId === selectedHostId) ? selectedHostId : connections[0]?.hostId ?? null };
+  return { connections };
 }
 
 async function getConnectionValue(): Promise<string | null> {
@@ -114,8 +108,7 @@ async function readConnections(persistRepair: boolean): Promise<ConnectionStore>
   try {
     parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray((parsed as Record<string, unknown>).connections)) {
-      const connection = normalizeConnection(parsed, true);
-      store = { connections: [connection], selectedHostId: connection.hostId };
+      store = { connections: [normalizeConnection(parsed, true)] };
     } else {
       store = normalizeStore(parsed);
     }
@@ -131,7 +124,7 @@ export function loadConnections(): Promise<ConnectionStore> {
   return readConnections(true);
 }
 
-export function getConnection(store: ConnectionStore, hostId: string | null = store.selectedHostId): Connection | null {
+export function getConnection(store: ConnectionStore, hostId: string | null): Connection | null {
   if (!hostId) return null;
   return store.connections.find((connection) => connection.hostId === hostId) ?? null;
 }
@@ -142,7 +135,6 @@ export async function saveConnection(connection: Connection): Promise<Connection
   const index = store.connections.findIndex(({ hostId }) => hostId === replacement.hostId);
   if (index < 0) store.connections.push(replacement);
   else store.connections[index] = replacement;
-  store.selectedHostId = replacement.hostId;
   await setConnectionValue(JSON.stringify(store));
   return store;
 }
@@ -154,15 +146,6 @@ export async function updateConnection(originalHostId: string, replacement: Conn
   const normalized = normalizeConnection(replacement);
   if (store.connections.some(({ hostId }, candidate) => candidate !== index && hostId === normalized.hostId)) throw new Error('A daemon with this host already exists');
   store.connections[index] = normalized;
-  if (store.selectedHostId === originalHostId) store.selectedHostId = normalized.hostId;
-  await setConnectionValue(JSON.stringify(store));
-  return store;
-}
-
-export async function selectConnection(hostId: string): Promise<ConnectionStore> {
-  const store = await readConnections(false);
-  if (!store.connections.some((connection) => connection.hostId === hostId)) throw new Error('Daemon connection not found');
-  store.selectedHostId = hostId;
   await setConnectionValue(JSON.stringify(store));
   return store;
 }
@@ -172,7 +155,6 @@ export async function deleteConnection(hostId: string): Promise<ConnectionStore>
   const index = store.connections.findIndex((connection) => connection.hostId === hostId);
   if (index < 0) throw new Error('Daemon connection not found');
   store.connections.splice(index, 1);
-  if (store.selectedHostId === hostId) store.selectedHostId = store.connections[0]?.hostId ?? null;
   await setConnectionValue(JSON.stringify(store));
   return store;
 }

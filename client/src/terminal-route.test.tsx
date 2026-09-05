@@ -25,7 +25,7 @@ const mockConnection: Connection = {
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
+const mockStore: ConnectionStore = { connections: [mockConnection] };
 let mockParams = { id: 'session', name: 'Shell', hostId: mockConnection.hostId, mode: 'default' };
 
 jest.mock('expo-router', () => ({
