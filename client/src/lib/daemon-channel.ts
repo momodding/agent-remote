@@ -1,3 +1,5 @@
+import type { Connection } from './connection';
+import { MockDaemonChannel } from './mock/mock-channel';
 import type { SessionSummary, WaitState } from '../protocol';
 import type { AgentSessionEvent, RpcCommand, RpcResponse } from './tabs/rpc-types';
 import type { DaemonId, TabKind } from './tabs/types';
@@ -57,3 +59,18 @@ export interface DaemonChannel {
 // ponytail: no full-channel teardown on removal yet (real WS close is a
 // follow-up-phase concern); callers close individual tab channels first.
 export const channelRegistry = new Map<DaemonId, DaemonChannel>();
+
+// ============================================================================
+// Factory: real WS impl is a follow-up phase (§10 of the plan); until then
+// every daemon gets an in-process mock. One factory call site means the
+// swap later touches this function only, not every caller.
+// ============================================================================
+
+/** Returns the channel for `connection`, creating and registering it on first use. */
+export function createDaemonChannel(connection: Connection): DaemonChannel {
+  const existing = channelRegistry.get(connection.hostId);
+  if (existing) return existing;
+  const channel = new MockDaemonChannel(connection.hostId);
+  channelRegistry.set(connection.hostId, channel);
+  return channel;
+}
