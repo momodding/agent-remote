@@ -10,7 +10,6 @@ import { deleteConnection, getConnection, loadConnections, saveConnection, updat
 import type { PairingPayload } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
-import { ConnectionStatusIndicator } from '../src/components/ConnectionStatusIndicator';
 import { useTabStore } from '../src/lib/tabs/tab-store';
 import { createDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
@@ -120,7 +119,7 @@ export default function TabDeckScreen() {
         const tabs = [...prev.tabs];
         tabs.push({
           tabId, daemonId: hostId, kind: 'files', title: 'Files',
-          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, cwd: '/'
+          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, cwd: ''
         });
         return { ...prev, tabs, activeId: tabId };
       });
@@ -178,16 +177,16 @@ export default function TabDeckScreen() {
                 <Text style={styles.daemonSectionSub}>{new URL(connection.endpoint).host}</Text>
                 
                 <View style={styles.daemonToolbar}>
-                  <Pressable accessibilityLabel="New Agent" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
+                  <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
                     <Feather name="cpu" size={16} color="#F0F0F0" />
                   </Pressable>
-                  <Pressable accessibilityLabel="New Terminal" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
+                  <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
                     <Feather name="terminal" size={16} color="#F0F0F0" />
                   </Pressable>
-                  <Pressable accessibilityLabel="New Files" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
+                  <Pressable accessibilityLabel={`New Files ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
                     <Feather name="folder" size={16} color="#F0F0F0" />
                   </Pressable>
-                  <Pressable accessibilityLabel="New Desktop" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
+                  <Pressable accessibilityLabel={`New Desktop ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
                     <Feather name="monitor" size={16} color="#F0F0F0" />
                   </Pressable>
                 </View>
@@ -198,7 +197,7 @@ export default function TabDeckScreen() {
               ) : (
                 <View style={styles.tabGrid}>
                   {matchedTabs.map(tab => (
-                    <Pressable key={tab.tabId} style={styles.tabCard} onPress={() => openTab(tab)}>
+                    <Pressable key={tab.tabId} accessibilityLabel={`Open tab ${tab.title}`} style={styles.tabCard} onPress={() => openTab(tab)}>
                       <View style={styles.tabIcon}>
                         {tab.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
                         {tab.kind === 'agent' && <Feather name="cpu" size={20} color="#46B8C4" />}
@@ -211,7 +210,7 @@ export default function TabDeckScreen() {
                           {tab.kind === 'terminal' || tab.kind === 'desktop' ? tab.state : tab.kind === 'agent' ? tab.sessionState?.thinkingLevel ?? 'Ready' : 'Navigating'}
                         </Text>
                       </View>
-                      <Pressable accessibilityLabel="Close tab" style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>
+                      <Pressable accessibilityLabel={`Close tab ${tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>
                         <Feather name="x" size={16} color="#888" />
                       </Pressable>
                     </Pressable>

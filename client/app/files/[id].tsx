@@ -6,18 +6,20 @@ import { Directory, File, Paths } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import Feather from '@expo/vector-icons/Feather';
-import { AgenticRemoteAPI, APIError } from '../src/lib/api';
-import { getConnection, loadConnections, type Connection } from '../src/lib/connection';
-import type { FileEntry, GitStatus, ReadFileResponse } from '../src/protocol';
-
-
+import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
+import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
+import { updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
+import type { FilesWorkspaceTab } from '../../src/lib/tabs/types';
+import type { FileEntry, GitStatus, ReadFileResponse } from '../../src/protocol';
 
 export default function FilesScreen() {
-  const { hostId } = useLocalSearchParams<{ hostId: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { state, dispatch, closeTab } = useTabStore();
+  const tab = state.tabs.find((t): t is FilesWorkspaceTab => t.tabId === id && t.kind === 'files') ?? null;
   const [connection, setConnection] = useState<Connection | null>(null);
   const [api, setAPI] = useState<AgenticRemoteAPI | null>(null);
-  const [path, setPath] = useState('');
-  const [pathText, setPathText] = useState('');
+  const [path, setPath] = useState(tab?.cwd ?? '');
+  const [pathText, setPathText] = useState(tab?.cwd ?? '');
   const [query, setQuery] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [git, setGit] = useState<GitStatus | null>(null);
@@ -74,8 +76,14 @@ export default function FilesScreen() {
   }, [api, capabilities, path, query]);
 
   useEffect(() => {
+    if (!tab) {
+      setLoading(false);
+      Alert.alert('Could not load daemon connection');
+      router.replace('/');
+      return;
+    }
     void loadConnections().then((store) => {
-      const nextConnection = getConnection(store, hostId ?? null);
+      const nextConnection = getConnection(store, tab.daemonId);
       if (!nextConnection) {
         setLoading(false);
         Alert.alert('Could not load daemon connection');
@@ -85,18 +93,23 @@ export default function FilesScreen() {
       setConnection(nextConnection);
       const client = new AgenticRemoteAPI(nextConnection);
       setAPI(client);
-      void reload(client, '', '');
+      void reload(client, tab.cwd, '');
     });
-  }, [hostId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab?.tabId]);
 
   const gitCodes = useMemo(() => new Map(git?.entries.map((entry) => [entry.path, entry.code]) ?? []), [git]);
+
+  // Persists the last-visited directory onto the tab so re-entering it later resumes here.
   const navigate = async (location: string) => {
     const previousPath = path;
     const previousPathText = pathText;
     setPath(location);
     setPathText(location);
     setQuery('');
-    if (!await reload(api, location, '')) {
+    if (await reload(api, location, '')) {
+      if (tab) dispatch((prev) => updateTab(prev, tab.tabId, { cwd: location }));
+    } else {
       setPath(previousPath);
       setPathText(previousPathText);
     }
@@ -201,7 +214,7 @@ export default function FilesScreen() {
   return <SafeAreaView style={styles.screen}>
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}>
-      <Pressable accessibilityLabel="Close file manager" style={styles.iconBtn} onPress={() => router.replace('/')}>
+      <Pressable accessibilityLabel="Close file manager" style={styles.iconBtn} onPress={() => { if (tab) closeTab(tab.tabId); router.replace('/'); }}>
         <Feather name="x" size={22} color="#46B8C4" />
       </Pressable>
       <Text style={styles.title} numberOfLines={1}>{connection ? new URL(connection.endpoint).host : 'Files'}</Text>
@@ -329,7 +342,6 @@ function MenuButton({ label, icon, onPress }: { label: string; icon: ComponentPr
     <Text style={styles.menuText}>{label}</Text>
   </Pressable>;
 }
-
 
 function Editor({ file, api, onBack }: { file: ReadFileResponse; api: AgenticRemoteAPI | null; onBack: () => void }) {
   const [content, setContent] = useState(file.text);

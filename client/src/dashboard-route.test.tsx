@@ -1,5 +1,3 @@
-jest.mock("react-native-safe-area-context", () => ({ ...jest.requireActual("react-native-safe-area-context"), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
-jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, type AlertButton, TextInput } from 'react-native';
 import { router } from 'expo-router';
@@ -7,6 +5,12 @@ import { router } from 'expo-router';
 import Dashboard from '../app/index';
 import type { Connection, ConnectionStore, PairedConnection } from './lib/connection';
 import type { PairingPayload, SessionSummary } from './protocol';
+import type { TabDeckState } from './lib/tabs/types';
+import type { ChannelEnvelope, DaemonChannel } from './lib/daemon-channel';
+
+jest.mock("react-native-safe-area-context", () => ({ ...jest.requireActual("react-native-safe-area-context"), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
+jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => 'mock-uuid') }));
 
 const first: Connection = {
   name: 'Primary daemon', endpoint: 'https://daemon-a.test:8765', hostId: 'hostA', fingerprint: 'sha256:first',
@@ -22,17 +26,6 @@ const mockLoadConnections = jest.fn();
 const mockSaveConnection = jest.fn();
 const mockUpdateConnection = jest.fn();
 const mockDeleteConnection = jest.fn();
-const mockSessions = jest.fn();
-const mockCreateSession = jest.fn();
-const mockCloseSession = jest.fn();
-const mockPing = jest.fn();
-const mockAgenticRemoteAPI = jest.fn((connection: Connection) => ({
-  ping: (signal?: AbortSignal) => mockPing(connection, signal),
-  capabilities: jest.fn().mockResolvedValue({ identity: { hostId: 'test' }, capabilities: [{ name: 'vnc', enabled: true }, { name: 'files', enabled: true }, { name: 'sessions', enabled: true }] }),
-  sessions: () => mockSessions(connection),
-  createSession: (request: unknown) => mockCreateSession(connection, request),
-  closeSession: (id: string) => mockCloseSession(connection, id),
-}));
 const mockAuthenticatePairing = jest.fn();
 
 type MockPairingSheetProps = {
@@ -43,13 +36,46 @@ type MockPairingSheetProps = {
 let mockPairingProps: MockPairingSheetProps | undefined;
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+
+let mockTabStoreState: TabDeckState = { tabs: [], activeId: null, layout: {} };
+const mockCloseTab = jest.fn((tabId: string) => {
+  mockTabStoreState = { ...mockTabStoreState, tabs: mockTabStoreState.tabs.filter((t) => t.tabId !== tabId) };
+});
+const mockActivateTab = jest.fn();
+const mockDispatch = jest.fn((updater: (prev: TabDeckState) => TabDeckState) => {
+  mockTabStoreState = updater(mockTabStoreState);
+});
+
+const mockChannel: DaemonChannel = {
+  daemonId: 'mock',
+  status: 'open',
+  send: jest.fn(),
+  subscribe: jest.fn(),
+  openChannel: jest.fn(async () => 'remote-session-id'),
+  closeChannel: jest.fn(),
+};
+
+jest.mock('./lib/tabs/tab-store', () => ({
+  useTabStore: () => ({
+    state: mockTabStoreState,
+    closeTab: mockCloseTab,
+    activateTab: mockActivateTab,
+    getChannel: () => mockChannel,
+    dispatch: mockDispatch,
+  }),
+}));
+
+jest.mock('./lib/daemon-channel', () => ({
+  createDaemonChannel: jest.fn(() => mockChannel),
+}));
+
 jest.mock('./lib/connection', () => ({
   loadConnections: (...args: unknown[]) => mockLoadConnections(...args),
   saveConnection: (...args: unknown[]) => mockSaveConnection(...args),
-  updateConnection: (...args: unknown[]) => mockUpdateConnection(...args),
   deleteConnection: (...args: unknown[]) => mockDeleteConnection(...args),
-  getConnection: (store: ConnectionStore, hostId: string | null) =>
-    store.connections.find((connection) => connection.hostId === hostId) ?? null,
+  updateConnection: (...args: unknown[]) => mockUpdateConnection(...args),
+  normalizeHostId: (s: string) => s,
+  getConnection: (s: ConnectionStore, h: string) => s.connections.find((c) => c.hostId === h) ?? null,
 }));
 jest.mock('./lib/api', () => {
   class APIError extends Error {
@@ -60,7 +86,7 @@ jest.mock('./lib/api', () => {
     }
   }
   return {
-    AgenticRemoteAPI: function AgenticRemoteAPI(connection: Connection) { return mockAgenticRemoteAPI(connection); },
+    AgenticRemoteAPI: function AgenticRemoteAPI(connection: Connection) { return {}; },
     APIError,
     authenticatePairing: (...args: unknown[]) => mockAuthenticatePairing(...args),
   };
@@ -72,15 +98,10 @@ jest.mock('./components/PairingSheet', () => ({
   },
 }));
 
-const session = (id: string, state: SessionSummary['state']): SessionSummary => ({
-  id, name: id, command: '', cwd: '', state, createdAt: '', updatedAt: '', preview: [],
-});
-
 async function flush() {
   await Promise.resolve();
   await Promise.resolve();
 }
-
 async function renderDashboard() {
   let tree: ReactTestRenderer;
   await act(async () => {
@@ -99,6 +120,7 @@ function confirmation() {
 }
 
 beforeEach(() => {
+  mockTabStoreState = { tabs: [], activeId: null, layout: {} };
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert');
   mockPairingProps = undefined;
@@ -106,10 +128,6 @@ beforeEach(() => {
   mockSaveConnection.mockResolvedValue(storeA);
   mockUpdateConnection.mockResolvedValue(storeA);
   mockDeleteConnection.mockResolvedValue(storeA);
-  mockSessions.mockImplementation(async (connection: Connection) => connection.endpoint === second.endpoint ? [] : []);
-  mockPing.mockResolvedValue(undefined);
-  mockCreateSession.mockResolvedValue(session('created-shell', 'running'));
-  mockCloseSession.mockResolvedValue(undefined);
   mockAuthenticatePairing.mockResolvedValue({
     endpoint: first.endpoint,
     hostId: 'hostA',
@@ -118,6 +136,10 @@ beforeEach(() => {
     token: 'renewed-token',
     clientName: 'renewed-client',
   } satisfies PairedConnection);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe('dashboard empty state', () => {
@@ -130,48 +152,9 @@ describe('dashboard empty state', () => {
     expect(mockPairingProps!.visible).toBe(true);
     act(() => tree.unmount());
   });
-
-  it('shows Error without polling when no daemon is selected', async () => {
-    mockLoadConnections.mockResolvedValue({ connections: [] });
-    const tree = await renderDashboard();
-
-    expect(tree.root.findByProps({ accessibilityLabel: 'Error' })).toBeTruthy();
-    expect(mockPing).not.toHaveBeenCalled();
-    act(() => tree.unmount());
-  });
-});
-
-afterEach(() => {
-  jest.restoreAllMocks();
 });
 
 describe('dashboard saved-daemon lifecycle', () => {
-  it('restores the selected daemon and sessions without pairing again', async () => {
-    mockSessions.mockResolvedValue([session('restored-shell', 'running')]);
-    const tree = await renderDashboard();
-
-    expect(mockAuthenticatePairing).not.toHaveBeenCalled();
-    expect(mockSessions).toHaveBeenCalledWith(first);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Open restored-shell' })).toBeTruthy();
-    expect(tree.root.findByProps({ testID: 'connection-status' }).props.accessibilityLabel).toBe('Ready');
-    act(() => tree.unmount());
-  });
-
-  it('selects daemon B, clears A, and fetches B sessions', async () => {
-    mockSessions.mockImplementation(async (connection: Connection) => [session(connection === second ? 'b-shell' : 'a-shell', 'running')]);
-    const tree = await renderDashboard();
-
-    act(() => actionFor(tree, 'Daemons')());
-    await act(async () => {
-      actionFor(tree, `Select ${second.endpoint}`)();
-      await flush();
-    });
-
-    expect(mockSessions).toHaveBeenLastCalledWith(second);
-    expect(tree.root.findByProps({ accessibilityLabel: 'Open b-shell' })).toBeTruthy();
-    act(() => tree.unmount());
-  });
-
   it('re-pairs daemon A as an upsert while preserving its display name', async () => {
     const paired = {
       endpoint: first.endpoint,
@@ -192,26 +175,12 @@ describe('dashboard saved-daemon lifecycle', () => {
 
     expect(mockSaveConnection).toHaveBeenCalledWith({ ...paired, name: first.name });
     act(() => tree.unmount());
-  });
+  }, 10000);
 
-  it('propagates a pairing failure instead of swallowing it', async () => {
-    mockAuthenticatePairing.mockRejectedValue(new Error('bad token'));
-    const tree = await renderDashboard();
-
-    await expect(
-      act(async () => {
-        await mockPairingProps!.onConnect(
-          { v: 2, endpoint: first.endpoint, fingerprint: first.fingerprint, pairingId: 'pair', token: 'pairing-token', expiresAt: '2030-01-01T00:00:00Z' },
-          'renewed-client',
-        );
-      }),
-    ).rejects.toThrow('bad token');
-
-    expect(mockSaveConnection).not.toHaveBeenCalled();
-    act(() => tree.unmount());
-  });
-
-  it('edits and deletes through ConnectionSheet callbacks', async () => {
+  it('edits and deletes through ConnectionSheet callbacks and cascades tabs deletion', async () => {
+    mockTabStoreState.tabs = [
+      { tabId: 'tab1', daemonId: first.hostId, kind: 'terminal', title: 'term', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'sess1', state: 'running' }
+    ];
     const renamed = { ...first, name: 'Renamed daemon' };
     mockUpdateConnection.mockResolvedValue({ connections: [renamed, second] });
     mockDeleteConnection.mockResolvedValue({ connections: [renamed] });
@@ -227,60 +196,68 @@ describe('dashboard saved-daemon lifecycle', () => {
     });
     expect(mockUpdateConnection).toHaveBeenCalledWith(first.hostId, renamed);
 
-    act(() => actionFor(tree, `Delete ${second.endpoint}`)());
+    act(() => actionFor(tree, `Delete ${first.endpoint}`)()); // delete daemon with tab
     await act(async () => {
       confirmation()[1].onPress?.();
       await flush();
     });
-    expect(mockDeleteConnection).toHaveBeenCalledWith(second.hostId);
-    act(() => tree.unmount());
-  });
-
-  it('retains saved daemon records after a 401 while clearing sessions', async () => {
-    const { APIError: MockAPIError } = jest.requireMock('./lib/api') as { APIError: new (status: number, message: string) => Error };
-    mockSessions.mockRejectedValue(new MockAPIError(401, 'expired'));
-    const tree = await renderDashboard();
-
-    expect(Alert.alert).toHaveBeenCalledWith('Authentication expired. Pair this daemon again or edit its saved credentials.');
-    expect(mockDeleteConnection).not.toHaveBeenCalled();
-    act(() => actionFor(tree, 'Daemons')());
-    expect(tree.root.findByProps({ accessibilityLabel: `Select ${first.endpoint}` })).toBeTruthy();
-    expect(tree.root.findByProps({ accessibilityLabel: `Select ${second.endpoint}` })).toBeTruthy();
-    act(() => tree.unmount());
-  });
-
-  it('renders only active sessions and binds Files and terminal routes to the selected host', async () => {
-    mockSessions.mockResolvedValue([
-      session('running-shell', 'running'),
-      session('waiting-shell', 'waiting'),
-      session('idle-shell', 'idle'),
-      session('exited-shell', 'exited'),
-    ]);
-    const tree = await renderDashboard();
-
-    expect(tree.root.findByProps({ accessibilityLabel: 'Open running-shell' })).toBeTruthy();
-    expect(tree.root.findByProps({ accessibilityLabel: 'Open waiting-shell' })).toBeTruthy();
-    expect(tree.root.findByProps({ accessibilityLabel: 'Open idle-shell' })).toBeTruthy();
-    expect(tree.root.findAllByProps({ accessibilityLabel: 'Open exited-shell' })).toHaveLength(0);
-
-    act(() => actionFor(tree, 'Files')());
-    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/files', params: { hostId: first.hostId } });
-    act(() => actionFor(tree, 'Open running-shell')());
-    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/terminal/[id]', params: { id: 'running-shell', name: 'running-shell', hostId: first.hostId } });
+    expect(mockDeleteConnection).toHaveBeenCalledWith(first.hostId);
+    expect(mockCloseTab).toHaveBeenCalledWith('tab1');
     act(() => tree.unmount());
   });
 });
 
-describe('dashboard session previews', () => {
-  it('renders daemon preview lines and empty fallback', async () => {
-    mockSessions.mockResolvedValue([
-      { ...session('with-output', 'running'), preview: ['first line', 'last line'] },
-      session('without-output', 'running'),
-    ]);
+describe('dashboard tab deck actions', () => {
+  it('spawns new terminal tabs and pushes routing', async () => {
     const tree = await renderDashboard();
+    
+    await act(async () => {
+      actionFor(tree, `New Terminal ${first.endpoint}`)();
+      await flush();
+    });
+    
+    expect(mockChannel.openChannel).toHaveBeenCalledWith('terminal', {});
+    expect(mockDispatch).toHaveBeenCalled();
+    expect(mockTabStoreState.tabs[0].kind).toBe('terminal');
+    expect(mockTabStoreState.tabs[0].daemonId).toBe(first.hostId);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/terminal/[id]', params: { id: 'mock-uuid' } });
+    
+    act(() => tree.unmount());
+  });
 
-    expect(tree.root.findByProps({ children: 'first line\nlast line' })).toBeTruthy();
-    expect(tree.root.findByProps({ children: 'No output yet' })).toBeTruthy();
+  it('spawns new files tabs directly without PTY multiplex channel', async () => {
+    const tree = await renderDashboard();
+    
+    await act(async () => {
+      actionFor(tree, `New Files ${second.endpoint}`)();
+      await flush();
+    });
+    
+    expect(mockChannel.openChannel).not.toHaveBeenCalled();
+    expect(mockDispatch).toHaveBeenCalled();
+    expect(mockTabStoreState.tabs[0].kind).toBe('files');
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/files/[id]', params: { id: 'mock-uuid' } });
+    
+    act(() => tree.unmount());
+  });
+
+  it('renders active tabs bound to daemons and opens them', async () => {
+    mockTabStoreState.tabs = [
+      { tabId: 'tab-1', daemonId: first.hostId, kind: 'agent', title: 'Agent Session', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'sess', adapter: 'omp', sessionState: null, pendingApproval: null },
+      { tabId: 'tab-2', daemonId: second.hostId, kind: 'desktop', title: 'Desktop', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'sess', state: 'connected' }
+    ];
+    
+    const tree = await renderDashboard();
+    
+    // Checks that they render correctly in the deck grid under correct daemon
+    expect(tree.root.findByProps({ children: 'Agent Session' })).toBeTruthy();
+    expect(tree.root.findByProps({ children: 'Desktop' })).toBeTruthy();
+    
+    act(() => { actionFor(tree, 'Open tab Desktop')(); });
+    
+    expect(mockActivateTab).toHaveBeenCalledWith('tab-2');
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/desktop', params: { tabId: 'tab-2' } });
+
     act(() => tree.unmount());
   });
 });

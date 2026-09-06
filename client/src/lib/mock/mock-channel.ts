@@ -26,6 +26,7 @@ export class MockDaemonChannel implements DaemonChannel {
   status: ChannelStatus = 'open';
   private backends = new Map<string, ChannelBackend>();
   private listeners = new Map<string, Set<(msg: ChannelEnvelope) => void>>();
+  private pending = new Map<string, ChannelEnvelope[]>();
   private nextId = 0;
 
   constructor(public readonly daemonId: DaemonId) {}
@@ -38,20 +39,30 @@ export class MockDaemonChannel implements DaemonChannel {
     const set = this.listeners.get(channelId) ?? new Set();
     set.add(fn);
     this.listeners.set(channelId, set);
+    const buffered = this.pending.get(channelId);
+    if (buffered && buffered.length > 0) {
+      this.pending.set(channelId, []);
+      for (const envelope of buffered) fn(envelope);
+    }
     return () => set.delete(fn);
   }
 
   async openChannel(kind: TabKind, _meta: Record<string, unknown>): Promise<string> {
     const channelId = `mock-${this.daemonId}-${++this.nextId}`;
+    const buffered: ChannelEnvelope[] = [];
     const emit = (envelope: ChannelEnvelope) => {
-      for (const fn of this.listeners.get(envelope.channelId) ?? []) fn(envelope);
+      const set = this.listeners.get(envelope.channelId);
+      if (!set || set.size === 0) { buffered.push(envelope); return; }
+      for (const fn of set) fn(envelope);
     };
     this.backends.set(channelId, makeBackend(kind, emit, channelId));
+    this.pending.set(channelId, buffered);
     return channelId;
   }
 
   closeChannel(channelId: string): void {
     this.backends.delete(channelId);
     this.listeners.delete(channelId);
+    this.pending.delete(channelId);
   }
 }
