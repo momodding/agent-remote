@@ -1,4 +1,5 @@
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: jest.requireActual("react-native").View }));
+jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, Linking, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
 

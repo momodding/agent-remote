@@ -1,6 +1,7 @@
 import { createElement, createRef } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Pressable } from 'react-native';
+jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 import { modifiedTerminalInput, ShortcutKeyboard, type ShortcutKeyboardHandle, terminalRows } from './ShortcutKeyboard';
 
 describe('terminal shortcuts', () => {
