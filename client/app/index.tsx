@@ -1,81 +1,43 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Crypto from 'expo-crypto';
 import Feather from '@expo/vector-icons/Feather';
 
-import { AgenticRemoteAPI, APIError, authenticatePairing } from '../src/lib/api';
+import { authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
-import type { PairingPayload, SessionSummary } from '../src/protocol';
+import type { PairingPayload } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
 import { ConnectionStatusIndicator } from '../src/components/ConnectionStatusIndicator';
+import { useTabStore } from '../src/lib/tabs/tab-store';
+import { createDaemonChannel } from '../src/lib/daemon-channel';
+import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
-export default function Dashboard() {
+export default function TabDeckScreen() {
+  const { state, dispatch, closeTab, activateTab } = useTabStore();
   const [store, setStore] = useState<ConnectionStore>({ connections: [] });
+  // Manage UI connection selection merely for opening daemons view to correct item
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(true);
   const [pairingOpen, setPairingOpen] = useState(false);
   const [daemonsOpen, setDaemonsOpen] = useState(false);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [capabilities, setCapabilities] = useState<string[]>([]);
   const { width } = useWindowDimensions();
   const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
-  const connection = useMemo(() => getConnection(store, selectedHostId), [store, selectedHostId]);
-  const api = useMemo(() => (connection ? new AgenticRemoteAPI(connection) : null), [connection?.endpoint, connection?.token]);
-
-  const requestRef = useRef(0);
-
-  // Guards against stale responses: switching/editing/deleting daemons faster than
-  // a pending fetch resolves must never let an older request overwrite newer state.
-  const loadSessions = useCallback(async (target: Connection) => {
-    const id = ++requestRef.current;
-    try {
-      const restAPI = new AgenticRemoteAPI(target);
-      const [result, caps] = await Promise.all([
-        restAPI.sessions(),
-        restAPI.capabilities().catch((error) => {
-          if (error instanceof APIError && error.status === 404) return { capabilities: [] };
-          throw error;
-        }),
-      ]);
-      if (id === requestRef.current) {
-        setSessions(result);
-        setCapabilities(caps?.capabilities?.filter((c: { enabled: boolean; name: string }) => c.enabled).map((c: { name: string }) => c.name) || []);
-      }
-    } catch (error) {
-      if (id !== requestRef.current) return;
-      if (error instanceof APIError && error.status === 401) {
-        setSessions([]);
-        setCapabilities([]);
-        Alert.alert('Authentication expired. Pair this daemon again or edit its saved credentials.');
-      } else {
-        Alert.alert('Could not load sessions', error instanceof Error ? error.message : 'Unknown error');
-      }
-    }
-  }, []);
-  const clearSessions = useCallback(() => { requestRef.current += 1; setSessions([]); setCapabilities([]); }, []);
-  const refresh = useCallback(async () => { if (connection) await loadSessions(connection); }, [connection, loadSessions]);
 
   useEffect(() => {
     void loadConnections()
       .then(async (loaded) => {
         setStore(loaded);
-        const selected = loaded.connections[0] ?? null;
-        setSelectedHostId(selected?.hostId ?? null);
-        if (selected) await loadSessions(selected);
+        setSelectedHostId(loaded.connections[0]?.hostId ?? null);
       })
       .catch(() => Alert.alert('Could not load daemon connections'))
       .finally(() => setLoading(false));
   }, []);
-  useEffect(() => {
-    const listener = AppState.addEventListener('change', (state) => { if (state === 'active') void refresh(); });
-    return () => listener.remove();
-  }, [refresh]);
 
   const connect = async (payload: PairingPayload, clientName: string, onStage?: (message: string) => void) => {
     setDiagnostics([]);
@@ -89,36 +51,10 @@ export default function Dashboard() {
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
       setSelectedHostId(paired.hostId);
-      const reconnected = getConnection(nextStore, paired.hostId);
-      if (reconnected) await loadSessions(reconnected);
       setTimeout(() => setDiagnostics([]), 1500);
     } catch (error) {
       setDiagnostics([]);
       throw error;
-    }
-  };
-
-  const selectDaemon = async (hostId: string) => {
-    try {
-      const selected = getConnection(store, hostId);
-      if (!selected) throw new Error('Daemon connection not found');
-      setSelectedHostId(hostId);
-      clearSessions();
-      setDaemonsOpen(false);
-      await loadSessions(selected);
-    } catch (error) {
-      Alert.alert('Could not switch daemon', error instanceof Error ? error.message : 'Unknown error');
-    }
-  };
-
-  const saveEdit = async (originalHostId: string, replacement: Connection) => {
-    const wasSelected = originalHostId === selectedHostId;
-    const nextStore = await updateConnection(originalHostId, replacement);
-    setStore(nextStore);
-    if (wasSelected) {
-      setSelectedHostId(replacement.hostId);
-      const selected = getConnection(nextStore, replacement.hostId);
-      if (selected) await loadSessions(selected);
     }
   };
 
@@ -127,88 +63,203 @@ export default function Dashboard() {
       const wasSelected = hostId === selectedHostId;
       const nextStore = await deleteConnection(hostId);
       setStore(nextStore);
-      if (wasSelected) {
-        const next = nextStore.connections[0] ?? null;
-        setSelectedHostId(next?.hostId ?? null);
-        if (next) await loadSessions(next); else clearSessions();
-      }
+      if (wasSelected) setSelectedHostId(nextStore.connections[0]?.hostId ?? null);
+      
+      // Close all tabs belonging to this daemon
+      const daemonTabs = state.tabs.filter(t => t.daemonId === hostId);
+      for (const t of daemonTabs) closeTab(t.tabId);
     } catch (error) {
       Alert.alert('Could not delete daemon', error instanceof Error ? error.message : 'Unknown error');
     }
   };
 
-  const addDaemon = () => { setDaemonsOpen(false); setPairingOpen(true); };
-
-  const create = async () => {
-    if (!api || !connection) return;
-    try {
-      const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
-      setSessions((items) => [session, ...items]);
-      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId: connection.hostId } });
-    } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }
+  const saveEdit = async (originalHostId: string, replacement: Connection) => {
+    const nextStore = await updateConnection(originalHostId, replacement);
+    setStore(nextStore);
+    if (originalHostId === selectedHostId) setSelectedHostId(replacement.hostId);
+  };
+  
+  const spawnTab = async (hostId: string, kind: TabKind) => {
+    const connection = getConnection(store, hostId);
+    if (!connection) {
+      Alert.alert('Cannot open tab', 'Daemon connection not found in store.');
+      return;
+    }
+    const channel = createDaemonChannel(connection);
+    const tabId = Crypto.randomUUID();
+    
+    // ponyfill opening logic (some tabs need synchronous API call before opening async channel, defer specific setup logic to when the route actually mounts vs. doing it here)
+    if (kind === 'agent') {
+      const remoteSessionId = await channel.openChannel('agent', {});
+      dispatch(prev => {
+        const tabs = [...prev.tabs];
+        tabs.push({ 
+          tabId, daemonId: hostId, kind: 'agent', title: 'Agent Session', 
+          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+          remoteSessionId, adapter: 'omp', sessionState: null, pendingApproval: null
+        });
+        return { ...prev, tabs, activeId: tabId };
+      });
+      router.push({ pathname: '/agent/[id]', params: { id: tabId } });
+    } else if (kind === 'terminal') {
+      // Mock adapters will handle real PTY setup in subsequent phase; just create tab object and frame now
+      const remoteSessionId = await channel.openChannel('terminal', {});
+      dispatch(prev => {
+        const tabs = [...prev.tabs];
+        tabs.push({
+          tabId, daemonId: hostId, kind: 'terminal', title: 'Shell',
+          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+          remoteSessionId, state: 'connecting'
+        });
+        return { ...prev, tabs, activeId: tabId };
+      });
+      router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
+    } else if (kind === 'files') {
+      // Files is REST only, no openChannel call
+      dispatch(prev => {
+        const tabs = [...prev.tabs];
+        tabs.push({
+          tabId, daemonId: hostId, kind: 'files', title: 'Files',
+          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, cwd: '/'
+        });
+        return { ...prev, tabs, activeId: tabId };
+      });
+      router.push({ pathname: '/files/[id]', params: { id: tabId } });
+    } else if (kind === 'desktop') {
+      const remoteSessionId = await channel.openChannel('desktop', {});
+      dispatch(prev => {
+        const tabs = [...prev.tabs];
+        tabs.push({
+          tabId, daemonId: hostId, kind: 'desktop', title: 'Desktop',
+          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+          remoteSessionId, state: 'connecting'
+        });
+        return { ...prev, tabs, activeId: tabId };
+      });
+      // ponytail: router format change per native/web divergence isn't strictly necessary for deck state
+      router.push({ pathname: '/desktop', params: { tabId } });
+    }
+  };
+  
+  const openTab = (tab: WorkspaceTab) => {
+    activateTab(tab.tabId);
+    if (tab.kind === 'terminal') router.push({ pathname: '/terminal/[id]', params: { id: tab.tabId } });
+    else if (tab.kind === 'agent') router.push({ pathname: '/agent/[id]', params: { id: tab.tabId } });
+    else if (tab.kind === 'files') router.push({ pathname: '/files/[id]', params: { id: tab.tabId } });
+    else if (tab.kind === 'desktop') router.push({ pathname: '/desktop', params: { tabId: tab.tabId } });
   };
 
-  const createMulti = async () => {
-    if (!api || !connection) return;
-    try {
-      const session = await api.createSession({ name: 'Shell', command: '', args: [], cwd: '', cols: 80, rows: 24 });
-      setSessions((items) => [session, ...items]);
-      router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId: connection.hostId, mode: 'multi' } });
-    } catch (error) { Alert.alert('Could not create session', error instanceof Error ? error.message : 'Unknown error'); }
-  };
-
-  const visibleSessions = sessions
-    .filter((session) => session.state !== 'exited')
-    .filter((session) => `${session.name} ${session.command}`.toLowerCase().includes(query.trim().toLowerCase()));
   if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
-  if (!connection) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><ConnectionStatusIndicator api={null} /><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
+  if (store.connections.length === 0) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
 
-  return <SafeAreaView style={styles.screen}>
-  <View style={styles.topbar}>
-    <View>
-      <Text style={styles.wordmark}>agenticRemote</Text>
-      <Text style={styles.endpoint}>{new URL(connection.endpoint).host}</Text>
-      <ConnectionStatusIndicator api={api} />
-    </View>
-    <View style={styles.actions}>
-      <Pressable accessibilityLabel="Refresh" style={styles.action} onPress={() => void refresh()}>
-        <Feather name="refresh-cw" size={18} color="#46B8C4" />
-      </Pressable>
-      {capabilities.includes('vnc') && (
-        <Pressable accessibilityLabel="Desktop" style={styles.action}
-          onPress={() => router.push({ pathname: '/desktop', params: { hostId: connection.hostId } })}>
-          <Feather name="monitor" size={18} color="#46B8C4" />
-        </Pressable>
-      )}
-      {capabilities.includes('files') && (
-        <Pressable accessibilityLabel="Files" style={styles.action} onPress={() => router.push({ pathname: '/files', params: { hostId: connection.hostId } })}>
-          <Feather name="folder" size={18} color="#46B8C4" />
-        </Pressable>
-      )}
-      <Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}>
-        <Feather name="server" size={18} color="#46B8C4" />
-      </Pressable>
-    </View>
-  </View>
-  <View style={styles.controls}><TextInput style={styles.search} value={query} onChangeText={setQuery} placeholder="Search sessions" placeholderTextColor="#888" /><View style={styles.createButtons}><Pressable accessibilityLabel="New shell" style={styles.primary} onPress={() => void create()}><Feather name="plus" size={18} color="#0A0A0A" /></Pressable><Pressable accessibilityLabel="New multi-session window" style={styles.secondary} onPress={() => void createMulti()}><Feather name="columns" size={18} color="#46B8C4" /></Pressable></View></View>
-    <FlatList data={visibleSessions} key={`${columns}`} keyExtractor={(session) => session.id} numColumns={columns} contentContainerStyle={styles.list} columnWrapperStyle={columns > 1 ? styles.columns : undefined} ListEmptyComponent={<View style={styles.noSessions}><Text style={styles.emptyTitle}>No matching sessions</Text><Text style={styles.emptyText}>Start a shell to see it here.</Text></View>} renderItem={({ item }) => api ? <SessionCard session={item} api={api} hostId={connection.hostId} onClose={() => void refresh()} /> : null} />
-    {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
-    <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
-    <ConnectionSheet visible={daemonsOpen} store={store} selectedHostId={selectedHostId} onDismiss={() => setDaemonsOpen(false)} onSelect={selectDaemon} onSave={saveEdit} onDelete={removeDaemon} onAdd={addDaemon} />
-  </SafeAreaView>;
-}
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.topbar}>
+        <View style={styles.brand}>
+          <Text style={styles.wordmark}>agenticRemote</Text>
+        </View>
+        <View style={styles.actions}>
+          <Pressable accessibilityLabel="Daemons" style={styles.action} onPress={() => setDaemonsOpen(true)}>
+            <Feather name="server" size={18} color="#46B8C4" />
+          </Pressable>
+        </View>
+      </View>
+      
+      <FlatList 
+        data={store.connections} 
+        keyExtractor={(p) => p.hostId} 
+        contentContainerStyle={styles.deck}
+        renderItem={({ item: connection }) => {
+          const matchedTabs = state.tabs.filter(t => t.daemonId === connection.hostId);
+          return (
+            <View style={styles.daemonSection}>
+              <View style={styles.daemonSectionHeader}>
+                <Text style={styles.daemonSectionTitle}>{connection.name}</Text>
+                <Text style={styles.daemonSectionSub}>{new URL(connection.endpoint).host}</Text>
+                
+                <View style={styles.daemonToolbar}>
+                  <Pressable accessibilityLabel="New Agent" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
+                    <Feather name="cpu" size={16} color="#F0F0F0" />
+                  </Pressable>
+                  <Pressable accessibilityLabel="New Terminal" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
+                    <Feather name="terminal" size={16} color="#F0F0F0" />
+                  </Pressable>
+                  <Pressable accessibilityLabel="New Files" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
+                    <Feather name="folder" size={16} color="#F0F0F0" />
+                  </Pressable>
+                  <Pressable accessibilityLabel="New Desktop" style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
+                    <Feather name="monitor" size={16} color="#F0F0F0" />
+                  </Pressable>
+                </View>
+              </View>
+              
+              {matchedTabs.length === 0 ? (
+                <View style={styles.noTabs}><Text style={styles.noTabsText}>No open tabs for this daemon</Text></View>
+              ) : (
+                <View style={styles.tabGrid}>
+                  {matchedTabs.map(tab => (
+                    <Pressable key={tab.tabId} style={styles.tabCard} onPress={() => openTab(tab)}>
+                      <View style={styles.tabIcon}>
+                        {tab.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
+                        {tab.kind === 'agent' && <Feather name="cpu" size={20} color="#46B8C4" />}
+                        {tab.kind === 'files' && <Feather name="folder" size={20} color="#F19999" />}
+                        {tab.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
+                      </View>
+                      <View style={styles.tabContent}>
+                        <Text style={styles.tabTitle} numberOfLines={1}>{tab.title}</Text>
+                        <Text style={styles.tabStatus} numberOfLines={1}>
+                          {tab.kind === 'terminal' || tab.kind === 'desktop' ? tab.state : tab.kind === 'agent' ? tab.sessionState?.thinkingLevel ?? 'Ready' : 'Navigating'}
+                        </Text>
+                      </View>
+                      <Pressable accessibilityLabel="Close tab" style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>
+                        <Feather name="x" size={16} color="#888" />
+                      </Pressable>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </View>
+          );
+        }} 
+      />
 
-function SessionCard({ session, api, hostId, onClose }: { session: SessionSummary; api: AgenticRemoteAPI; hostId: string; onClose: () => void }) {
-  const open = () => router.push({ pathname: '/terminal/[id]', params: { id: session.id, name: session.name, hostId } });
-  return <Pressable accessibilityLabel={`Open ${session.name}`} style={styles.card} onPress={open}>
-    <View style={styles.cardHead}><Text style={styles.cardTitle} numberOfLines={1}>{session.name}</Text><Text style={styles.status}>{session.state}</Text></View>
-    <Text style={styles.command} numberOfLines={1}>{session.command}</Text>
-    <Text style={styles.preview} numberOfLines={5}>{session.preview.join('\n') || 'No output yet'}</Text>
-    {session.waitState && <Text style={styles.wait}>{session.waitState.label}</Text>}
-    <View style={styles.cardActions}><Pressable accessibilityLabel={`Open ${session.name}`} style={styles.open} onPress={open}><Feather name="external-link" size={18} color="#F0F0F0" /></Pressable><Pressable accessibilityLabel={`Close ${session.name}`} style={styles.close} onPress={() => { void api.closeSession(session.id).then(onClose); }}><Feather name="x" size={18} color="#F19999" /></Pressable></View>
-  </Pressable>;
+      {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
+      <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
+      <ConnectionSheet visible={daemonsOpen} store={store} selectedHostId={selectedHostId} onDismiss={() => setDaemonsOpen(false)} onSelect={async (id) => { setSelectedHostId(id); setDaemonsOpen(false); }} onSave={saveEdit} onDelete={removeDaemon} onAdd={() => { setDaemonsOpen(false); setPairingOpen(true); }} />
+    </SafeAreaView>
+  );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#0A0A0A' }, loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0A0A0A' }, empty: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', padding: 28, gap: 16 }, wordmark: { color: '#F0F0F0', fontWeight: '800', fontSize: 21 }, endpoint: { color: '#B8B8B8', marginTop: 3 }, emptyTitle: { color: '#F0F0F0', fontSize: 24, fontWeight: '700' }, emptyText: { color: '#B8B8B8', fontSize: 16, lineHeight: 23, maxWidth: 520 }, primary: { minHeight: 48, borderRadius: 8, backgroundColor: '#D19A2C', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16, flexDirection: 'row', gap: 8 }, primaryText: { color: '#0A0A0A', fontWeight: '800' }, secondary: { minHeight: 48, borderRadius: 8, backgroundColor: '#264E54', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16, flexDirection: 'row', gap: 8 }, secondaryText: { color: '#46B8C4', fontWeight: '800' }, topbar: { padding: 18, flexDirection: 'row', justifyContent: 'space-between', gap: 16, borderBottomWidth: 1, borderColor: '#262626' }, actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }, action: { minHeight: 44, minWidth: 44, paddingHorizontal: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 7, backgroundColor: '#181818' }, actionText: { color: '#46B8C4', fontWeight: '600' }, controls: { padding: 18, gap: 10, flexDirection: 'row' }, search: { flex: 1, minHeight: 48, paddingHorizontal: 12, color: '#F0F0F0', borderWidth: 1, borderColor: '#3A3A3A', borderRadius: 8 }, createButtons: { flexDirection: 'row', gap: 8 }, list: { padding: 18, gap: 14 }, columns: { gap: 14 }, noSessions: { paddingTop: 70, alignItems: 'center', gap: 8, flex: 1 }, card: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: '#262626', backgroundColor: '#181818', borderRadius: 10, padding: 14, gap: 10, marginBottom: 14 }, cardHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, cardTitle: { color: '#F0F0F0', fontSize: 17, fontWeight: '700', flex: 1 }, status: { color: '#46B8C4', fontSize: 12, fontWeight: '700' }, command: { color: '#D19A2C', fontFamily: 'monospace' }, preview: { minHeight: 86, color: '#B8B8B8', fontFamily: 'monospace', lineHeight: 18 }, wait: { color: '#D19A2C' }, cardActions: { flexDirection: 'row', gap: 8 }, open: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 7, backgroundColor: '#264E54' }, openText: { color: '#F0F0F0', fontWeight: '700' }, close: { minWidth: 50, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 7, borderWidth: 1, borderColor: '#5A3939' }, closeText: { color: '#F19999', fontWeight: '700' }, diagnostics: { position: 'absolute', left: 18, right: 18, bottom: 18, padding: 14, gap: 5, borderRadius: 9, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#181818' }, diagnostic: { color: '#777' }, diagnosticDone: { color: '#46B8C4' },
+  screen: { flex: 1, backgroundColor: '#0A0A0A' }, 
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0A0A0A' }, 
+  empty: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', padding: 28, gap: 16 }, 
+  wordmark: { color: '#F0F0F0', fontWeight: '800', fontSize: 21 }, 
+  emptyTitle: { color: '#F0F0F0', fontSize: 24, fontWeight: '700' }, 
+  emptyText: { color: '#B8B8B8', fontSize: 16, lineHeight: 23, maxWidth: 520 }, 
+  primary: { minHeight: 48, borderRadius: 8, backgroundColor: '#D19A2C', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16, flexDirection: 'row', gap: 8 }, 
+  primaryText: { color: '#0A0A0A', fontWeight: '800' }, 
+  topbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderColor: '#262626' },
+  brand: { gap: 2 },
+  actions: { flexDirection: 'row', gap: 12 },
+  action: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#181818', alignItems: 'center', justifyContent: 'center' },
+  deck: { padding: 16, gap: 24 },
+  daemonSection: { backgroundColor: '#111', borderRadius: 12, borderWidth: 1, borderColor: '#262626', overflow: 'hidden' },
+  daemonSectionHeader: { padding: 16, borderBottomWidth: 1, borderColor: '#262626', backgroundColor: '#181818' },
+  daemonSectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#F0F0F0' },
+  daemonSectionSub: { fontSize: 13, color: '#888', marginTop: 2, marginBottom: 12 },
+  daemonToolbar: { flexDirection: 'row', gap: 8 },
+  tabCreateBtn: { width: 44, height: 40, borderRadius: 8, backgroundColor: '#333', alignItems: 'center', justifyContent: 'center' },
+  noTabs: { padding: 32, alignItems: 'center' },
+  noTabsText: { color: '#555', fontStyle: 'italic' },
+  tabGrid: { padding: 12, gap: 8 },
+  tabCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A1A1A', borderRadius: 8, padding: 12, borderWidth: 1, borderColor: '#333' },
+  tabIcon: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#262626', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  tabContent: { flex: 1, justifyContent: 'center' },
+  tabTitle: { fontSize: 15, fontWeight: '600', color: '#E0E0E0' },
+  tabStatus: { fontSize: 13, color: '#888', marginTop: 2 },
+  tabClose: { padding: 8 },
+  diagnostics: { position: 'absolute', bottom: 32, alignSelf: 'center', backgroundColor: '#1A1A1A', padding: 16, borderRadius: 8, borderColor: '#3A3A3A', borderWidth: 1, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12 }, 
+  diagnostic: { color: '#888', fontSize: 13, marginVertical: 2 }, 
+  diagnosticDone: { color: '#46B86B' }
 });
