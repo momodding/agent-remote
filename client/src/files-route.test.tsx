@@ -21,7 +21,8 @@ jest.mock('react-native', () => {
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert, Platform, Pressable, Text } from 'react-native';
 import { router } from 'expo-router';
-import FilesScreen from '../app/files';
+import FilesScreen from '../app/files/[id]';
+import type { FilesWorkspaceTab } from './lib/tabs/types';
 import type { Connection, ConnectionStore } from './lib/connection';
 import type { FileEntry } from './protocol';
 
@@ -34,7 +35,11 @@ const mockConnection: Connection = {
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
+const mockStore: ConnectionStore = { connections: [mockConnection] };
+const mockTab: FilesWorkspaceTab = {
+  tabId: 'mock-tab-id', daemonId: mockConnection.hostId, kind: 'files', title: 'Files',
+  createdAt: 0, lastActiveAt: 0, pinned: false, cwd: '',
+};
 const mockRootEntries: FileEntry[] = [{ path: 'docs', name: 'docs', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
 const mockDocsEntries: FileEntry[] = [{ path: 'docs/readme.txt', name: 'readme.txt', isDir: false, size: 12, mode: '-rw-r--r--' }];
 const mockHostEntries: FileEntry[] = [{ path: '/tmp', name: 'tmp', isDir: true, size: 0, mode: 'drwxr-xr-x' }];
@@ -66,7 +71,12 @@ const mockGitStatus = jest.fn(async () => ({ available: true, entries: [] }));
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   router: { replace: jest.fn() },
-  useLocalSearchParams: () => ({ hostId: mockConnection.hostId }),
+  useLocalSearchParams: () => ({ id: mockTab.tabId }),
+}));
+
+jest.mock('./lib/tabs/tab-store', () => ({
+  useTabStore: () => ({ state: { tabs: [mockTab], activeId: mockTab.tabId, layout: {} }, closeTab: jest.fn(), activateTab: jest.fn(), getChannel: jest.fn(), dispatch: jest.fn() }),
+  updateTab: jest.fn(),
 }));
 jest.mock('./lib/connection', () => ({
   loadConnections: jest.fn(async () => mockStore),

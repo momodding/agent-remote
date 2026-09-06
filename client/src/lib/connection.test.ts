@@ -28,7 +28,7 @@ const second: Connection = {
   name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', hostId: 'backup-8766',
   fingerprint: '', skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
-const empty: ConnectionStore = { connections: [], selectedHostId: null };
+const empty: ConnectionStore = { connections: [] };
 const loadModule = (): ConnectionModule => require('./connection') as ConnectionModule;
 
 beforeEach(() => {
@@ -45,8 +45,8 @@ describe('connection storage', () => {
   it.each(['web', 'ios'])('round-trips a store on %s', async (platform) => {
     mockPlatform = platform;
     const { loadConnections, saveConnection } = loadModule();
-    await expect(saveConnection(first)).resolves.toEqual({ connections: [first], selectedHostId: first.hostId });
-    await expect(loadConnections()).resolves.toEqual({ connections: [first], selectedHostId: first.hostId });
+    await expect(saveConnection(first)).resolves.toEqual({ connections: [first] });
+    await expect(loadConnections()).resolves.toEqual({ connections: [first] });
     if (platform === 'web') expect(mockAsyncStorage.getItem).toHaveBeenCalledTimes(2);
     else expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(2);
   });
@@ -54,54 +54,45 @@ describe('connection storage', () => {
   it('migrates the legacy single connection and derives its name', async () => {
     const legacy = { ...first, hostId: 'legacy-host' } as Partial<Connection>; delete legacy.name; stored = JSON.stringify(legacy);
     const { loadConnections } = loadModule();
-    const expected = { connections: [{ ...first, hostId: 'legacy-host', name: 'daemon.example:8765' }], selectedHostId: 'legacy-host' };
+    const expected = { connections: [{ ...first, hostId: 'legacy-host', name: 'daemon.example:8765' }] };
     await expect(loadConnections()).resolves.toEqual(expected); expect(stored).toBe(JSON.stringify(expected));
   });
 
-  it('upserts and selects a normalized endpoint with one write', async () => {
-    stored = JSON.stringify({ connections: [first], selectedHostId: first.hostId });
+  it('upserts a normalized endpoint with one write', async () => {
+    stored = JSON.stringify({ connections: [first] });
     const replacement = { ...first, endpoint: `${first.endpoint}/`, token: 'refreshed' };
     const { saveConnection } = loadModule();
-    await expect(saveConnection(replacement)).resolves.toEqual({ connections: [{ ...replacement, endpoint: first.endpoint }], selectedHostId: first.hostId });
+    await expect(saveConnection(replacement)).resolves.toEqual({ connections: [{ ...replacement, endpoint: first.endpoint }] });
     expect(mockAsyncStorage.setItem).toHaveBeenCalledTimes(1);
   });
 
-  it('updates every field and rewrites the selected hostId', async () => {
-    stored = JSON.stringify({ connections: [first], selectedHostId: first.hostId });
-    await expect(loadModule().updateConnection(first.hostId, second)).resolves.toEqual({ connections: [second], selectedHostId: second.hostId });
+  it('updates every field of an existing connection', async () => {
+    stored = JSON.stringify({ connections: [first] });
+    await expect(loadModule().updateConnection(first.hostId, second)).resolves.toEqual({ connections: [second] });
   });
 
   it('rejects changing a connection to an owned hostId', async () => {
-    stored = JSON.stringify({ connections: [first, second], selectedHostId: first.hostId });
+    stored = JSON.stringify({ connections: [first, second] });
     await expect(loadModule().updateConnection(first.hostId, { ...first, hostId: second.hostId })).rejects.toThrow('already exists');
   });
 
-  it('selects only a known connection', async () => {
-    stored = JSON.stringify({ connections: [first, second], selectedHostId: first.hostId });
-    const { selectConnection } = loadModule();
-    await expect(selectConnection(second.hostId)).resolves.toMatchObject({ selectedHostId: second.hostId });
-    await expect(selectConnection('unknown-host-id')).rejects.toThrow('not found');
+  it('deletes a connection while leaving the others untouched', async () => {
+    stored = JSON.stringify({ connections: [first, second] });
+    await expect(loadModule().deleteConnection(second.hostId)).resolves.toEqual({ connections: [first] });
   });
 
-  it('preserves selection when deleting another connection', async () => {
-    stored = JSON.stringify({ connections: [first, second], selectedHostId: first.hostId });
-    await expect(loadModule().deleteConnection(second.hostId)).resolves.toEqual({ connections: [first], selectedHostId: first.hostId });
+  it('returns an empty store after deleting the last connection', async () => {
+    stored = JSON.stringify({ connections: [first] });
+    await expect(loadModule().deleteConnection(first.hostId)).resolves.toEqual(empty);
   });
 
-  it('selects the first remainder or null after deleting the selected connection', async () => {
-    stored = JSON.stringify({ connections: [first, second], selectedHostId: first.hostId });
-    const { deleteConnection } = loadModule();
-    await expect(deleteConnection(first.hostId)).resolves.toEqual({ connections: [second], selectedHostId: second.hostId });
-    await expect(deleteConnection(second.hostId)).resolves.toEqual(empty);
-  });
-
-  it('repairs a missing selected hostId', async () => {
-    stored = JSON.stringify({ connections: [first], selectedHostId: second.hostId });
-    await expect(loadModule().loadConnections()).resolves.toEqual({ connections: [first], selectedHostId: first.hostId });
+  it('drops a legacy selectedHostId field from persisted storage on load', async () => {
+    stored = JSON.stringify({ connections: [first], selectedHostId: first.hostId });
+    await expect(loadModule().loadConnections()).resolves.toEqual({ connections: [first] });
     expect(mockAsyncStorage.setItem).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['{malformed', JSON.stringify({ connections: [{}], selectedHostId: null })])('removes malformed storage', async (value) => {
+  it.each(['{malformed', JSON.stringify({ connections: [{}] })])('removes malformed storage', async (value) => {
     stored = value; await expect(loadModule().loadConnections()).resolves.toEqual(empty);
     expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith('agenticremote.connection');
   });

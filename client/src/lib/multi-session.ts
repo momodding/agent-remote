@@ -1,5 +1,3 @@
-import type { SessionSocket } from './session-socket';
-
 export const MAX_MULTI_SESSIONS = 5;
 
 // Slot 0 is the primary pane; the remaining entries are auxiliary split panes.
@@ -10,7 +8,6 @@ export type MultiSessionState = {
   name: string;
   hostId: string;
   output: string;
-  socket?: SessionSocket;
 };
 
 export function auxSlotCount(isWeb: boolean): number {

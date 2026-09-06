@@ -8,13 +8,23 @@ import { router } from 'expo-router';
 import TerminalScreen from '../app/terminal/[id]';
 import type { Connection, ConnectionStore } from './lib/connection';
 import { APIError } from './lib/api';
+import type { ChannelEnvelope } from './lib/daemon-channel';
+import type { TerminalWorkspaceTab } from './lib/tabs/types';
 
 const mockCloseSession = jest.fn();
-const mockSocket = { connect: jest.fn(), close: jest.fn(), input: jest.fn(), resize: jest.fn() };
-let mockOnState: (state: string, waitState?: unknown) => void = () => undefined;
+const mockChannel = {
+  daemonId: 'mock-host-id',
+  status: 'open' as const,
+  send: jest.fn(),
+  subscribe: jest.fn((_channelId: string, fn: (msg: ChannelEnvelope) => void) => { mockSubscribers.push(fn); return jest.fn(); }),
+  openChannel: jest.fn(async () => 'mock-channel-id'),
+  closeChannel: jest.fn(),
+};
+let mockSubscribers: Array<(msg: ChannelEnvelope) => void> = [];
+const emit = (msg: ChannelEnvelope) => act(() => mockSubscribers.forEach((fn) => fn(msg)));
+
 let mockTerminalInput: ((data: string) => void) | undefined;
 let mockShortcutInput: ((data: string) => void) | undefined;
-let mockOnOutput: (data: string) => void = () => undefined;
 
 const mockConnection: Connection = {
   name: 'Test daemon',
@@ -25,8 +35,13 @@ const mockConnection: Connection = {
   skipFingerprintVerification: false,
   clientName: 'test',
 };
-const mockStore: ConnectionStore = { connections: [mockConnection], selectedHostId: mockConnection.hostId };
-let mockParams = { id: 'session', name: 'Shell', hostId: mockConnection.hostId, mode: 'default' };
+const mockStore: ConnectionStore = { connections: [mockConnection] };
+const mockTab: TerminalWorkspaceTab = {
+  tabId: 'session', daemonId: mockConnection.hostId, kind: 'terminal', title: 'Shell',
+  createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'session', state: 'connecting',
+};
+let mockParams: { id: string; mode?: string } = { id: 'session', mode: undefined };
+let mockCloseTab = jest.fn();
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
@@ -46,14 +61,11 @@ jest.mock('./lib/api', () => {
       this.status = status;
     }
   }
-  return { AgenticRemoteAPI: jest.fn(() => ({ closeSession: mockCloseSession })), APIError };
+  return { AgenticRemoteAPI: jest.fn(() => ({ closeSession: mockCloseSession, shells: jest.fn(async () => []) })), APIError };
 });
-jest.mock('./lib/session-socket', () => ({
-  SessionSocket: jest.fn((_connection: unknown, _id: unknown, onOutputCb: (data: string) => void, onStateCb: (state: string, waitState?: unknown) => void) => {
-    mockOnOutput = onOutputCb;
-    mockOnState = onStateCb;
-    return mockSocket;
-  }),
+jest.mock('./lib/daemon-channel', () => ({ createDaemonChannel: jest.fn(() => mockChannel) }));
+jest.mock('./lib/tabs/tab-store', () => ({
+  useTabStore: () => ({ state: { tabs: [mockTab], activeId: 'session', layout: {} }, closeTab: mockCloseTab, activateTab: jest.fn(), getChannel: () => mockChannel }),
 }));
 let mockTerminalOutput: string | undefined;
 jest.mock('./components/Terminal', () => ({
@@ -78,13 +90,13 @@ async function renderScreen() {
   return tree!;
 }
 
-it('routes native terminal input through shortcut modifier before socket input', async () => {
+it('routes native terminal input through shortcut modifier before channel send', async () => {
   await renderScreen();
 
   act(() => mockTerminalInput?.('c'));
 
   expect(mockShortcutInput).toBeDefined();
-  expect(mockSocket.input).toHaveBeenCalledWith('modified:c');
+  expect(mockChannel.send).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'session', type: 'pty.input' }));
 });
 
 function actionFor(tree: ReactTestRenderer, label: string) {
@@ -99,12 +111,23 @@ function confirmation() {
 describe('terminal route connection resolution', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSubscribers = [];
+    mockParams = { id: 'session', mode: undefined };
     jest.spyOn(Alert, 'alert');
     mockCloseSession.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('alerts and redirects home when the tab is not found in the store', async () => {
+    mockParams = { id: 'missing-tab', mode: undefined };
+    const tree = await renderScreen();
+
+    expect(Alert.alert).toHaveBeenCalledWith('Could not load daemon connection');
+    expect(router.replace).toHaveBeenCalledWith('/');
+    act(() => tree.unmount());
   });
 
   it('alerts and redirects home when hostId does not resolve', async () => {
@@ -122,6 +145,8 @@ describe('terminal route connection resolution', () => {
 describe('terminal route natural exit', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSubscribers = [];
+    mockParams = { id: 'session', mode: undefined };
     jest.spyOn(Alert, 'alert');
     mockCloseSession.mockResolvedValue(undefined);
     mockTerminalOutput = undefined;
@@ -133,13 +158,14 @@ describe('terminal route natural exit', () => {
 
   it('closes the REST session, clears rendered output, and navigates home exactly once on session.state exited', async () => {
     const tree = await renderScreen();
-    act(() => { mockOnOutput('shell output'); });
+    emit({ channelId: 'session', kind: 'terminal', type: 'pty.output', data: btoa('shell output'), seq: 0 });
     expect(mockTerminalOutput).toBe('shell output');
 
-    await act(async () => { mockOnState('exited'); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { emit({ channelId: 'session', kind: 'terminal', type: 'session.state', state: 'exited' }); await Promise.resolve(); await Promise.resolve(); });
 
     expect(mockCloseSession).toHaveBeenCalledWith('session');
-    expect(mockSocket.close).toHaveBeenCalledTimes(1);
+    expect(mockChannel.closeChannel).toHaveBeenCalledWith('session');
+    expect(mockCloseTab).toHaveBeenCalledWith('session');
     expect(mockTerminalOutput).toBe('');
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
@@ -148,7 +174,7 @@ describe('terminal route natural exit', () => {
   it('ignores a 404 APIError from the redundant close call (already closed server-side)', async () => {
     mockCloseSession.mockRejectedValue(new APIError(404, 'not found'));
     const tree = await renderScreen();
-    await act(async () => { mockOnState('exited'); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { emit({ channelId: 'session', kind: 'terminal', type: 'session.state', state: 'exited' }); await Promise.resolve(); await Promise.resolve(); });
 
     expect(Alert.alert).not.toHaveBeenCalledWith('Could not close session', expect.anything());
     expect(router.replace).toHaveBeenCalledWith('/');
@@ -157,7 +183,7 @@ describe('terminal route natural exit', () => {
 
   it('does not double-close when natural exit and manual Close race', async () => {
     const tree = await renderScreen();
-    act(() => { mockOnState('exited'); });
+    act(() => { emit({ channelId: 'session', kind: 'terminal', type: 'session.state', state: 'exited' }); });
     act(() => closeAction(tree)());
 
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
@@ -175,6 +201,8 @@ function closeAction(tree: ReactTestRenderer) {
 describe('terminal route close action', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSubscribers = [];
+    mockParams = { id: 'session', mode: undefined };
     jest.spyOn(Alert, 'alert');
     mockCloseSession.mockResolvedValue(undefined);
   });
@@ -191,7 +219,8 @@ describe('terminal route close action', () => {
     await act(async () => { await (confirmation()[1].onPress?.() as unknown as Promise<void> | undefined); });
 
     expect(mockCloseSession).toHaveBeenCalledWith('session');
-    expect(mockSocket.close).toHaveBeenCalled();
+    expect(mockChannel.closeChannel).toHaveBeenCalledWith('session');
+    expect(mockCloseTab).toHaveBeenCalledWith('session');
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });
@@ -213,7 +242,7 @@ describe('terminal route close action', () => {
     await act(async () => { await (confirmation()[1].onPress?.() as unknown as Promise<void> | undefined); });
 
     expect(Alert.alert).toHaveBeenLastCalledWith('Could not close session', 'daemon unavailable');
-    expect(mockSocket.close).not.toHaveBeenCalled();
+    expect(mockChannel.closeChannel).not.toHaveBeenCalled();
     expect(router.replace).not.toHaveBeenCalled();
     act(() => tree.unmount());
   });
@@ -222,6 +251,8 @@ describe('terminal route close action', () => {
 describe('terminal route detach', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSubscribers = [];
+    mockParams = { id: 'session', mode: undefined };
     jest.spyOn(Alert, 'alert');
     mockCloseSession.mockResolvedValue(undefined);
   });
@@ -230,12 +261,11 @@ describe('terminal route detach', () => {
     jest.restoreAllMocks();
   });
 
-  it('closes the socket and navigates home without any REST close call', async () => {
+  it('unsubscribes and navigates home without any REST close call', async () => {
     const tree = await renderScreen();
     act(() => actionFor(tree, 'Detach')());
 
     expect(mockCloseSession).not.toHaveBeenCalled();
-    expect(mockSocket.close).toHaveBeenCalled();
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });
@@ -244,24 +274,25 @@ describe('terminal route detach', () => {
 describe('terminal route multi mode', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockParams.mode = 'multi';
+    mockSubscribers = [];
+    mockParams = { id: 'session', mode: 'multi' };
     jest.spyOn(Alert, 'alert');
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
-    mockParams.mode = 'default';
   });
 
-  it('confirms before closing all multi-session sockets', async () => {
+  it('confirms before closing all multi-session channels', async () => {
     const tree = await renderScreen();
-    expect(mockSocket.connect).toHaveBeenCalled();
+    expect(mockChannel.openChannel).toHaveBeenCalledWith('terminal', expect.objectContaining({ sessionId: 'session' }));
 
     act(() => actionFor(tree, 'Close all')());
     expect(Alert.alert).toHaveBeenCalledWith('Close all sessions?', expect.any(String), expect.any(Array));
     await act(async () => { await (confirmation()[1].onPress?.() as unknown as Promise<void> | undefined); });
 
     expect(mockCloseSession).toHaveBeenCalledWith('session');
+    expect(mockCloseTab).toHaveBeenCalledWith('session');
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });

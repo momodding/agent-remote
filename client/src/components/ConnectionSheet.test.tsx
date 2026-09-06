@@ -36,7 +36,7 @@ const second: Connection = {
   name: 'Backup daemon', endpoint: 'https://127.0.0.1:8766', hostId: 'host-b', fingerprint: '',
   skipFingerprintVerification: false, token: 'second-token', clientName: 'test-client',
 };
-const store: ConnectionStore = { connections: [first, second], selectedHostId: first.hostId };
+const store: ConnectionStore = { connections: [first, second] };
 
 const pairingPayload = JSON.stringify({
   v: 2,
@@ -52,6 +52,7 @@ function makeProps(overrides: Partial<Parameters<typeof ConnectionSheet>[0]> = {
   return {
     visible: true,
     store,
+    selectedHostId: first.hostId,
     onDismiss: jest.fn(),
     onSelect: jest.fn(async () => undefined),
     onSave: jest.fn(async () => undefined),

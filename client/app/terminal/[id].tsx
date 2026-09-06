@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Alert, KeyboardAvoidingView, Keyboard, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
-
 
 import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
 import { MultiTerminal } from '../../src/components/MultiTerminal';
@@ -11,13 +10,21 @@ import { AddSessionFAB } from '../../src/components/AddSessionFAB';
 import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
-import { SessionSocket } from '../../src/lib/session-socket';
+import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-channel';
+import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { MAX_MULTI_SESSIONS, addSession, closeSession, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
+import { useTabStore } from '../../src/lib/tabs/tab-store';
+import type { TerminalWorkspaceTab } from '../../src/lib/tabs/types';
+
+// Displayed/REST session id -> multiplex channel id + this screen's listener teardown.
+type MultiChannelEntry = { channelId: string; unsubscribe: () => void };
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
   const Wrapper = SafeAreaView;
-  const { id, name, hostId, mode } = useLocalSearchParams<{ id: string; name: string; hostId: string; mode?: string }>();
+  const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
+  const { state, closeTab } = useTabStore();
+  const tab = state.tabs.find((t): t is TerminalWorkspaceTab => t.tabId === id && t.kind === 'terminal') ?? null;
   const [output, setOutput] = useState('');
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
@@ -29,71 +36,87 @@ export default function TerminalScreen() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
-  const socket = useRef<SessionSocket | undefined>(undefined);
-  const isMultiModeCheck = mode === "multi";
-  const multiSocketsRef = useRef<Record<string, SessionSocket>>({});
+  const channelRef = useRef<DaemonChannel | null>(null);
+  const primaryUnsubscribeRef = useRef<(() => void) | null>(null);
+  const isMultiModeCheck = mode === 'multi';
+  const multiChannelsRef = useRef<Record<string, MultiChannelEntry>>({});
   const multiInitializedRef = useRef(false); // ponytail: guards the one-shot initial-session effect so a closed/not-found session never retriggers it
   // Guards natural-exit and manual-Close from racing each other into a double
   // REST close / double navigation (closing triggers the daemon's own `exited` frame).
   const finishingRef = useRef(false);
   const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
 
-  const finish = useCallback(async (current: Connection) => {
-    if (finishingRef.current) return;
+  const finish = useCallback(async () => {
+    if (finishingRef.current || !tab) return;
     finishingRef.current = true;
-    socket.current?.close();
+    primaryUnsubscribeRef.current?.();
     setOutput('');
-    try {
-      await new AgenticRemoteAPI(current).closeSession(id);
-    } catch (error) {
-      if (!(error instanceof APIError && error.status === 404)) {
-        Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
+    if (connection) {
+      try {
+        await new AgenticRemoteAPI(connection).closeSession(tab.remoteSessionId);
+      } catch (error) {
+        if (!(error instanceof APIError && error.status === 404)) {
+          Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
+        }
       }
+      channelRef.current?.closeChannel(tab.remoteSessionId);
     }
+    closeTab(tab.tabId);
     router.replace('/');
-  }, [id]);
+  }, [tab, connection, closeTab]);
 
-  const connect = useCallback((current: Connection) => {
-    if (!id) return;
-    setOutput(''); // Subscription replays complete scrollback after each reconnect.
-    socket.current = new SessionSocket(
-      current,
-      id,
-      (data) => setOutput((existing) => existing + data),
-      (state) => { if (state === 'exited') void finish(current); },
-      (message, code) => {
-        if (code === 'session_not_found') { void finish(current); return; }
-        Alert.alert('Terminal', message);
-      },
-    );
-    socket.current.connect();
-  }, [id, finish]);
+  // Subscribes this screen to the tab's primary multiplex channel. Reconnect
+  // (e.g. re-entering the tab) replays complete scrollback since `output` is
+  // screen-local state, not persisted on the tab itself.
+  const connect = useCallback(() => {
+    const channel = channelRef.current;
+    if (!tab || !channel) return;
+    setOutput('');
+    const decoder = new TextDecoder();
+    primaryUnsubscribeRef.current = channel.subscribe(tab.remoteSessionId, (msg) => {
+      if (msg.type === 'pty.output') {
+        const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
+        if (chunk) setOutput((existing) => existing + chunk);
+      } else if (msg.type === 'session.state') {
+        if (msg.state === 'exited') void finish();
+      } else if (msg.type === 'error') {
+        if (msg.code === 'session_not_found') { void finish(); return; }
+        Alert.alert('Terminal', msg.message);
+      }
+    });
+  }, [tab, finish]);
 
   useEffect(() => {
+    if (!tab) {
+      Alert.alert('Could not load daemon connection');
+      router.replace('/');
+      return;
+    }
     void loadConnections().then((store) => {
-      const resolved = getConnection(store, hostId ?? null);
+      const resolved = getConnection(store, tab.daemonId);
       if (!resolved) {
         Alert.alert('Could not load daemon connection');
         router.replace('/');
         return;
       }
+      channelRef.current = createDaemonChannel(resolved);
       setConnection(resolved);
-      if (!isMultiModeCheck) connect(resolved);
     });
-    return () => socket.current?.close();
-  }, [connect, hostId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab?.tabId]);
+
+  // Runs `connect()` fresh each time `connection` resolves so the
+  // subscriber closure (and `finish`'s REST-close path) sees the current
+  // `connection`, not the null captured when the mount effect above fired.
   useEffect(() => {
-    const listener = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && connection) {
-        if (!isMultiModeCheck) connect(connection);
-        Object.values(multiSocketsRef.current).forEach((s) => s.connect());
-      } else if (state === 'background') {
-        socket.current?.close();
-        Object.values(multiSocketsRef.current).forEach((s) => s.close());
-      }
-    });
-    return () => listener.remove();
-  }, [connection, connect]);
+    if (!connection || isMultiModeCheck) return;
+    connect();
+    // Unsubscribe this screen's listener only — the channel and its backend
+    // are daemon-scoped and outlive navigation; only explicit close/detach
+    // actions tear those down.
+    return () => primaryUnsubscribeRef.current?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -108,16 +131,19 @@ export default function TerminalScreen() {
       hidden.remove();
     };
   }, [insets.bottom, windowHeight]);
+
   const close = useCallback(() => {
-    if (!api || !id || finishingRef.current) return;
+    if (!api || !tab || finishingRef.current) return;
     Alert.alert('Close session?', 'This will terminate the running session.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: async () => {
         finishingRef.current = true;
         try {
-          await api.closeSession(id);
-          socket.current?.close();
+          await api.closeSession(tab.remoteSessionId);
+          primaryUnsubscribeRef.current?.();
+          channelRef.current?.closeChannel(tab.remoteSessionId);
           setOutput('');
+          closeTab(tab.tabId);
           router.replace('/');
         } catch (error) {
           finishingRef.current = false;
@@ -125,22 +151,22 @@ export default function TerminalScreen() {
         }
       } },
     ]);
-  }, [api, id]);
+  }, [api, tab, closeTab]);
 
-  // Detach: leave the process running and return to the list, no REST call.
+  // Detach: leave the process and the tab running, just stop listening here.
   const detach = useCallback(() => {
-    socket.current?.close();
+    primaryUnsubscribeRef.current?.();
     setOutput('');
     router.replace('/');
   }, []);
 
   const closeAll = useCallback(async () => {
-    socket.current?.close();
-    if (connection) {
-      const restApi = new AgenticRemoteAPI(connection);
-      for (const sessionId of Object.keys(multiSocketsRef.current)) {
-        const s = multiSocketsRef.current[sessionId];
-        if (s) s.close();
+    const channel = channelRef.current;
+    const restApi = connection && new AgenticRemoteAPI(connection);
+    for (const [sessionId, entry] of Object.entries(multiChannelsRef.current)) {
+      entry.unsubscribe();
+      channel?.closeChannel(entry.channelId);
+      if (restApi) {
         try {
           await restApi.closeSession(sessionId);
         } catch (error) {
@@ -148,11 +174,11 @@ export default function TerminalScreen() {
         }
       }
     }
-    Object.values(multiSocketsRef.current).forEach((s) => s.close());
-    multiSocketsRef.current = {};
+    multiChannelsRef.current = {};
     setMultiSessions({});
+    if (tab) closeTab(tab.tabId);
     router.replace('/');
-  }, [connection]);
+  }, [connection, tab, closeTab]);
 
   const handleCloseAll = useCallback(() => {
     Alert.alert('Close all sessions?', 'This will terminate every running session.', [
@@ -161,49 +187,44 @@ export default function TerminalScreen() {
     ]);
   }, [closeAll]);
 
+  // Local-only cleanup for a multi-pane session the daemon already ended
+  // (exited state or session_not_found) — no redundant REST close call.
+  const dropMultiSession = useCallback((sessionId: string) => {
+    const entry = multiChannelsRef.current[sessionId];
+    if (entry) {
+      entry.unsubscribe();
+      channelRef.current?.closeChannel(entry.channelId);
+      delete multiChannelsRef.current[sessionId];
+    }
+    setMultiSessions((prev) => closeSession(prev, sessionId));
+  }, []);
 
   // Multi-window handlers
   const handleAddSession = useCallback((sessionId: string, sessionName: string) => {
-    if (!connection || multiSocketsRef.current[sessionId]) return;
-    const newSession: MultiSessionState = {
-      sessionId,
-      name: sessionName,
-      hostId: connection.hostId,
-      output: '',
-    };
-    const newSocket = new SessionSocket(
-      connection,
-      sessionId,
-      (data) => setMultiSessions((prev) => updateOutput(prev, sessionId, prev[sessionId]?.output + data)),
-      (state) => {
-        if (state === 'exited') {
-          multiSocketsRef.current[sessionId]?.close();
-          delete multiSocketsRef.current[sessionId];
-          setMultiSessions((prev) => closeSession(prev, sessionId));
+    const channel = channelRef.current;
+    if (!tab || !channel || multiChannelsRef.current[sessionId]) return;
+    void (async () => {
+      const channelId = await channel.openChannel('terminal', { sessionId });
+      const decoder = new TextDecoder();
+      const unsubscribe = channel.subscribe(channelId, (msg) => {
+        if (msg.type === 'pty.output') {
+          const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
+          if (chunk) setMultiSessions((prev) => updateOutput(prev, sessionId, (prev[sessionId]?.output ?? '') + chunk));
+        } else if (msg.type === 'session.state') {
+          if (msg.state === 'exited') dropMultiSession(sessionId);
+        } else if (msg.type === 'error') {
+          if (msg.code === 'session_not_found') { dropMultiSession(sessionId); return; }
+          Alert.alert('Terminal', msg.message);
         }
-      },
-      (message, code) => {
-        if (code === 'session_not_found') {
-          multiSocketsRef.current[sessionId]?.close();
-          delete multiSocketsRef.current[sessionId];
-          setMultiSessions((prev) => closeSession(prev, sessionId));
-          return;
-        }
-        Alert.alert('Terminal', message);
-      },
-    );
-    newSocket.connect();
-    newSession.socket = newSocket;
-    multiSocketsRef.current[sessionId] = newSocket;
-    setMultiSessions((prev) => addSession(prev, newSession));
-  }, [connection]);
+      });
+      multiChannelsRef.current[sessionId] = { channelId, unsubscribe };
+      setMultiSessions((prev) => addSession(prev, { sessionId, name: sessionName, hostId: tab.daemonId, output: '' }));
+    })();
+  }, [tab, dropMultiSession]);
 
   const handleCloseSession = useCallback(async (sessionId: string) => {
-    const s = multiSocketsRef.current[sessionId];
-    if (!s || !connection) return;
-    s.close();
-    delete multiSocketsRef.current[sessionId];
-    setMultiSessions((prev) => closeSession(prev, sessionId));
+    if (!multiChannelsRef.current[sessionId] || !connection) return;
+    dropMultiSession(sessionId);
     try {
       await new AgenticRemoteAPI(connection).closeSession(sessionId);
     } catch (error) {
@@ -211,30 +232,35 @@ export default function TerminalScreen() {
         Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
       }
     }
-  }, [connection]);
-
+  }, [connection, dropMultiSession]);
 
   const handleInput = useCallback((sessionId: string, data: string) => {
+    const channel = channelRef.current;
+    if (!channel) return;
+    const send = (targetSessionId: string) => {
+      const entry = multiChannelsRef.current[targetSessionId];
+      if (entry) channel.send({ channelId: entry.channelId, kind: 'terminal', type: 'pty.input', data: base64(utf8(data)) });
+    };
     if (isBroadcasting) {
-      Object.values(multiSocketsRef.current).forEach((s) => s.input(data));
+      Object.keys(multiChannelsRef.current).forEach(send);
     } else {
-      multiSocketsRef.current[sessionId]?.input(data);
+      send(sessionId);
     }
   }, [isBroadcasting]);
 
-
-
   const handleResize = useCallback((sessionId: string, cols: number, rows: number) => {
-    multiSocketsRef.current[sessionId]?.resize(cols, rows);
+    const channel = channelRef.current;
+    const entry = multiChannelsRef.current[sessionId];
+    if (channel && entry) channel.send({ channelId: entry.channelId, kind: 'terminal', type: 'pty.resize', cols, rows });
   }, []);
 
   // Initialize first session in multi-mode; runs once per screen mount, not on every empty-state dip.
   useEffect(() => {
-    if (isMultiModeCheck && connection && id && !multiInitializedRef.current) {
+    if (isMultiModeCheck && tab && connection && !multiInitializedRef.current) {
       multiInitializedRef.current = true;
-      handleAddSession(id, name || 'Shell');
+      handleAddSession(tab.remoteSessionId, tab.title || 'Shell');
     }
-  }, [isMultiModeCheck, connection, id, name, handleAddSession]);
+  }, [isMultiModeCheck, tab, connection, handleAddSession]);
 
   if (isMultiModeCheck) {
     return <Wrapper {...wrapperProps}>
@@ -287,16 +313,16 @@ export default function TerminalScreen() {
     <Stack.Screen options={{ headerShown: false }} />
     <View style={styles.header}>
       <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}><Feather name="arrow-left" size={20} color="#46B8C4" /></Pressable>
-      <Text style={styles.title} numberOfLines={1}>{name || 'Terminal'}</Text>
+      <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Terminal'}</Text>
       <View style={styles.actions}>
         <Pressable accessibilityLabel="Clear" onPress={() => setOutput('')} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="trash-2" size={18} color="#B8B8B8" /></Pressable>
         <Pressable accessibilityLabel="Close session" onPress={close} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="x" size={20} color="#EF6666" /></Pressable>
       </View>
     </View>
     <View style={styles.terminal}>
-      {connection ? <Terminal ref={terminalRef} output={output} onInput={(data) => shortcutKeyboardRef.current?.input(data)} onResize={(cols, rows) => socket.current?.resize(cols, rows)} /> : <Text style={styles.connecting}>Connecting…</Text>}
+      {connection && tab ? <Terminal ref={terminalRef} output={output} onInput={(data) => shortcutKeyboardRef.current?.input(data)} onResize={(cols, rows) => channelRef.current?.send({ channelId: tab.remoteSessionId, kind: 'terminal', type: 'pty.resize', cols, rows })} /> : <Text style={styles.connecting}>Connecting…</Text>}
     </View>
-    <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => socket.current?.input(data)} bottomInset={insets.bottom} keyboardInset={keyboardInset} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
+    <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => tab && channelRef.current?.send({ channelId: tab.remoteSessionId, kind: 'terminal', type: 'pty.input', data: base64(utf8(data)) })} bottomInset={insets.bottom} keyboardInset={keyboardInset} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
     </KeyboardAvoidingView>
   </Wrapper>;
 }
