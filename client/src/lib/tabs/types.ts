@@ -1,9 +1,8 @@
 import type { WaitState } from '../../protocol';
-import type { RpcExtensionUIRequest, RpcSessionState } from './rpc-types';
 
 export type DaemonId = string; // = Connection.hostId, existing identity
 
-export type TabKind = 'agent' | 'terminal' | 'files' | 'desktop';
+export type TabKind = 'terminal' | 'files' | 'desktop';
 
 interface BaseTab {
   tabId: string; // stable local id, independent of remoteSessionId
@@ -22,13 +21,6 @@ export interface TerminalWorkspaceTab extends BaseTab {
   waitState?: WaitState;
 }
 
-export interface AgentWorkspaceTab extends BaseTab {
-  kind: 'agent';
-  remoteSessionId: string; // OMP rpc process handle on the daemon
-  adapter: 'omp'; // widen when a 2nd adapter ships
-  sessionState: RpcSessionState | null; // last get_state snapshot
-  pendingApproval: RpcExtensionUIRequest | null;
-}
 
 export interface FilesWorkspaceTab extends BaseTab {
   kind: 'files';
@@ -41,7 +33,7 @@ export interface DesktopWorkspaceTab extends BaseTab {
   state: 'connecting' | 'connected' | 'disconnected';
 }
 
-export type WorkspaceTab = TerminalWorkspaceTab | AgentWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab;
+export type WorkspaceTab = TerminalWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab;
 
 export type SplitLayout = {
   direction?: 'horizontal' | 'vertical';
