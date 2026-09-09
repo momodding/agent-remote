@@ -2,7 +2,6 @@ import { AgenticRemoteAPI } from './api';
 import { base64, decodeBase64 } from './bytes';
 import type { Connection } from './connection';
 import type { SessionSummary, WaitState } from '../protocol';
-import type { AgentSessionEvent, RpcCommand, RpcResponse } from './tabs/rpc-types';
 import type { DaemonId, TabKind } from './tabs/types';
 
 export const flushImmediate = (fn: () => void): (() => void) => {
@@ -26,7 +25,6 @@ export type PTYChannelFrame =
   | { type: 'pty.resize'; cols: number; rows: number } // client -> server
   | { type: 'session.state'; state: SessionSummary['state']; waitState?: WaitState }; // server -> client
 
-export type AgentChannelFrame = RpcCommand | RpcResponse | AgentSessionEvent;
 
 export type DesktopChannelFrame =
   | { type: 'vnc.data'; data: string } // base64 raw RFB bytes, bidirectional
@@ -34,11 +32,11 @@ export type DesktopChannelFrame =
 
 type ErrorChannelFrame = { type: 'error'; code: string; message: string };
 
-export type ChannelFramePayload = PTYChannelFrame | AgentChannelFrame | DesktopChannelFrame | ErrorChannelFrame;
+export type ChannelFramePayload = PTYChannelFrame | DesktopChannelFrame | ErrorChannelFrame;
 
 /**
- * Every PTY/agent-RPC/VNC-byte frame gets tagged with the tab's `channelId`
- * so N tabs share multiplexing routing.
+ * Every PTY/VNC-byte frame gets tagged with the tab's `channelId`
+ * so tabs share multiplexing routing.
  */
 export type ChannelEnvelope = { channelId: string; kind: TabKind } & ChannelFramePayload;
 
@@ -85,9 +83,6 @@ export class WebSocketDaemonChannel implements DaemonChannel {
         rows: typeof meta.rows === 'number' ? meta.rows : 24,
       });
       return session.id;
-    }
-    if (kind === 'agent') {
-      throw new Error('Agent RPC sessions are not supported by this daemon. Open a terminal session to run an agent CLI.');
     }
     if (kind === 'desktop') {
       return typeof meta.channelId === 'string' && meta.channelId ? meta.channelId : 'vnc';
@@ -145,14 +140,6 @@ export class WebSocketDaemonChannel implements DaemonChannel {
           this.queuePending(channelId, u8);
           this.ensureSocket(channelId);
         }
-      }
-    } else if (kind === 'agent') {
-      const payload = { ...envelope };
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(payload));
-      } else {
-        this.queuePending(channelId, payload);
-        this.ensureSocket(channelId);
       }
     }
   }

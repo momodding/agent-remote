@@ -243,14 +243,11 @@ describe('dashboard tab deck actions', () => {
 
   it('renders active tabs bound to daemons and opens them', async () => {
     mockTabStoreState.tabs = [
-      { tabId: 'tab-1', daemonId: first.hostId, kind: 'agent', title: 'Agent Session', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'sess', adapter: 'omp', sessionState: null, pendingApproval: null },
       { tabId: 'tab-2', daemonId: second.hostId, kind: 'desktop', title: 'Desktop', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'sess', state: 'connected' }
     ];
     
     const tree = await renderDashboard();
     
-    // Checks that they render correctly in the deck grid under correct daemon
-    expect(tree.root.findByProps({ children: 'Agent Session' })).toBeTruthy();
     expect(tree.root.findByProps({ children: 'Desktop' })).toBeTruthy();
     
     act(() => { actionFor(tree, 'Open tab Desktop')(); });

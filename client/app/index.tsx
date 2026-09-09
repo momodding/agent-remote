@@ -134,7 +134,6 @@ export default function TabDeckScreen() {
   const openTab = (tab: WorkspaceTab) => {
     activateTab(tab.tabId);
     if (tab.kind === 'terminal') router.push({ pathname: '/terminal/[id]', params: { id: tab.tabId } });
-    else if (tab.kind === 'agent') router.push({ pathname: '/agent/[id]', params: { id: tab.tabId } });
     else if (tab.kind === 'files') router.push({ pathname: '/files/[id]', params: { id: tab.tabId } });
     else if (tab.kind === 'desktop') router.push({ pathname: '/desktop', params: { tabId: tab.tabId } });
   };
@@ -189,14 +188,13 @@ export default function TabDeckScreen() {
                     <Pressable key={tab.tabId} accessibilityLabel={`Open tab ${tab.title}`} style={styles.tabCard} onPress={() => openTab(tab)}>
                       <View style={styles.tabIcon}>
                         {tab.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
-                        {tab.kind === 'agent' && <Feather name="cpu" size={20} color="#46B8C4" />}
                         {tab.kind === 'files' && <Feather name="folder" size={20} color="#F19999" />}
                         {tab.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
                       </View>
                       <View style={styles.tabContent}>
                         <Text style={styles.tabTitle} numberOfLines={1}>{tab.title}</Text>
                         <Text style={styles.tabStatus} numberOfLines={1}>
-                          {tab.kind === 'terminal' || tab.kind === 'desktop' ? tab.state : tab.kind === 'agent' ? tab.sessionState?.thinkingLevel ?? 'Ready' : 'Navigating'}
+                          {tab.kind === 'terminal' || tab.kind === 'desktop' ? tab.state : 'Navigating'}
                         </Text>
                       </View>
                       <Pressable accessibilityLabel={`Close tab ${tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>
