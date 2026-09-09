@@ -118,6 +118,9 @@ describe('native (WebView) desktop', () => {
     expect(html).toContain('class BridgeWebSocket');
     expect(html).toContain('new window.RFB(screen, "ws://bridge")');
     expect(html).toContain("this.protocol = '';");
+    expect(html).toContain('this.onerror = null;');
+    expect(html).toContain('this.onmessage = null;');
+    expect(html).toContain('this.onopen = null;');
     expect(html).toContain('window.ReactNativeWebView?.postMessage');
   });
 
@@ -197,6 +200,9 @@ describe('web (iframe) desktop', () => {
     expect(html).not.toContain('cdn.jsdelivr.net');
     expect(html).toContain('class BridgeWebSocket');
     expect(html).toContain("this.protocol = '';");
+    expect(html).toContain('this.onerror = null;');
+    expect(html).toContain('this.onmessage = null;');
+    expect(html).toContain('this.onopen = null;');
     expect(html).toContain('Creating RFB…');
   });
 

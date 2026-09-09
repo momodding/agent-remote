@@ -64,6 +64,9 @@ class BridgeWebSocket {
     this.readyState = 0;
     this.binaryType = 'arraybuffer';
     this.protocol = '';
+    this.onerror = null;
+    this.onmessage = null;
+    this.onopen = null;
     setTimeout(() => {
       this.readyState = 1;
       if (this.onopen) this.onopen();
