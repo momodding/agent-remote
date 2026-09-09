@@ -89,19 +89,7 @@ export default function TabDeckScreen() {
 
     try {
       // ponyfill opening logic (some tabs need synchronous API call before opening async channel, defer specific setup logic to when the route actually mounts vs. doing it here)
-      if (kind === 'agent') {
-        const remoteSessionId = await channel.openChannel('agent', {});
-        dispatch(prev => {
-          const tabs = [...prev.tabs];
-          tabs.push({
-            tabId, daemonId: hostId, kind: 'agent', title: 'Agent Session',
-            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-            remoteSessionId, adapter: 'omp', sessionState: null, pendingApproval: null
-          });
-          return { ...prev, tabs, activeId: tabId };
-        });
-        router.push({ pathname: '/agent/[id]', params: { id: tabId } });
-      } else if (kind === 'terminal') {
+      if (kind === 'terminal') {
         const remoteSessionId = await channel.openChannel('terminal', {});
         dispatch(prev => {
           const tabs = [...prev.tabs];
@@ -181,9 +169,6 @@ export default function TabDeckScreen() {
                 <Text style={styles.daemonSectionSub}>{new URL(connection.endpoint).host}</Text>
                 
                 <View style={styles.daemonToolbar}>
-                  <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
-                    <Feather name="cpu" size={16} color="#F0F0F0" />
-                  </Pressable>
                   <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
                     <Feather name="terminal" size={16} color="#F0F0F0" />
                   </Pressable>

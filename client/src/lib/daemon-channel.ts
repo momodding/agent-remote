@@ -87,18 +87,7 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       return session.id;
     }
     if (kind === 'agent') {
-      if (typeof meta.sessionId === 'string' && meta.sessionId) {
-        return meta.sessionId;
-      }
-      const session = await this.api.createSession({
-        name: typeof meta.name === 'string' ? meta.name : 'Agent',
-        command: typeof meta.command === 'string' ? meta.command : typeof meta.shell === 'string' ? meta.shell : 'omp',
-        args: Array.isArray(meta.args) ? (meta.args as string[]) : [],
-        cwd: typeof meta.cwd === 'string' ? meta.cwd : '',
-        cols: typeof meta.cols === 'number' ? meta.cols : 80,
-        rows: typeof meta.rows === 'number' ? meta.rows : 24,
-      });
-      return session.id;
+      throw new Error('Agent RPC sessions are not supported by this daemon. Open a terminal session to run an agent CLI.');
     }
     if (kind === 'desktop') {
       return typeof meta.channelId === 'string' && meta.channelId ? meta.channelId : 'vnc';
@@ -221,8 +210,6 @@ export class WebSocketDaemonChannel implements DaemonChannel {
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'session.state', state: frame.state, waitState: frame.waitState });
           } else if (frame.type === 'error') {
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'error', code: frame.code, message: frame.message });
-          } else {
-            this.dispatch(channelId, { channelId, kind: 'agent', ...frame });
           }
         } catch {}
       }
@@ -235,6 +222,7 @@ export class WebSocketDaemonChannel implements DaemonChannel {
     socket.onclose = () => {
       this.sockets.delete(channelId);
     };
+
   }
 
   private queuePending(channelId: string, item: string | ArrayBuffer | ArrayBufferView | object): void {
