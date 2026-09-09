@@ -149,7 +149,7 @@ export default function TabDeckScreen() {
   };
 
   if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
-  if (store.connections.length === 0) return <><SafeAreaView style={styles.empty}><Text style={styles.wordmark}>agenticRemote</Text><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></SafeAreaView><PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} /></>;
+  // ponytail: render the normal shell, put the empty state in the content area instead of replacing the whole screen
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -167,7 +167,8 @@ export default function TabDeckScreen() {
       <FlatList 
         data={store.connections} 
         keyExtractor={(p) => p.hostId} 
-        contentContainerStyle={styles.deck}
+        contentContainerStyle={store.connections.length === 0 ? [styles.deck, { flex: 1 }] : styles.deck}
+        ListEmptyComponent={<View style={styles.emptyShell}><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></View>}
         renderItem={({ item: connection }) => {
           const matchedTabs = state.tabs.filter(t => t.daemonId === connection.hostId);
           return (
@@ -232,7 +233,7 @@ export default function TabDeckScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0A0A0A' }, 
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0A0A0A' }, 
-  empty: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', padding: 28, gap: 16 }, 
+  emptyShell: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 28, gap: 16 }, 
   wordmark: { color: '#F0F0F0', fontWeight: '800', fontSize: 21 }, 
   emptyTitle: { color: '#F0F0F0', fontSize: 24, fontWeight: '700' }, 
   emptyText: { color: '#B8B8B8', fontSize: 16, lineHeight: 23, maxWidth: 520 }, 
