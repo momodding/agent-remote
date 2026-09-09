@@ -33,6 +33,7 @@ window.addEventListener('unhandledrejection', () => report('Desktop view failed'
 window.addEventListener('message', (event) => {
   if (event.data?.type === 'key') window.rfb?.sendKey(event.data.keysym, event.data.name);
   else if (event.data?.type === 'ctrl-alt-delete') window.rfb?.sendCtrlAltDel();
+  else if (event.data?.type === 'status-override') report(event.data.message);
   else if (event.data?.type === 'vnc.data') {
     if (window.__rfb_ws && window.__rfb_ws.onmessage) {
       window.__rfb_ws.onmessage({ data: base64ToU8(event.data.data).buffer });
@@ -116,6 +117,8 @@ export default function DesktopScreenWeb() {
         unsubscribeRef.current = channelRef.current.subscribe(tab.remoteSessionId, (msg) => {
           if (msg.type === 'vnc.data' && iframeRef.current?.contentWindow) {
             iframeRef.current.contentWindow.postMessage({ type: 'vnc.data', data: msg.data }, '*');
+          } else if (msg.type === 'error') {
+            send({ type: 'status-override', message: msg.message });
           }
         });
       }

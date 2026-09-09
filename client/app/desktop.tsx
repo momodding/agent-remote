@@ -110,6 +110,8 @@ export default function DesktopScreen() {
         unsubscribeRef.current = channelRef.current.subscribe(tab.remoteSessionId, (msg) => {
           if (msg.type === 'vnc.data' && webRef.current) {
             webRef.current.injectJavaScript(`if (window.__rfb_ws && window.__rfb_ws.onmessage) { window.__rfb_ws.onmessage({ data: base64ToU8('${msg.data}').buffer }); } true;`);
+          } else if (msg.type === 'error') {
+            setStatus(msg.message);
           }
         });
       }
