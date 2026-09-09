@@ -13,4 +13,8 @@ describe('daemon-channel', () => {
     expect(channelRegistry.get('host-123')).toBe(channel);
     expect(channel).toBeInstanceOf(WebSocketDaemonChannel);
   });
+
+  it('rejects agent channels until the daemon exposes an RPC endpoint', async () => {
+    await expect(new WebSocketDaemonChannel(conn).openChannel('agent', {})).rejects.toThrow('Agent RPC sessions are not supported');
+  });
 });
