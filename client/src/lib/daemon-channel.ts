@@ -90,24 +90,20 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       if (typeof meta.sessionId === 'string' && meta.sessionId) {
         return meta.sessionId;
       }
-      try {
-        const session = await this.api.createSession({
-          name: typeof meta.name === 'string' ? meta.name : 'Agent',
-          command: typeof meta.command === 'string' ? meta.command : typeof meta.shell === 'string' ? meta.shell : 'omp',
-          args: Array.isArray(meta.args) ? (meta.args as string[]) : [],
-          cwd: typeof meta.cwd === 'string' ? meta.cwd : '',
-          cols: typeof meta.cols === 'number' ? meta.cols : 80,
-          rows: typeof meta.rows === 'number' ? meta.rows : 24,
-        });
-        return session.id;
-      } catch {
-        return `agent-${Date.now()}`;
-      }
+      const session = await this.api.createSession({
+        name: typeof meta.name === 'string' ? meta.name : 'Agent',
+        command: typeof meta.command === 'string' ? meta.command : typeof meta.shell === 'string' ? meta.shell : 'omp',
+        args: Array.isArray(meta.args) ? (meta.args as string[]) : [],
+        cwd: typeof meta.cwd === 'string' ? meta.cwd : '',
+        cols: typeof meta.cols === 'number' ? meta.cols : 80,
+        rows: typeof meta.rows === 'number' ? meta.rows : 24,
+      });
+      return session.id;
     }
     if (kind === 'desktop') {
       return typeof meta.channelId === 'string' && meta.channelId ? meta.channelId : 'vnc';
     }
-    return (meta.channelId as string) || `chan-${Date.now()}`;
+    throw new Error(`openChannel: unsupported tab kind "${kind}"`);
   }
 
   subscribe(channelId: string, fn: (msg: ChannelEnvelope) => void): () => void {

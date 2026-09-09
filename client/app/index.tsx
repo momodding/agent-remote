@@ -86,57 +86,60 @@ export default function TabDeckScreen() {
     }
     const channel = createDaemonChannel(connection);
     const tabId = Crypto.randomUUID();
-    
-    // ponyfill opening logic (some tabs need synchronous API call before opening async channel, defer specific setup logic to when the route actually mounts vs. doing it here)
-    if (kind === 'agent') {
-      const remoteSessionId = await channel.openChannel('agent', {});
-      dispatch(prev => {
-        const tabs = [...prev.tabs];
-        tabs.push({ 
-          tabId, daemonId: hostId, kind: 'agent', title: 'Agent Session', 
-          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-          remoteSessionId, adapter: 'omp', sessionState: null, pendingApproval: null
+
+    try {
+      // ponyfill opening logic (some tabs need synchronous API call before opening async channel, defer specific setup logic to when the route actually mounts vs. doing it here)
+      if (kind === 'agent') {
+        const remoteSessionId = await channel.openChannel('agent', {});
+        dispatch(prev => {
+          const tabs = [...prev.tabs];
+          tabs.push({
+            tabId, daemonId: hostId, kind: 'agent', title: 'Agent Session',
+            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+            remoteSessionId, adapter: 'omp', sessionState: null, pendingApproval: null
+          });
+          return { ...prev, tabs, activeId: tabId };
         });
-        return { ...prev, tabs, activeId: tabId };
-      });
-      router.push({ pathname: '/agent/[id]', params: { id: tabId } });
-    } else if (kind === 'terminal') {
-      // Mock adapters will handle real PTY setup in subsequent phase; just create tab object and frame now
-      const remoteSessionId = await channel.openChannel('terminal', {});
-      dispatch(prev => {
-        const tabs = [...prev.tabs];
-        tabs.push({
-          tabId, daemonId: hostId, kind: 'terminal', title: 'Shell',
-          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-          remoteSessionId, state: 'connecting'
+        router.push({ pathname: '/agent/[id]', params: { id: tabId } });
+      } else if (kind === 'terminal') {
+        const remoteSessionId = await channel.openChannel('terminal', {});
+        dispatch(prev => {
+          const tabs = [...prev.tabs];
+          tabs.push({
+            tabId, daemonId: hostId, kind: 'terminal', title: 'Shell',
+            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+            remoteSessionId, state: 'connecting'
+          });
+          return { ...prev, tabs, activeId: tabId };
         });
-        return { ...prev, tabs, activeId: tabId };
-      });
-      router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
-    } else if (kind === 'files') {
-      // Files is REST only, no openChannel call
-      dispatch(prev => {
-        const tabs = [...prev.tabs];
-        tabs.push({
-          tabId, daemonId: hostId, kind: 'files', title: 'Files',
-          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, cwd: ''
+        router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
+      } else if (kind === 'files') {
+        // Files is REST only, no openChannel call
+        dispatch(prev => {
+          const tabs = [...prev.tabs];
+          tabs.push({
+            tabId, daemonId: hostId, kind: 'files', title: 'Files',
+            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, cwd: ''
+          });
+          return { ...prev, tabs, activeId: tabId };
         });
-        return { ...prev, tabs, activeId: tabId };
-      });
-      router.push({ pathname: '/files/[id]', params: { id: tabId } });
-    } else if (kind === 'desktop') {
-      const remoteSessionId = await channel.openChannel('desktop', {});
-      dispatch(prev => {
-        const tabs = [...prev.tabs];
-        tabs.push({
-          tabId, daemonId: hostId, kind: 'desktop', title: 'Desktop',
-          createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-          remoteSessionId, state: 'connecting'
+        router.push({ pathname: '/files/[id]', params: { id: tabId } });
+      } else if (kind === 'desktop') {
+        const remoteSessionId = await channel.openChannel('desktop', {});
+        dispatch(prev => {
+          const tabs = [...prev.tabs];
+          tabs.push({
+            tabId, daemonId: hostId, kind: 'desktop', title: 'Desktop',
+            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+            remoteSessionId, state: 'connecting'
+          });
+          return { ...prev, tabs, activeId: tabId };
         });
-        return { ...prev, tabs, activeId: tabId };
-      });
-      // ponytail: router format change per native/web divergence isn't strictly necessary for deck state
-      router.push({ pathname: '/desktop', params: { tabId } });
+        // ponytail: router format change per native/web divergence isn't strictly necessary for deck state
+        router.push({ pathname: '/desktop', params: { tabId } });
+      }
+    } catch (error) {
+      Alert.alert('Could not open tab', error instanceof Error ? error.message : 'Daemon rejected the session request.');
     }
   };
   
