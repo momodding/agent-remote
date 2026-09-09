@@ -117,6 +117,7 @@ describe('native (WebView) desktop', () => {
     const html = tree.root.findByType('WebView' as never).props.source.html as string;
     expect(html).toContain('class BridgeWebSocket');
     expect(html).toContain('new window.RFB(screen, "ws://bridge")');
+    expect(html).toContain("this.protocol = '';");
     expect(html).toContain('window.ReactNativeWebView?.postMessage');
   });
 
@@ -195,6 +196,7 @@ describe('web (iframe) desktop', () => {
     expect(html).toContain('/* novnc */');
     expect(html).not.toContain('cdn.jsdelivr.net');
     expect(html).toContain('class BridgeWebSocket');
+    expect(html).toContain("this.protocol = '';");
     expect(html).toContain('Creating RFB…');
   });
 
