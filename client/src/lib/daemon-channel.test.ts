@@ -1,4 +1,4 @@
-import { createDaemonChannel, channelRegistry } from './daemon-channel';
+import { createDaemonChannel, channelRegistry, WebSocketDaemonChannel } from './daemon-channel';
 import type { Connection } from './connection';
 
 const conn: Connection = {
@@ -7,9 +7,10 @@ const conn: Connection = {
 };
 
 describe('daemon-channel', () => {
-  it('creates mock channel per connection', () => {
+  it('creates channel per connection', () => {
     const channel = createDaemonChannel(conn);
     expect(channel.daemonId).toBe('host-123');
     expect(channelRegistry.get('host-123')).toBe(channel);
+    expect(channel).toBeInstanceOf(WebSocketDaemonChannel);
   });
 });
