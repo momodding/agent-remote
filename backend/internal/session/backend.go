@@ -3,9 +3,10 @@ package session
 import (
 	"os"
 	"os/exec"
+	"strconv"
+	"sync"
 
 	"github.com/creack/pty"
-	"strconv"
 )
 
 type TerminalBackend interface {
@@ -18,8 +19,10 @@ type TerminalBackend interface {
 }
 
 type PtyBackend struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	mu     sync.RWMutex
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	closed bool
 }
 
 func newPtyBackend(cmd *exec.Cmd, cols, rows int) (*PtyBackend, error) {
@@ -30,18 +33,63 @@ func newPtyBackend(cmd *exec.Cmd, cols, rows int) (*PtyBackend, error) {
 	return &PtyBackend{cmd: cmd, ptmx: ptmx}, nil
 }
 
-func (b *PtyBackend) Read(data []byte) (int, error)  { return b.ptmx.Read(data) }
-func (b *PtyBackend) Write(data []byte) (int, error) { return b.ptmx.Write(data) }
-func (b *PtyBackend) Resize(cols, rows int) error {
-	return pty.Setsize(b.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+func (b *PtyBackend) file() (*os.File, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed || b.ptmx == nil {
+		return nil, os.ErrClosed
+	}
+	return b.ptmx, nil
 }
+
+func (b *PtyBackend) Read(data []byte) (int, error) {
+	file, err := b.file()
+	if err != nil {
+		return 0, err
+	}
+	return file.Read(data)
+}
+
+func (b *PtyBackend) Write(data []byte) (int, error) {
+	file, err := b.file()
+	if err != nil {
+		return 0, err
+	}
+	return file.Write(data)
+}
+
+func (b *PtyBackend) Resize(cols, rows int) error {
+	file, err := b.file()
+	if err != nil {
+		return err
+	}
+	return pty.Setsize(file, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+}
+
 func (b *PtyBackend) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	file := b.ptmx
+	b.ptmx = nil
+	b.mu.Unlock()
 	if b.cmd.Process != nil {
 		_ = b.cmd.Process.Kill()
 	}
-	return b.ptmx.Close()
+	if file == nil {
+		return nil
+	}
+	return file.Close()
 }
-func (b *PtyBackend) Alive() bool { return b.ptmx != nil }
+
+func (b *PtyBackend) Alive() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return !b.closed && b.ptmx != nil
+}
 func (b *PtyBackend) Identity() string {
 	if b.cmd.Process == nil {
 		return ""

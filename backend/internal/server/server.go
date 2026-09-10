@@ -26,6 +26,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/config"
 	fsservice "github.com/agenticremote/agenticremote/backend/internal/fs"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
 	"github.com/coder/websocket"
@@ -40,6 +41,11 @@ type SessionAPI interface {
 	Subscribe(string, func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
+type RuntimeAPI interface {
+	RuntimeSnapshot() (*runtimestore.Snapshot, error)
+	RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error)
+}
+
 type NotifyAPI interface {
 	RegisterToken(context.Context, protocol.NotifyRegisterRequest) error
 }
@@ -49,6 +55,7 @@ type Server struct {
 	fs              *fsservice.Service
 	auth            *security.AuthService
 	sessions        SessionAPI
+	runtime         RuntimeAPI
 	notify          NotifyAPI
 	limits          *Limits
 	tls             *security.TLSMaterial
@@ -60,7 +67,12 @@ func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.Au
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
+}
+
+func runtimeAPI(sessions SessionAPI) RuntimeAPI {
+	runtime, _ := sessions.(RuntimeAPI)
+	return runtime
 }
 
 func (s *Server) Handler() http.Handler {
@@ -70,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/sessions", s.withAuth(s.handleSessions))
 	mux.HandleFunc("/v1/shells", s.withAuth(s.handleShells))
 	mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
+	mux.HandleFunc("/v1/runtime/snapshot", s.withAuth(s.handleRuntimeSnapshot))
+	mux.HandleFunc("/v1/runtime/events", s.withAuth(s.handleRuntimeEvents))
 	mux.HandleFunc("/v1/pairing", s.withAuth(s.handlePairingCreate))
 	mux.HandleFunc("/v1/fs/list", s.withAuth(s.handleFSList))
 	mux.HandleFunc("/v1/fs/search", s.withAuth(s.handleFSSearch))
@@ -203,6 +217,60 @@ func (s *Server) handleDaemonIdentity(w http.ResponseWriter, _ *http.Request) {
 			{Name: "vnc", Enabled: err == nil},
 		},
 	})
+}
+
+func (s *Server) handleRuntimeSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil {
+		writeJSON(w, http.StatusNotImplemented, protocol.ErrorEnvelope{Type: "error", Code: "runtime_unavailable", Message: "runtime persistence unavailable"})
+		return
+	}
+	snapshot, err := s.runtime.RuntimeSnapshot()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "runtime_snapshot_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil {
+		writeJSON(w, http.StatusNotImplemented, protocol.ErrorEnvelope{Type: "error", Code: "runtime_unavailable", Message: "runtime persistence unavailable"})
+		return
+	}
+	after, limit := int64(0), 100
+	var err error
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		after, err = strconv.ParseInt(raw, 10, 64)
+	}
+	if err != nil || after < 0 {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_cursor", Message: "after must be a non-negative integer"})
+		return
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+	}
+	if err != nil || limit < 0 {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_limit", Message: "limit must be a non-negative integer"})
+		return
+	}
+	events, cursor, err := s.runtime.RuntimeEvents(after, limit)
+	if errors.Is(err, runtimestore.ErrCursorExpired) {
+		writeJSON(w, http.StatusGone, protocol.ErrorEnvelope{Type: "error", Code: "cursor_expired", Message: err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "runtime_events_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "cursor": cursor})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

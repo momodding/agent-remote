@@ -321,6 +321,7 @@ func serve(configPath string) error {
 	if err != nil {
 		return err
 	}
+	defer manager.Shutdown()
 	cfg.StateDir = stateDir
 	cfg.WorkspaceRoot = workspaceRoot
 	pairingSnapshot := &security.PairingSnapshot{}

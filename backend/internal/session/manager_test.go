@@ -26,6 +26,7 @@ func TestManagerEmptyCWDUsesDefaultCWD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	defer manager.Shutdown()
 
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
@@ -63,6 +64,7 @@ func TestManagerExplicitCWDWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	defer manager.Shutdown()
 
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
@@ -93,6 +95,7 @@ func TestManagerInvalidDefaultHomeDeterministicError(t *testing.T) {
 		t.Logf("NewManager with invalid home returned error as expected: %v", err)
 		return
 	}
+	defer manager.Shutdown()
 
 	// If NewManager succeeds (with nonexistent home), Create with empty CWD must fail consistently
 	_, createErr := manager.Create(context.Background(), protocol.CreateSessionRequest{
@@ -128,6 +131,7 @@ func TestManagerEmptyCommandUsesDefaultShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	defer manager.Shutdown()
 
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
@@ -174,6 +178,7 @@ func TestManagerCreateSetsTermAndPreservesEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	defer manager.Shutdown()
 
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
@@ -216,6 +221,7 @@ func TestManagerRestoresPreviewFromScrollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer manager.Shutdown()
 	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name: "persisted", Command: "sh", Args: []string{"-c", "printf 'preview survives restart\\n'"}, CWD: defaultHome,
 	})
@@ -240,6 +246,7 @@ func TestManagerRestoresPreviewFromScrollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer restored.Shutdown()
 	sessions := restored.List(context.Background())
 	if len(sessions) != 1 || sessions[0].ID != created.ID {
 		t.Fatalf("expected restored session %q, got %+v", created.ID, sessions)

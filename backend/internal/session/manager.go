@@ -17,6 +17,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/detect"
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
 
 type State string
@@ -83,14 +84,20 @@ type Manager struct {
 	maxScrollbackBytes int64
 	channelBufferSize  int
 	notifier           notify.Notifier
+	runtime            *runtimestore.Store
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
-	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err
 	}
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store}
 	if err := m.restore(); err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return m, nil
@@ -143,6 +150,10 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 		_ = backend.Close()
 		return nil, err
 	}
+	if err := m.recordRuntime(runtime, "terminal.created"); err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
 	m.mu.Lock()
 	m.sessions[id] = runtime
 	m.mu.Unlock()
@@ -153,6 +164,27 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	}
 	copy := runtime.meta
 	return &protocol.SessionSummary{ID: copy.ID, Name: copy.Name, Command: copy.Command, CWD: copy.CWD, State: string(copy.State), CreatedAt: copy.CreatedAt, UpdatedAt: copy.UpdatedAt, Preview: copy.Preview, WaitState: protocolWait(copy.WaitState)}, nil
+}
+
+func (m *Manager) RuntimeSnapshot() (*runtimestore.Snapshot, error) { return m.runtime.Snapshot() }
+
+func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error) {
+	return m.runtime.Events(after, limit)
+}
+
+func (m *Manager) Shutdown() error {
+	m.mu.Lock()
+	sessions := make([]*TerminalRuntime, 0, len(m.sessions))
+	for _, runtime := range m.sessions {
+		sessions = append(sessions, runtime)
+	}
+	m.mu.Unlock()
+	for _, runtime := range sessions {
+		if runtime.backend != nil {
+			_ = runtime.backend.Close()
+		}
+	}
+	return m.runtime.Close()
 }
 
 func (m *Manager) List(_ context.Context) []protocol.SessionSummary {
@@ -309,6 +341,7 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 	}
 	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: runtime.seq}})
 	_ = m.saveMetadata()
+	_ = m.recordRuntime(runtime, "terminal.output")
 }
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {
@@ -320,7 +353,15 @@ func (m *Manager) markExited(runtime *TerminalRuntime) {
 		m.notify(runtime, wait)
 		m.emitState(runtime)
 		_ = m.saveMetadata()
+		_ = m.recordRuntime(runtime, "terminal.exited")
 	})
+}
+
+func (m *Manager) recordRuntime(runtime *TerminalRuntime, kind string) error {
+	return m.runtime.RecordTerminal(runtimestore.TerminalSummary{
+		ID: runtime.meta.ID, Name: runtime.meta.Name, CWD: runtime.meta.CWD, Seq: runtime.seq,
+		Exited: runtime.meta.State == StateExited, CreatedAt: runtime.meta.CreatedAt, UpdatedAt: runtime.meta.UpdatedAt,
+	}, kind)
 }
 
 func (m *Manager) emitState(runtime *TerminalRuntime) {

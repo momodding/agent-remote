@@ -21,6 +21,7 @@ import (
 
 	"github.com/agenticremote/agenticremote/backend/internal/config"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
 	"github.com/coder/websocket"
@@ -44,6 +45,49 @@ func TestSessionsRequiresBearer(t *testing.T) {
 	srv.Handler().ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+}
+
+func TestRuntimeSnapshotAndEventsRequireBearer(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	for _, path := range []string{"/v1/runtime/snapshot", "/v1/runtime/events?after=0&limit=1"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected 401, got %d", path, resp.Code)
+		}
+		req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+		resp = httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+func TestRuntimeEventsExposeCreatedSession(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "runtime", Command: "sh", Args: []string{"-c", "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/events?after=0&limit=100", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Events []runtimestore.Event `json:"events"`
+		Cursor int64                `json:"cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Cursor == 0 || len(body.Events) == 0 || body.Events[0].SurfaceID != summary.ID || body.Events[0].Kind != "terminal.created" {
+		t.Fatalf("unexpected replay: %+v", body)
 	}
 }
 
@@ -449,6 +493,7 @@ func newBootstrapServer(t *testing.T) (*Server, *security.PairingStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.Shutdown() })
 	srv, err := New(cfg, tlsMaterial, auth, manager, noopNotify{}, &security.PairingSnapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -487,6 +532,7 @@ func newPairingPageServer(t *testing.T) (*Server, *security.PairingSnapshot) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.Shutdown() })
 	snapshot := &security.PairingSnapshot{}
 	srv, err := New(cfg, tlsMaterial, auth, manager, noopNotify{}, snapshot)
 	if err != nil {
