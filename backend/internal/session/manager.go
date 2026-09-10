@@ -374,8 +374,8 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {
 	runtime.exitOnce.Do(func() {
-		wait := runtime.detector.Exited()
 		m.mu.Lock()
+		wait := runtime.detector.Exited()
 		runtime.meta.State = StateExited
 		runtime.meta.WaitState = wait
 		runtime.meta.UpdatedAt = time.Now().UTC()
