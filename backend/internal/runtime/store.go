@@ -28,6 +28,17 @@ type TerminalSummary struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type AgentSummary struct {
+	ID                string            `json:"id"`
+	Adapter           string            `json:"adapter"`
+	TerminalSessionID string            `json:"terminalSessionId"`
+	CWD               string            `json:"cwd"`
+	State             string            `json:"state"`
+	Capabilities      json.RawMessage   `json:"capabilities"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
 type Event struct {
 	Cursor    int64           `json:"cursor"`
 	SurfaceID string          `json:"surfaceId"`
@@ -37,11 +48,11 @@ type Event struct {
 }
 
 type Snapshot struct {
-	Cursor    int64             `json:"cursor"`
+	Cursor    int64          `json:"cursor"`
 	Terminals []TerminalSummary `json:"terminals"`
-	Agents    []any             `json:"agents"`
-	Topology  []any             `json:"topology"`
-	Desktops  []any             `json:"desktops"`
+	Agents    []AgentSummary `json:"agents"`
+	Topology  []any          `json:"topology"`
+	Desktops  []any          `json:"desktops"`
 }
 
 type migration struct {
@@ -66,7 +77,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	for _, migration := range []migration{{version: 1, apply: migrate0001}} {
+	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}} {
 		var applied bool
 		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)`, migration.version).Scan(&applied); err != nil {
 			return err
@@ -105,6 +116,11 @@ func migrate0001(tx *sql.Tx) error {
 	return nil
 }
 
+func migrate0002(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, adapter TEXT NOT NULL, terminal_session_id TEXT NOT NULL, cwd TEXT NOT NULL, state TEXT NOT NULL, capabilities BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
+	return err
+}
+
 func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	payload, err := json.Marshal(term)
 	if err != nil {
@@ -126,6 +142,27 @@ func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	return tx.Commit()
 }
 
+func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
+	payload, err := json.Marshal(agent)
+	if err != nil {
+		return err
+	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, agent.ID, kind, payload, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Snapshot() (*Snapshot, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -138,7 +175,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	snapshot := &Snapshot{Cursor: cursor, Terminals: []TerminalSummary{}, Agents: []any{}, Topology: []any{}, Desktops: []any{}}
+	snapshot := &Snapshot{Cursor: cursor, Terminals: []TerminalSummary{}, Agents: []AgentSummary{}, Topology: []any{}, Desktops: []any{}}
 	for rows.Next() {
 		var term TerminalSummary
 		var exited, created, updated int64
@@ -149,7 +186,24 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 		term.CreatedAt, term.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 		snapshot.Terminals = append(snapshot.Terminals, term)
 	}
-	return snapshot, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	agents, err := s.db.Query(`SELECT id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at FROM agent_sessions ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer agents.Close()
+	for agents.Next() {
+		var agent AgentSummary
+		var created, updated int64
+		if err := agents.Scan(&agent.ID, &agent.Adapter, &agent.TerminalSessionID, &agent.CWD, &agent.State, &agent.Capabilities, &created, &updated); err != nil {
+			return nil, err
+		}
+		agent.CreatedAt, agent.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
+		snapshot.Agents = append(snapshot.Agents, agent)
+	}
+	return snapshot, agents.Err()
 }
 
 func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {

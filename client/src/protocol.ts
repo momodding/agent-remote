@@ -26,6 +26,40 @@ export type SessionSummary = {
   preview: string[];
   waitState?: WaitState;
 };
+
+export type AgentCapability = { name: string; enabled: boolean };
+
+export type AgentSession = {
+  id: string;
+  adapter: string;
+  terminalSessionId: string;
+  cwd: string;
+  state: 'working' | 'idle' | 'needsYou' | 'exited';
+  capabilities: AgentCapability[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentEvent = {
+  type: string;
+  agentId: string;
+  messageId?: string;
+  text?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  state?: string;
+};
+
+export type ChannelOpenEnvelope = {
+  type: 'channel.open'; requestId: string; channelId: string; kind: string; targetId: string; after?: number;
+};
+export type ChannelCloseEnvelope = { type: 'channel.close'; channelId: string };
+export type CommandEnvelope = { type: 'command'; requestId: string; targetId: string; command: string; args?: unknown };
+export type ChannelOpenedEnvelope = { type: 'channel.opened'; requestId: string; channelId: string; cursor: number };
+export type RuntimeEventEnvelope = { type: 'event'; channelId: string; cursor: number; event: unknown };
+export type CommandResultEnvelope = { type: 'command.result'; requestId: string; ok: boolean; result?: unknown; error?: string };
+export type ChannelClosedEnvelope = { type: 'channel.closed'; channelId: string; reason: string };
 export type HostIdentity = {
   hostId: string;
   connectionId: string;

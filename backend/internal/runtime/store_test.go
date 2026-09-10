@@ -43,6 +43,29 @@ func TestRecordTerminalSnapshotAndEvents(t *testing.T) {
 	}
 }
 
+func TestRecordAgentSnapshotAndEvents(t *testing.T) {
+	s := makeTestDB(t)
+	now := time.Now().UTC()
+	agent := AgentSummary{ID: "a1", Adapter: "omp", TerminalSessionID: "t1", CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat","enabled":true}]`), CreatedAt: now, UpdatedAt: now}
+	if err := s.RecordAgent(agent, "agent.created"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	snapshot, err := s.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != agent.ID || snapshot.Agents[0].TerminalSessionID != agent.TerminalSessionID {
+		t.Fatalf("unexpected snapshot: %+v", snapshot.Agents)
+	}
+	events, _, err := s.Events(snapshot.Cursor-1, 1)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != "agent.created" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
 func TestOpenReusesAppliedMigration(t *testing.T) {
 	dir := t.TempDir()
 	first, err := Open(dir)
