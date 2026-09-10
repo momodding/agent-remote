@@ -17,7 +17,6 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/detect"
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
-	"github.com/creack/pty"
 )
 
 type State string
@@ -57,7 +56,7 @@ type subscriber struct {
 	replaySeq int64
 }
 
-type sessionRuntime struct {
+type TerminalRuntime struct {
 	meta       Session
 	detector   detect.Detector
 	subs       []*subscriber
@@ -65,8 +64,7 @@ type sessionRuntime struct {
 	scrollback string
 	plain      string
 	outbound   chan outboundMessage
-	cmd        *exec.Cmd
-	ptmx       *os.File
+	backend    TerminalBackend
 	exitOnce   sync.Once
 }
 
@@ -78,7 +76,7 @@ type outboundMessage struct {
 
 type Manager struct {
 	mu                 sync.Mutex
-	sessions           map[string]*sessionRuntime
+	sessions           map[string]*TerminalRuntime
 	stateDir           string
 	workspaceRoot      string
 	defaultCWD         string
@@ -88,7 +86,7 @@ type Manager struct {
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
-	m := &Manager{sessions: map[string]*sessionRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
+	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier}
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err
 	}
@@ -121,12 +119,12 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	cmd := exec.Command(command, req.Args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	backend, err := newPtyBackend(cmd, cols, rows)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	runtime := &sessionRuntime{
+	runtime := &TerminalRuntime{
 		meta: Session{
 			ID:        id,
 			Name:      req.Name,
@@ -139,14 +137,10 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 		},
 		scrollback: filepath.Join(m.stateDir, "sessions", id+".scrollback"),
 		outbound:   make(chan outboundMessage, m.channelBufferSize),
-		cmd:        cmd,
-		ptmx:       ptmx,
+		backend:    backend,
 	}
 	if err := appendScrollback(runtime.scrollback, []byte("> session created\n"), m.maxScrollbackBytes); err != nil {
-		_ = ptmx.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+		_ = backend.Close()
 		return nil, err
 	}
 	m.mu.Lock()
@@ -216,10 +210,10 @@ func (m *Manager) Input(id string, b []byte) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	if runtime.ptmx == nil {
+	if runtime.backend == nil || !runtime.backend.Alive() {
 		return errors.New("session not running")
 	}
-	_, err := runtime.ptmx.Write(b)
+	_, err := runtime.backend.Write(b)
 	return err
 }
 
@@ -233,10 +227,10 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return errors.New("invalid terminal size")
 	}
-	if runtime.ptmx == nil {
+	if runtime.backend == nil || !runtime.backend.Alive() {
 		return nil
 	}
-	return pty.Setsize(runtime.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	return runtime.backend.Resize(cols, rows)
 }
 
 func (m *Manager) Close(id string) error {
@@ -249,11 +243,8 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	if runtime.cmd != nil && runtime.cmd.Process != nil {
-		_ = runtime.cmd.Process.Kill()
-	}
-	if runtime.ptmx != nil {
-		_ = runtime.ptmx.Close()
+	if runtime.backend != nil {
+		_ = runtime.backend.Close()
 	}
 	m.markExited(runtime)
 	// ponytail: Process.Kill only hits direct PTY child, not whole process tree; add per-OS process-group kill if orphaned grandchildren become real.
@@ -264,7 +255,7 @@ func (m *Manager) Close(id string) error {
 	return nil
 }
 
-func (m *Manager) forward(runtime *sessionRuntime) {
+func (m *Manager) forward(runtime *TerminalRuntime) {
 	for msg := range runtime.outbound {
 		m.mu.Lock()
 		subs := append([]*subscriber(nil), runtime.subs...)
@@ -287,10 +278,10 @@ func (m *Manager) forward(runtime *sessionRuntime) {
 	}
 }
 
-func (m *Manager) readOutput(runtime *sessionRuntime) {
+func (m *Manager) readOutput(runtime *TerminalRuntime) {
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := runtime.ptmx.Read(buf)
+		n, err := runtime.backend.Read(buf)
 		if n > 0 {
 			m.recordOutput(runtime, buf[:n])
 		}
@@ -301,7 +292,7 @@ func (m *Manager) readOutput(runtime *sessionRuntime) {
 	}
 }
 
-func (m *Manager) recordOutput(runtime *sessionRuntime, chunk []byte) {
+func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 	runtime.seq++
 	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
 	plain := detect.StripANSI(string(chunk))
@@ -320,7 +311,7 @@ func (m *Manager) recordOutput(runtime *sessionRuntime, chunk []byte) {
 	_ = m.saveMetadata()
 }
 
-func (m *Manager) markExited(runtime *sessionRuntime) {
+func (m *Manager) markExited(runtime *TerminalRuntime) {
 	runtime.exitOnce.Do(func() {
 		runtime.meta.State = StateExited
 		wait := runtime.detector.Exited()
@@ -332,11 +323,11 @@ func (m *Manager) markExited(runtime *sessionRuntime) {
 	})
 }
 
-func (m *Manager) emitState(runtime *sessionRuntime) {
+func (m *Manager) emitState(runtime *TerminalRuntime) {
 	m.enqueue(runtime, outboundMessage{state: &protocol.SessionStateEnvelope{Type: "session.state", SessionID: runtime.meta.ID, State: string(runtime.meta.State), WaitState: protocolWait(runtime.meta.WaitState)}, control: true})
 }
 
-func (m *Manager) enqueue(runtime *sessionRuntime, msg outboundMessage) {
+func (m *Manager) enqueue(runtime *TerminalRuntime, msg outboundMessage) {
 	if msg.control {
 		select {
 		case runtime.outbound <- msg:
@@ -364,7 +355,7 @@ func (m *Manager) enqueue(runtime *sessionRuntime, msg outboundMessage) {
 	}
 }
 
-func (m *Manager) notify(runtime *sessionRuntime, wait *detect.WaitState) {
+func (m *Manager) notify(runtime *TerminalRuntime, wait *detect.WaitState) {
 	if m.notifier == nil || wait == nil {
 		return
 	}
@@ -386,7 +377,7 @@ func (m *Manager) restore() error {
 	}
 	for _, item := range restored {
 		item.State = StateExited
-		runtime := &sessionRuntime{meta: item, scrollback: filepath.Join(m.stateDir, "sessions", item.ID+".scrollback"), outbound: make(chan outboundMessage, m.channelBufferSize)}
+		runtime := &TerminalRuntime{meta: item, scrollback: filepath.Join(m.stateDir, "sessions", item.ID+".scrollback"), outbound: make(chan outboundMessage, m.channelBufferSize)}
 		if data, err := os.ReadFile(runtime.scrollback); err == nil {
 			trimmed := truncateFront(data, m.maxScrollbackBytes)
 			_ = os.WriteFile(runtime.scrollback, trimmed, 0o644)
