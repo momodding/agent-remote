@@ -67,6 +67,7 @@ type TerminalRuntime struct {
 	outbound   chan outboundMessage
 	backend    TerminalBackend
 	exitOnce   sync.Once
+	enqueueMu  sync.Mutex
 }
 
 type outboundMessage struct {
@@ -407,6 +408,8 @@ func (m *Manager) emitState(runtime *TerminalRuntime) {
 }
 
 func (m *Manager) enqueue(runtime *TerminalRuntime, msg outboundMessage) {
+	runtime.enqueueMu.Lock()
+	defer runtime.enqueueMu.Unlock()
 	if msg.control {
 		select {
 		case runtime.outbound <- msg:
