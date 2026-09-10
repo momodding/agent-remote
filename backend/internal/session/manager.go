@@ -85,8 +85,10 @@ type Manager struct {
 	notifier           notify.Notifier
 	runtime            *runtimestore.Store
 	outputWorkers      sync.WaitGroup
+	forwardWorkers     sync.WaitGroup
 	shutdownOnce       sync.Once
 	shutdownErr        error
+	closing            bool
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
@@ -152,20 +154,33 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 		_ = backend.Close()
 		return nil, err
 	}
-	if err := m.recordRuntime(runtime, "terminal.created"); err != nil {
+	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		_ = backend.Close()
+		return nil, errors.New("session manager shutting down")
+	}
+	if err := m.runtime.RecordTerminal(m.terminalSummaryLocked(runtime), "terminal.created"); err != nil {
+		m.mu.Unlock()
 		_ = backend.Close()
 		return nil, err
 	}
-	m.mu.Lock()
 	m.sessions[id] = runtime
-	m.mu.Unlock()
-	go m.forward(runtime)
+	m.forwardWorkers.Add(1)
 	m.outputWorkers.Add(1)
-	go func() { defer m.outputWorkers.Done(); m.readOutput(runtime) }()
+	m.mu.Unlock()
+	go func() { defer m.forwardWorkers.Done(); m.forward(runtime) }()
+	go func() {
+		defer m.outputWorkers.Done()
+		defer close(runtime.outbound)
+		m.readOutput(runtime)
+	}()
 	if err := m.saveMetadata(); err != nil {
 		return nil, err
 	}
+	m.mu.Lock()
 	copy := runtime.meta
+	m.mu.Unlock()
 	return &protocol.SessionSummary{ID: copy.ID, Name: copy.Name, Command: copy.Command, CWD: copy.CWD, State: string(copy.State), CreatedAt: copy.CreatedAt, UpdatedAt: copy.UpdatedAt, Preview: copy.Preview, WaitState: protocolWait(copy.WaitState)}, nil
 }
 
@@ -178,6 +193,7 @@ func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, i
 func (m *Manager) Shutdown() error {
 	m.shutdownOnce.Do(func() {
 		m.mu.Lock()
+		m.closing = true
 		sessions := make([]*TerminalRuntime, 0, len(m.sessions))
 		for _, runtime := range m.sessions {
 			sessions = append(sessions, runtime)
@@ -189,6 +205,7 @@ func (m *Manager) Shutdown() error {
 			}
 		}
 		m.outputWorkers.Wait()
+		m.forwardWorkers.Wait()
 		m.shutdownErr = m.runtime.Close()
 	})
 	return m.shutdownErr
@@ -286,10 +303,6 @@ func (m *Manager) Close(id string) error {
 		_ = runtime.backend.Close()
 	}
 	m.markExited(runtime)
-	// ponytail: Process.Kill only hits direct PTY child, not whole process tree; add per-OS process-group kill if orphaned grandchildren become real.
-	// ponytail: outbound channel is left open (goroutine leaks until GC of the
-	// last subscriber send); explicit close is rare enough that a done-signal
-	// isn't worth it. Revisit if session churn gets heavy.
 	_ = os.Remove(runtime.scrollback)
 	return nil
 }
@@ -332,31 +345,41 @@ func (m *Manager) readOutput(runtime *TerminalRuntime) {
 }
 
 func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
-	runtime.seq++
 	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
 	plain := detect.StripANSI(string(chunk))
+
+	m.mu.Lock()
+	runtime.seq++
+	seq := runtime.seq
 	runtime.plain = trimPreview(runtime.plain + plain)
 	runtime.meta.Preview = previewLines(runtime.plain)
 	runtime.meta.UpdatedAt = time.Now().UTC()
-	if wait := runtime.detector.Push(string(chunk), time.Now()); wait != nil {
+	wait := runtime.detector.Push(string(chunk), time.Now())
+	if wait != nil {
 		runtime.meta.WaitState = wait
 		runtime.meta.State = StateWaiting
-		m.notify(runtime, wait)
-		m.emitState(runtime)
 	} else if runtime.meta.State == StateWaiting {
 		runtime.meta.State = StateRunning
 	}
-	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: runtime.seq}})
+	m.mu.Unlock()
+
+	if wait != nil {
+		m.notify(runtime, wait)
+		m.emitState(runtime)
+	}
+	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: seq}})
 	_ = m.saveMetadata()
 	_ = m.recordRuntime(runtime, "terminal.output")
 }
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {
 	runtime.exitOnce.Do(func() {
-		runtime.meta.State = StateExited
 		wait := runtime.detector.Exited()
+		m.mu.Lock()
+		runtime.meta.State = StateExited
 		runtime.meta.WaitState = wait
 		runtime.meta.UpdatedAt = time.Now().UTC()
+		m.mu.Unlock()
 		m.notify(runtime, wait)
 		m.emitState(runtime)
 		_ = m.saveMetadata()
@@ -365,10 +388,18 @@ func (m *Manager) markExited(runtime *TerminalRuntime) {
 }
 
 func (m *Manager) recordRuntime(runtime *TerminalRuntime, kind string) error {
-	return m.runtime.RecordTerminal(runtimestore.TerminalSummary{
+	m.mu.Lock()
+	summary := m.terminalSummaryLocked(runtime)
+	m.mu.Unlock()
+	return m.runtime.RecordTerminal(summary, kind)
+}
+
+// terminalSummaryLocked reads runtime.meta fields; caller must hold m.mu.
+func (m *Manager) terminalSummaryLocked(runtime *TerminalRuntime) runtimestore.TerminalSummary {
+	return runtimestore.TerminalSummary{
 		ID: runtime.meta.ID, Name: runtime.meta.Name, CWD: runtime.meta.CWD, Seq: runtime.seq,
 		Exited: runtime.meta.State == StateExited, CreatedAt: runtime.meta.CreatedAt, UpdatedAt: runtime.meta.UpdatedAt,
-	}, kind)
+	}
 }
 
 func (m *Manager) emitState(runtime *TerminalRuntime) {
@@ -433,7 +464,8 @@ func (m *Manager) restore() error {
 			runtime.meta.Preview = previewLines(runtime.plain)
 		}
 		m.sessions[item.ID] = runtime
-		go m.forward(runtime)
+		runtime.exitOnce.Do(func() {})
+		close(runtime.outbound)
 	}
 	return m.saveMetadata()
 }

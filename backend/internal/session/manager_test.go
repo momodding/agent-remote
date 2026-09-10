@@ -255,3 +255,31 @@ func TestManagerRestoresPreviewFromScrollback(t *testing.T) {
 		t.Fatalf("expected restored preview, got %q", preview)
 	}
 }
+
+func TestManagerCloseRestoredSession(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	manager, err := NewManager(home, stateDir, home, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{Name: "restored", Command: "sh", Args: []string{"-c", "true"}, CWD: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewManager(home, stateDir, home, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Shutdown()
+	if err := restored.Close(created.ID); err != nil {
+		t.Fatal(err)
+	}
+}
