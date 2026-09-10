@@ -74,7 +74,6 @@ type outboundMessage struct {
 	state   *protocol.SessionStateEnvelope
 	control bool
 }
-
 type Manager struct {
 	mu                 sync.Mutex
 	sessions           map[string]*TerminalRuntime
@@ -85,6 +84,9 @@ type Manager struct {
 	channelBufferSize  int
 	notifier           notify.Notifier
 	runtime            *runtimestore.Store
+	outputWorkers      sync.WaitGroup
+	shutdownOnce       sync.Once
+	shutdownErr        error
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
@@ -158,7 +160,8 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	m.sessions[id] = runtime
 	m.mu.Unlock()
 	go m.forward(runtime)
-	go m.readOutput(runtime)
+	m.outputWorkers.Add(1)
+	go func() { defer m.outputWorkers.Done(); m.readOutput(runtime) }()
 	if err := m.saveMetadata(); err != nil {
 		return nil, err
 	}
@@ -173,18 +176,22 @@ func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, i
 }
 
 func (m *Manager) Shutdown() error {
-	m.mu.Lock()
-	sessions := make([]*TerminalRuntime, 0, len(m.sessions))
-	for _, runtime := range m.sessions {
-		sessions = append(sessions, runtime)
-	}
-	m.mu.Unlock()
-	for _, runtime := range sessions {
-		if runtime.backend != nil {
-			_ = runtime.backend.Close()
+	m.shutdownOnce.Do(func() {
+		m.mu.Lock()
+		sessions := make([]*TerminalRuntime, 0, len(m.sessions))
+		for _, runtime := range m.sessions {
+			sessions = append(sessions, runtime)
 		}
-	}
-	return m.runtime.Close()
+		m.mu.Unlock()
+		for _, runtime := range sessions {
+			if runtime.backend != nil {
+				_ = runtime.backend.Close()
+			}
+		}
+		m.outputWorkers.Wait()
+		m.shutdownErr = m.runtime.Close()
+	})
+	return m.shutdownErr
 }
 
 func (m *Manager) List(_ context.Context) []protocol.SessionSummary {
