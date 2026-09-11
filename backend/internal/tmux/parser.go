@@ -20,7 +20,8 @@ type Parser struct {
 	currentCmd    *ControlCommand   // Currently parsed command
 	cmdQueue      []*ControlCommand // FIFO pending commands
 	cmdCounter    int64             // For unique command IDs
-	paneOutputCh  map[string]chan []byte
+	sequence      uint64            // monotonically increases for every control line
+	paneOutputCh  map[string]chan paneOutput
 	closed        bool
 	ignoringBlock bool
 	ready         chan struct{}
@@ -32,7 +33,7 @@ func NewParser(reader io.Reader) *Parser {
 	return &Parser{
 		scanner:      bufio.NewScanner(reader),
 		cmdQueue:     make([]*ControlCommand, 0, 32),
-		paneOutputCh: make(map[string]chan []byte),
+		paneOutputCh: make(map[string]chan paneOutput),
 		ready:        make(chan struct{}),
 		notifyChan:   make(chan NotificationEvent, 64),
 	}
@@ -84,6 +85,7 @@ func (p *Parser) Start() error {
 func (p *Parser) handleLine(line string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.sequence++
 
 	// Command block markers
 	if strings.HasPrefix(line, BeginMarker) {
@@ -186,6 +188,7 @@ func (p *Parser) handleEnd(line string) error {
 
 	cmd := p.currentCmd
 	cmd.Result.Output = concatenateLines(cmd.Result.Lines)
+	cmd.Result.Sequence = p.sequence
 	// Send result to channel (non-blocking with buffer)
 	select {
 	case cmd.resultChan <- cmd.Result:
@@ -216,6 +219,7 @@ func (p *Parser) handleError(line string) error {
 
 	cmd := p.currentCmd
 	cmd.Result.Output = concatenateLines(cmd.Result.Lines)
+	cmd.Result.Sequence = p.sequence
 	cmd.Result.Error = &ControlError{Code: "command_error", Message: errMsg}
 	// Send result to channel (non-blocking with buffer)
 	select {
@@ -246,7 +250,7 @@ func (p *Parser) handlePaneOutput(line string) error {
 	// Send to pane output channel if subscribed
 	if ch, ok := p.paneOutputCh[paneID]; ok {
 		select {
-		case ch <- payload:
+		case ch <- paneOutput{sequence: p.sequence, payload: payload}:
 		default:
 			// Channel full, drop
 		}
@@ -315,8 +319,8 @@ func (p *Parser) SubmitCommand(cmdLine string) (chan *CommandResult, error) {
 	return resultChan, nil
 }
 
-// SubscribePaneOutput returns a channel for pane output
-func (p *Parser) SubscribePaneOutput(paneID string) <-chan []byte {
+// SubscribePaneOutput returns a sequenced channel for one pane's output.
+func (p *Parser) SubscribePaneOutput(paneID string) <-chan paneOutput {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -324,7 +328,7 @@ func (p *Parser) SubscribePaneOutput(paneID string) <-chan []byte {
 		return ch
 	}
 
-	ch := make(chan []byte, 16)
+	ch := make(chan paneOutput, 16)
 	p.paneOutputCh[paneID] = ch
 	return ch
 }
@@ -361,7 +365,7 @@ func (p *Parser) Close() error {
 	for _, ch := range p.paneOutputCh {
 		close(ch)
 	}
-	p.paneOutputCh = make(map[string]chan []byte)
+	p.paneOutputCh = make(map[string]chan paneOutput)
 
 	return nil
 }

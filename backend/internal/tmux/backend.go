@@ -15,7 +15,7 @@ type TmuxBackend struct {
 	sessionID  string
 	windowID   string
 	closed     bool
-	outputCh   <-chan []byte // subscribed after baseline capture
+	outputCh   <-chan paneOutput // subscribed before baseline capture
 	done       chan struct{}
 	copyBuffer []byte // baseline + live output buffered for Read caller
 }
@@ -35,9 +35,10 @@ func NewTmuxBackend(client *ControlClient, paneID, sessionID, windowID string) *
 	}
 }
 
-// Subscribe starts listening to pane output after baseline is injected into copyBuffer.
-// baseline is the captured history before subscription; live events come after.
-func (b *TmuxBackend) Subscribe(baseline []byte) error {
+// Subscribe connects a pre-registered channel after capturePane has returned.
+// pending holds only output sequenced after the capture response, so baseline
+// plus pending is exactly-once at the live/capture handoff.
+func (b *TmuxBackend) Subscribe(ch <-chan paneOutput, baseline, pending []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -46,8 +47,7 @@ func (b *TmuxBackend) Subscribe(baseline []byte) error {
 	if b.outputCh != nil {
 		return fmt.Errorf("backend already subscribed")
 	}
-	b.copyBuffer = baseline
-	ch := b.client.SubscribePaneOutput(b.paneID)
+	b.copyBuffer = append(baseline, pending...)
 	b.outputCh = ch
 	return nil
 }
@@ -70,14 +70,14 @@ func (b *TmuxBackend) Read(p []byte) (int, error) {
 	}
 	outputCh := b.outputCh
 	b.mu.Unlock()
-	
+
 	if outputCh == nil {
 		return 0, fmt.Errorf("tmux output subscription unavailable")
 	}
 	select {
 	case <-b.done:
 		return 0, fmt.Errorf("backend closed")
-	case data, ok := <-outputCh:
+	case event, ok := <-outputCh:
 		if !ok {
 			return 0, fmt.Errorf("pane output closed")
 		}
@@ -86,8 +86,8 @@ func (b *TmuxBackend) Read(p []byte) (int, error) {
 			b.mu.Unlock()
 			return 0, fmt.Errorf("backend closed")
 		}
-		n := copy(p, data)
-		b.copyBuffer = append(b.copyBuffer[:0], data[n:]...)
+		n := copy(p, event.payload)
+		b.copyBuffer = append(b.copyBuffer[:0], event.payload[n:]...)
 		b.mu.Unlock()
 		return n, nil
 	}

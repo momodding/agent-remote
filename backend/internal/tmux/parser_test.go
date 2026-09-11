@@ -50,8 +50,8 @@ func TestParserPaneOutput(t *testing.T) {
 	// Expect output
 	select {
 	case data := <-outputCh:
-		if string(data) != "hello" {
-			t.Errorf("expected 'hello', got %q", string(data))
+		if string(data.payload) != "hello" {
+			t.Errorf("expected 'hello', got %q", string(data.payload))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout on first output")
@@ -59,8 +59,8 @@ func TestParserPaneOutput(t *testing.T) {
 
 	select {
 	case data := <-outputCh:
-		if string(data) != "world" {
-			t.Errorf("expected 'world', got %q", string(data))
+		if string(data.payload) != "world" {
+			t.Errorf("expected 'world', got %q", string(data.payload))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout on second output")
@@ -80,8 +80,8 @@ func TestParserOctalDecode(t *testing.T) {
 
 	select {
 	case data := <-outputCh:
-		if string(data) != "ABC" {
-			t.Errorf("octal decode failed: got %q", string(data))
+		if string(data.payload) != "ABC" {
+			t.Errorf("octal decode failed: got %q", string(data.payload))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")

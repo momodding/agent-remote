@@ -84,7 +84,8 @@ func TestBackendReadPreservesOutputRemainder(t *testing.T) {
 	client := NewControlClient("/tmp/test", "tmux")
 	backend := NewTmuxBackend(client, "%0", "$0", "@0")
 	// Subscribe with baseline data "abcdef"
-	err := backend.Subscribe([]byte("abcdef"))
+	ch := make(chan paneOutput)
+	err := backend.Subscribe(ch, []byte("abcdef"), nil)
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}

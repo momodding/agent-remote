@@ -367,8 +367,8 @@ func (c *ControlClient) GetTopology() *TopologySnapshot {
 	return c.topology
 }
 
-// SubscribePaneOutput returns channel for pane output (feeds TerminalBackend.Read)
-func (c *ControlClient) SubscribePaneOutput(paneID string) <-chan []byte {
+// SubscribePaneOutput returns sequenced pane output for capture/live handoff.
+func (c *ControlClient) SubscribePaneOutput(paneID string) <-chan paneOutput {
 	c.mu.RLock()
 	if c.parser == nil {
 		c.mu.RUnlock()
@@ -442,12 +442,13 @@ func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command str
 		pane := topology.Panes[window.Panes[0]]
 		if pane != nil {
 			backend := NewTmuxBackend(c, pane.PaneID, pane.SessionID, pane.WindowID)
-			baseline, err := c.capturePane(ctx, pane.PaneID)
+			ch := c.SubscribePaneOutput(pane.PaneID)
+			baseline, pending, err := c.captureBaselineAndDrain(ctx, pane.PaneID, ch)
 			if err != nil {
 				backend.Close()
 				return nil, err
 			}
-			if err := backend.Subscribe(baseline); err != nil {
+			if err := backend.Subscribe(ch, baseline, pending); err != nil {
 				backend.Close()
 				return nil, err
 			}
@@ -457,44 +458,64 @@ func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command str
 	return nil, fmt.Errorf("tmux did not create session %q", sessionName)
 }
 
-func (c *ControlClient) capturePane(ctx context.Context, paneID string) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed || c.parser == nil || c.stdin == nil {
-		return nil, fmt.Errorf("tmux control client is not running")
-	}
-	resultCh, err := c.parser.SubmitCommand("capture-pane")
+// captureBaselineAndDrain snapshots pane history and retains only output
+// parsed after capture-pane's %end marker. Earlier events are represented by
+// the snapshot; later ones are appended to the live buffer.
+func (c *ControlClient) captureBaselineAndDrain(ctx context.Context, paneID string, ch <-chan paneOutput) ([]byte, []byte, error) {
+	baseline, sequence, err := c.capturePane(ctx, paneID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if _, err := fmt.Fprintf(c.stdin, "capture-pane -p -e -S - -t %s\n", strconv.Quote(paneID)); err != nil {
-		return nil, err
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case result := <-resultCh:
-		if result == nil {
-			return nil, fmt.Errorf("capture-pane returned no result")
+	var pending []byte
+	for {
+		select {
+		case event := <-ch:
+			if event.sequence > sequence {
+				pending = append(pending, event.payload...)
+			}
+		default:
+			return baseline, pending, nil
 		}
-		if result.Error != nil {
-			return nil, result.Error
-		}
-		return result.Output, nil
 	}
 }
 
-// ReattachPane rebuilds a backend for a pane that survived a daemon restart,
-// seeding the caller's buffer with a bounded capture-pane baseline so no
-// output produced before this call is lost.
+func (c *ControlClient) capturePane(ctx context.Context, paneID string) ([]byte, uint64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.parser == nil || c.stdin == nil {
+		return nil, 0, fmt.Errorf("tmux control client is not running")
+	}
+	resultCh, err := c.parser.SubmitCommand("capture-pane")
+	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := fmt.Fprintf(c.stdin, "capture-pane -p -e -S - -t %s\n", strconv.Quote(paneID)); err != nil {
+		return nil, 0, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	case result := <-resultCh:
+		if result == nil {
+			return nil, 0, fmt.Errorf("capture-pane returned no result")
+		}
+		if result.Error != nil {
+			return nil, 0, result.Error
+		}
+		return result.Output, result.Sequence, nil
+	}
+}
+
+// ReattachPane rebuilds a backend for a pane that survived a daemon restart.
 func (c *ControlClient) ReattachPane(ctx context.Context, paneID, sessionID, windowID string) (*TmuxBackend, error) {
 	backend := NewTmuxBackend(c, paneID, sessionID, windowID)
-	baseline, err := c.capturePane(ctx, paneID)
+	ch := c.SubscribePaneOutput(paneID)
+	baseline, pending, err := c.captureBaselineAndDrain(ctx, paneID, ch)
 	if err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
-	if err := backend.Subscribe(baseline); err != nil {
+	if err := backend.Subscribe(ch, baseline, pending); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
