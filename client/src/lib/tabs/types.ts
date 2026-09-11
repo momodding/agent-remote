@@ -2,7 +2,7 @@ import type { WaitState } from '../../protocol';
 
 export type DaemonId = string; // = Connection.hostId, existing identity
 
-export type TabKind = 'terminal' | 'files' | 'desktop';
+export type TabKind = 'terminal' | 'files' | 'desktop' | 'agent';
 
 interface BaseTab {
   tabId: string; // stable local id, independent of remoteSessionId
@@ -33,7 +33,15 @@ export interface DesktopWorkspaceTab extends BaseTab {
   state: 'connecting' | 'connected' | 'disconnected';
 }
 
-export type WorkspaceTab = TerminalWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab;
+export interface AgentWorkspaceTab extends BaseTab {
+  kind: 'agent';
+  agentSessionId: string; // AgentSession.id
+  terminalSessionId: string; // shared underlying Session.ID for terminal fallback
+  state: 'working' | 'idle' | 'needsYou' | 'exited';
+  view: 'chat' | 'terminal'; // which surface is focused for this tab
+}
+
+export type WorkspaceTab = TerminalWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab | AgentWorkspaceTab;
 
 export type SplitLayout = {
   direction?: 'horizontal' | 'vertical';

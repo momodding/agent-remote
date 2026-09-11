@@ -92,6 +92,10 @@ type Manager struct {
 	closing            bool
 }
 
+func (m *Manager) RuntimeStore() *runtimestore.Store {
+	return m.runtime
+}
+
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err

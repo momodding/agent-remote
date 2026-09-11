@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/agenticremote/agenticremote/backend/internal/agent"
 	"github.com/agenticremote/agenticremote/backend/internal/config"
 	"github.com/agenticremote/agenticremote/backend/internal/lifecycle"
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
@@ -322,10 +323,12 @@ func serve(configPath string) error {
 		return err
 	}
 	defer manager.Shutdown()
+	agents := agent.NewService(manager, manager.RuntimeStore(), "")
+	defer agents.Close()
 	cfg.StateDir = stateDir
 	cfg.WorkspaceRoot = workspaceRoot
 	pairingSnapshot := &security.PairingSnapshot{}
-	srv, err := server.New(cfg, tlsMaterial, auth, manager, tokens, pairingSnapshot)
+	srv, err := server.NewWithAgents(cfg, tlsMaterial, auth, manager, agents, tokens, pairingSnapshot)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,5 @@
 import type {
+  AgentSession,
   CopyFileRequest,
   CreateSessionRequest,
   DaemonCapabilities,
@@ -44,6 +45,26 @@ export class AgenticRemoteAPI {
 
   async closeSession(id: string): Promise<void> {
     await this.request(`/v1/sessions/${encodeURIComponent(id)}/close`, { method: 'POST' });
+  }
+
+  async agents(): Promise<AgentSession[]> {
+    return this.request('/v1/agents');
+  }
+
+  async agent(id: string): Promise<AgentSession> {
+    return this.request(`/v1/agents/${encodeURIComponent(id)}`);
+  }
+
+  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd'>): Promise<AgentSession> {
+    return this.request('/v1/agents', { method: 'POST', body: JSON.stringify(request) });
+  }
+
+  async submitAgentPrompt(id: string, prompt: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', body: JSON.stringify({ prompt }) });
+  }
+
+  async abortAgent(id: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/abort`, { method: 'POST' });
   }
 
   async files(path = ''): Promise<FileEntry[]> {

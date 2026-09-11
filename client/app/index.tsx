@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import Feather from '@expo/vector-icons/Feather';
 
-import { authenticatePairing } from '../src/lib/api';
+import { AgenticRemoteAPI, authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
 import type { PairingPayload } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
@@ -125,6 +125,20 @@ export default function TabDeckScreen() {
         });
         // ponytail: router format change per native/web divergence isn't strictly necessary for deck state
         router.push({ pathname: '/desktop', params: { tabId } });
+      } else if (kind === 'agent') {
+        const api = new AgenticRemoteAPI(connection);
+        const agentSession = await api.createAgent({ name: 'OMP Agent', args: [], cwd: '' });
+        dispatch(prev => {
+          const tabs = [...prev.tabs];
+          tabs.push({
+            tabId, daemonId: hostId, kind: 'agent', title: agentSession.adapter || 'OMP Agent',
+            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+            agentSessionId: agentSession.id, terminalSessionId: agentSession.terminalSessionId,
+            state: agentSession.state, view: 'chat'
+          });
+          return { ...prev, tabs, activeId: tabId };
+        });
+        router.push({ pathname: '/agent/[id]', params: { id: tabId } });
       }
     } catch (error) {
       Alert.alert('Could not open tab', error instanceof Error ? error.message : 'Daemon rejected the session request.');
@@ -136,6 +150,7 @@ export default function TabDeckScreen() {
     if (tab.kind === 'terminal') router.push({ pathname: '/terminal/[id]', params: { id: tab.tabId } });
     else if (tab.kind === 'files') router.push({ pathname: '/files/[id]', params: { id: tab.tabId } });
     else if (tab.kind === 'desktop') router.push({ pathname: '/desktop', params: { tabId: tab.tabId } });
+    else if (tab.kind === 'agent') router.push({ pathname: '/agent/[id]', params: { id: tab.tabId } });
   };
 
   if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
@@ -171,6 +186,9 @@ export default function TabDeckScreen() {
                   <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
                     <Feather name="terminal" size={16} color="#F0F0F0" />
                   </Pressable>
+                  <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
+                    <Feather name="cpu" size={16} color="#F0F0F0" />
+                  </Pressable>
                   <Pressable accessibilityLabel={`New Files ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
                     <Feather name="folder" size={16} color="#F0F0F0" />
                   </Pressable>
@@ -188,13 +206,14 @@ export default function TabDeckScreen() {
                     <Pressable key={tab.tabId} accessibilityLabel={`Open tab ${tab.title}`} style={styles.tabCard} onPress={() => openTab(tab)}>
                       <View style={styles.tabIcon}>
                         {tab.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
+                        {tab.kind === 'agent' && <Feather name="cpu" size={20} color="#A78BFA" />}
                         {tab.kind === 'files' && <Feather name="folder" size={20} color="#F19999" />}
                         {tab.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
                       </View>
                       <View style={styles.tabContent}>
                         <Text style={styles.tabTitle} numberOfLines={1}>{tab.title}</Text>
                         <Text style={styles.tabStatus} numberOfLines={1}>
-                          {tab.kind === 'terminal' || tab.kind === 'desktop' ? tab.state : 'Navigating'}
+                          {tab.kind === 'terminal' || tab.kind === 'desktop' || tab.kind === 'agent' ? tab.state : 'Navigating'}
                         </Text>
                       </View>
                       <Pressable accessibilityLabel={`Close tab ${tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>

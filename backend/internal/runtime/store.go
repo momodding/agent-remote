@@ -29,14 +29,14 @@ type TerminalSummary struct {
 }
 
 type AgentSummary struct {
-	ID                string            `json:"id"`
-	Adapter           string            `json:"adapter"`
-	TerminalSessionID string            `json:"terminalSessionId"`
-	CWD               string            `json:"cwd"`
-	State             string            `json:"state"`
-	Capabilities      json.RawMessage   `json:"capabilities"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	ID                string          `json:"id"`
+	Adapter           string          `json:"adapter"`
+	TerminalSessionID string          `json:"terminalSessionId"`
+	CWD               string          `json:"cwd"`
+	State             string          `json:"state"`
+	Capabilities      json.RawMessage `json:"capabilities"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
 }
 
 type Event struct {
@@ -48,11 +48,11 @@ type Event struct {
 }
 
 type Snapshot struct {
-	Cursor    int64          `json:"cursor"`
+	Cursor    int64             `json:"cursor"`
 	Terminals []TerminalSummary `json:"terminals"`
-	Agents    []AgentSummary `json:"agents"`
-	Topology  []any          `json:"topology"`
-	Desktops  []any          `json:"desktops"`
+	Agents    []AgentSummary    `json:"agents"`
+	Topology  []any             `json:"topology"`
+	Desktops  []any             `json:"desktops"`
 }
 
 type migration struct {
@@ -161,6 +161,21 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// RecordEvent appends a replayable surface event and returns its daemon-wide cursor.
+func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	result, err := s.db.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, surfaceID, kind, data, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
 }
 
 func (s *Store) Snapshot() (*Snapshot, error) {

@@ -63,6 +63,7 @@ type AgentSession struct {
 
 type AgentEvent struct {
 	Type       string `json:"type"`
+	Cursor     int64  `json:"cursor,omitempty"`
 	AgentID    string `json:"agentId"`
 	MessageID  string `json:"messageId,omitempty"`
 	Text       string `json:"text,omitempty"`

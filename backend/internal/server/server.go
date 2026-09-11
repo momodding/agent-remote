@@ -45,6 +45,14 @@ type RuntimeAPI interface {
 	RuntimeSnapshot() (*runtimestore.Snapshot, error)
 	RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error)
 }
+type AgentAPI interface {
+	CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error)
+	GetAgent(agentID string) (*protocol.AgentSession, error)
+	ListAgents() []protocol.AgentSession
+	SubmitPrompt(agentID, prompt string) error
+	Abort(agentID string) error
+	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
+}
 
 type NotifyAPI interface {
 	RegisterToken(context.Context, protocol.NotifyRegisterRequest) error
@@ -56,6 +64,7 @@ type Server struct {
 	auth            *security.AuthService
 	sessions        SessionAPI
 	runtime         RuntimeAPI
+	agents          AgentAPI
 	notify          NotifyAPI
 	limits          *Limits
 	tls             *security.TLSMaterial
@@ -63,11 +72,15 @@ type Server struct {
 }
 
 func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, notify NotifyAPI, pairingSnapshot *security.PairingSnapshot) (*Server, error) {
+	return NewWithAgents(cfg, tlsMaterial, auth, sessions, nil, notify, pairingSnapshot)
+}
+
+func NewWithAgents(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, agents AgentAPI, notify NotifyAPI, pairingSnapshot *security.PairingSnapshot) (*Server, error) {
 	fsSvc, err := fsservice.NewService(cfg.WorkspaceRoot, filepath.Join(cfg.WorkspaceRoot, cfg.UploadDir), cfg.AllowDestructiveFiles)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
 }
 
 func runtimeAPI(sessions SessionAPI) RuntimeAPI {
@@ -82,6 +95,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/sessions", s.withAuth(s.handleSessions))
 	mux.HandleFunc("/v1/shells", s.withAuth(s.handleShells))
 	mux.HandleFunc("/v1/sessions/", s.withAuth(s.handleSessionAction))
+	mux.HandleFunc("/v1/agents", s.withAuth(s.handleAgents))
+	mux.HandleFunc("/v1/agents/", s.withAuth(s.handleAgentAction))
 	mux.HandleFunc("/v1/runtime/snapshot", s.withAuth(s.handleRuntimeSnapshot))
 	mux.HandleFunc("/v1/runtime/events", s.withAuth(s.handleRuntimeEvents))
 	mux.HandleFunc("/v1/pairing", s.withAuth(s.handlePairingCreate))
@@ -101,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/pairing", s.handlePairingPage)
 	}
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
+	mux.HandleFunc("/v1/ws/runtime", s.handleRuntimeWS)
 	mux.HandleFunc("/v1/ws/vnc", s.handleVNCProxy)
 	return logRequests(cors(s.allowedCIDR(mux)))
 }
@@ -327,6 +343,90 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	if s.agents == nil {
+		writeJSON(w, http.StatusNotImplemented, protocol.ErrorEnvelope{Type: "error", Code: "agents_unavailable", Message: "agent service unavailable"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.agents.ListAgents())
+	case http.MethodPost:
+		if !s.limits.TryStartSession() {
+			writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
+			return
+		}
+		defer func() {
+			if recover() != nil {
+				s.limits.EndSession()
+			}
+		}()
+		var req protocol.CreateSessionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+			return
+		}
+		summary, err := s.agents.CreateAgent(r.Context(), req.CWD, req.Name, req.Args...)
+		if err != nil {
+			s.limits.EndSession()
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, summary)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
+	if s.agents == nil {
+		writeJSON(w, http.StatusNotImplemented, protocol.ErrorEnvelope{Type: "error", Code: "agents_unavailable", Message: "agent service unavailable"})
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/agents/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		summary, err := s.agents.GetAgent(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "agent_not_found", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+		return
+	}
+	if len(parts) == 2 && r.Method == http.MethodPost {
+		switch parts[1] {
+		case "prompt":
+			var req struct {
+				Prompt string `json:"prompt"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+				return
+			}
+			if err := s.agents.SubmitPrompt(id, req.Prompt); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "prompt_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		case "abort":
+			if err := s.agents.Abort(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "abort_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
 }
 
 func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
@@ -761,6 +861,282 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 		default:
 			_ = write(protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})
 		}
+	}
+}
+
+func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
+	if err := s.limits.AcquireWS(r.Context()); err != nil {
+		writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_connections", Message: err.Error()})
+		return
+	}
+	defer s.limits.ReleaseWS()
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	ctx := r.Context()
+
+	var token protocol.AuthToken
+	if err := wsReadJSON(ctx, conn, &token); err != nil || token.Type != "auth.token" || !s.authSession(token.Token) {
+		_ = wsWriteJSON(ctx, conn, protocol.ErrorEnvelope{Type: "error", Code: "auth_failed", Message: "authentication failed"})
+		return
+	}
+
+	var writeMu sync.Mutex
+	write := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return wsWriteJSON(ctx, conn, v)
+	}
+
+	var channelsMu sync.Mutex
+	channels := make(map[string]func())
+	defer func() {
+		channelsMu.Lock()
+		for _, unsub := range channels {
+			unsub()
+		}
+		channelsMu.Unlock()
+	}()
+
+	for {
+		var frame map[string]any
+		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			return
+		}
+		typ, _ := frame["type"].(string)
+		switch typ {
+		case "channel.open":
+			var env protocol.ChannelOpenEnvelope
+			if err := mapToStruct(frame, &env); err != nil {
+				_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid channel.open"})
+				continue
+			}
+			if env.Kind == "agent" && s.agents != nil {
+				channelID := env.ChannelID
+				var liveMu sync.Mutex
+				replaying := true
+				liveEvents := []protocol.AgentEvent{}
+				unsub, err := s.agents.Subscribe(env.TargetID, func(ev protocol.AgentEvent) {
+					liveMu.Lock()
+					if replaying {
+						liveEvents = append(liveEvents, ev)
+						liveMu.Unlock()
+						return
+					}
+					liveMu.Unlock()
+					_ = write(protocol.RuntimeEventEnvelope{Type: "event", ChannelID: channelID, Cursor: ev.Cursor, Event: ev})
+				})
+				if err != nil {
+					_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: err.Error()})
+					continue
+				}
+				channelsMu.Lock()
+				if prev, ok := channels[env.ChannelID]; ok {
+					prev()
+				}
+				channels[env.ChannelID] = unsub
+				channelsMu.Unlock()
+
+				cursor := env.After
+				replayFailed := false
+				if s.runtime != nil {
+					snapshot, err := s.runtime.RuntimeSnapshot()
+					if err != nil {
+						replayFailed = true
+						_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: err.Error()})
+					} else {
+						cursor = snapshot.Cursor
+						replayAfter := env.After
+						for replayAfter < cursor {
+							events, next, err := s.runtime.RuntimeEvents(replayAfter, 500)
+							if err != nil {
+								replayFailed = true
+								_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: err.Error()})
+								break
+							}
+							for _, event := range events {
+								if event.Cursor > cursor || event.SurfaceID != env.TargetID {
+									continue
+								}
+								var agentEvent protocol.AgentEvent
+								if json.Unmarshal(event.Payload, &agentEvent) != nil {
+									continue
+								}
+								agentEvent.Cursor = event.Cursor
+								_ = write(protocol.RuntimeEventEnvelope{Type: "event", ChannelID: channelID, Cursor: event.Cursor, Event: agentEvent})
+							}
+							if len(events) == 0 || next <= replayAfter {
+								replayFailed = true
+								_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: "runtime replay incomplete"})
+								break
+							}
+							replayAfter = next
+						}
+					}
+				}
+				if replayFailed {
+					unsub()
+					channelsMu.Lock()
+					delete(channels, env.ChannelID)
+					channelsMu.Unlock()
+					continue
+				}
+
+				// Events arriving after high-water were buffered while replay ran.
+				for {
+					liveMu.Lock()
+					pending := liveEvents
+					liveEvents = nil
+					if len(pending) == 0 {
+						replaying = false
+						liveMu.Unlock()
+						break
+					}
+					liveMu.Unlock()
+					for _, event := range pending {
+						if event.Cursor > cursor {
+							_ = write(protocol.RuntimeEventEnvelope{Type: "event", ChannelID: channelID, Cursor: event.Cursor, Event: event})
+						}
+					}
+				}
+				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: env.ChannelID, Cursor: cursor})
+			} else if env.Kind == "runtime" {
+				var cursor int64
+				if s.runtime != nil {
+					_, cursor, _ = s.runtime.RuntimeEvents(env.After, 500)
+				}
+				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: env.ChannelID, Cursor: cursor})
+			} else {
+				_ = write(protocol.CommandResultEnvelope{
+					Type:      "command.result",
+					RequestID: env.RequestID,
+					OK:        false,
+					Error:     "unsupported channel kind",
+				})
+			}
+		case "channel.close":
+			var env protocol.ChannelCloseEnvelope
+			if err := mapToStruct(frame, &env); err != nil {
+				continue
+			}
+			channelsMu.Lock()
+			if unsub, ok := channels[env.ChannelID]; ok {
+				unsub()
+				delete(channels, env.ChannelID)
+			}
+			channelsMu.Unlock()
+			_ = write(protocol.ChannelClosedEnvelope{
+				Type:      "channel.closed",
+				ChannelID: env.ChannelID,
+				Reason:    "closed_by_client",
+			})
+		case "command":
+			var env protocol.CommandEnvelope
+			if err := mapToStruct(frame, &env); err != nil {
+				_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid command"})
+				continue
+			}
+			s.executeCommand(ctx, env, write)
+		default:
+			_ = write(protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame type"})
+		}
+	}
+}
+
+func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelope, write func(any) error) {
+	switch cmd.Command {
+	case "agent.create":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		var args struct {
+			CWD  string   `json:"cwd"`
+			Name string   `json:"name"`
+			Args []string `json:"args"`
+		}
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &args)
+			}
+		}
+		summary, err := s.agents.CreateAgent(ctx, args.CWD, args.Name, args.Args...)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true, Result: summary})
+	case "agent.prompt":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		var args struct {
+			Prompt string `json:"prompt"`
+		}
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &args)
+			}
+		}
+		err := s.agents.SubmitPrompt(cmd.TargetID, args.Prompt)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "agent.abort":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		err := s.agents.Abort(cmd.TargetID)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "terminal.create":
+		var req protocol.CreateSessionRequest
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &req)
+			}
+		}
+		summary, err := s.sessions.Create(ctx, req)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true, Result: summary})
+	case "terminal.resize":
+		var args struct {
+			Cols int `json:"cols"`
+			Rows int `json:"rows"`
+		}
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &args)
+			}
+		}
+		err := s.sessions.Resize(cmd.TargetID, args.Cols, args.Rows)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "terminal.close":
+		err := s.sessions.Close(cmd.TargetID)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	default:
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "unknown command: " + cmd.Command})
 	}
 }
 
