@@ -361,11 +361,9 @@ func (p *Parser) FinishPaneCapture(paneID string, sequence uint64, attach func([
 			pending = append(pending, event.payload...)
 		}
 	}
-	if err := attach(pending); err != nil {
-		return err
-	}
+	err := attach(pending)
 	delete(p.captureOutputs, paneID)
-	return nil
+	return err
 }
 
 func (p *Parser) AbortPaneCapture(paneID string) {

@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -103,6 +104,32 @@ func TestParserCaptureHandoffBuffersBurstExactlyOnce(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for live output after handoff")
+	}
+}
+
+func TestParserCaptureFailureReleasesBuffer(t *testing.T) {
+	parser := NewParser(strings.NewReader(""))
+	live := parser.BeginPaneCapture("%0")
+	if err := parser.handleLine("%output %0 captured"); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("subscribe failed")
+	if err := parser.FinishPaneCapture("%0", 0, func([]byte) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("FinishPaneCapture error = %v, want %v", err, want)
+	}
+	if _, retained := parser.captureOutputs["%0"]; retained {
+		t.Fatal("failed capture still retains pane output")
+	}
+	if err := parser.handleLine("%output %0 live"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-live:
+		if string(event.payload) != "live" {
+			t.Fatalf("live payload = %q, want live", event.payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for output after failed capture")
 	}
 }
 
