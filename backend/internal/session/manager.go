@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -18,6 +19,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
+	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 )
 
 type State string
@@ -90,6 +92,9 @@ type Manager struct {
 	shutdownOnce       sync.Once
 	shutdownErr        error
 	closing            bool
+	tmuxClient         *tmux.ControlClient // nil if tmux unavailable
+	useTmux            bool                // true to route Create through tmux panes
+	recordTopology     func() error
 }
 
 func (m *Manager) RuntimeStore() *runtimestore.Store {
@@ -105,6 +110,7 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 		return nil, err
 	}
 	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store}
+	m.recordTopology = m.recordTmuxTopology
 	if err := m.restore(); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -112,7 +118,89 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 	return m, nil
 }
 
-func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
+// SetTmux injects a tmux ControlClient, enables tmux backend for future
+// Create() calls, and watches for tmux server/control loss so affected
+// runtimes are marked exited without the manager recreating commands.
+func (m *Manager) SetTmux(client *tmux.ControlClient) {
+	m.mu.Lock()
+	m.tmuxClient = client
+	m.useTmux = true
+	m.mu.Unlock()
+	go func() {
+		<-client.Lost()
+		m.markTmuxRuntimesLost()
+	}()
+}
+
+// markTmuxRuntimesLost exits every tmux-backed runtime after the control
+// client reports the tmux server/connection is gone. It never spawns a
+// replacement command; a later daemon restart reconciles surviving panes.
+func (m *Manager) markTmuxRuntimesLost() {
+	m.mu.Lock()
+	m.useTmux = false
+	runtimes := make([]*TerminalRuntime, 0, len(m.sessions))
+	for _, runtime := range m.sessions {
+		if _, ok := runtime.backend.(*tmux.TmuxBackend); ok {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	m.mu.Unlock()
+	for _, runtime := range runtimes {
+		m.markExited(runtime)
+	}
+}
+
+// ReconcileTmux reattaches surviving tmux panes to their persisted terminal
+// runtimes after a daemon restart. It never creates a replacement pane: a
+// terminal whose pane no longer exists remains StateExited from restore().
+func (m *Manager) ReconcileTmux(ctx context.Context) error {
+	m.mu.Lock()
+	client := m.tmuxClient
+	m.mu.Unlock()
+	if client == nil {
+		return nil
+	}
+	if err := client.RefreshTopology(ctx); err != nil {
+		return err
+	}
+	snapshot, err := m.runtime.Snapshot()
+	if err != nil {
+		return err
+	}
+	for _, pane := range snapshot.Topology {
+		if pane.ServerID != client.ServerID() {
+			continue // persisted from a different tmux server generation
+		}
+		m.mu.Lock()
+		runtime, ok := m.sessions[pane.TerminalSessionID]
+		m.mu.Unlock()
+		if !ok || runtime.backend != nil {
+			continue
+		}
+		backend, err := client.ReattachPane(ctx, pane.PaneID, pane.SessionID, pane.WindowID)
+		if err != nil {
+			continue // pane no longer present; terminal stays exited
+		}
+		m.mu.Lock()
+		runtime.backend = backend
+		runtime.meta.State = StateRunning
+		runtime.meta.UpdatedAt = time.Now().UTC()
+		runtime.outbound = make(chan outboundMessage, m.channelBufferSize)
+		runtime.exitOnce = sync.Once{}
+		m.forwardWorkers.Add(1)
+		m.outputWorkers.Add(1)
+		m.mu.Unlock()
+		go func(r *TerminalRuntime) { defer m.forwardWorkers.Done(); m.forward(r) }(runtime)
+		go func(r *TerminalRuntime) {
+			defer m.outputWorkers.Done()
+			defer close(r.outbound)
+			m.readOutput(r)
+		}(runtime)
+	}
+	return m.saveMetadata()
+}
+
+func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
 	id, err := randomID()
 	if err != nil {
 		return nil, err
@@ -132,10 +220,15 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	if rows <= 0 {
 		rows = 24
 	}
-	cmd := exec.Command(command, req.Args...)
-	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	backend, err := newPtyBackend(cmd, cols, rows)
+	var backend TerminalBackend
+	if m.useTmux && m.tmuxClient != nil {
+		backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
+	} else {
+		cmd := exec.Command(command, req.Args...)
+		cmd.Dir = cwd
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+		backend, err = newPtyBackend(cmd, cols, rows)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +264,18 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 		return nil, err
 	}
 	m.sessions[id] = runtime
+	m.mu.Unlock()
+	if err := m.recordTopology(); err != nil {
+		m.mu.Lock()
+		delete(m.sessions, id)
+		m.mu.Unlock()
+		_ = backend.Close()
+		if rollbackErr := m.runtime.RemoveTerminal(id); rollbackErr != nil {
+			return nil, fmt.Errorf("record tmux topology: %w; remove terminal projection: %v", err, rollbackErr)
+		}
+		return nil, err
+	}
+	m.mu.Lock()
 	m.forwardWorkers.Add(1)
 	m.outputWorkers.Add(1)
 	m.mu.Unlock()
@@ -187,6 +292,36 @@ func (m *Manager) Create(_ context.Context, req protocol.CreateSessionRequest) (
 	copy := runtime.meta
 	m.mu.Unlock()
 	return &protocol.SessionSummary{ID: copy.ID, Name: copy.Name, Command: copy.Command, CWD: copy.CWD, State: string(copy.State), CreatedAt: copy.CreatedAt, UpdatedAt: copy.UpdatedAt, Preview: copy.Preview, WaitState: protocolWait(copy.WaitState)}, nil
+}
+
+func (m *Manager) recordTmuxTopology() error {
+	m.mu.Lock()
+	client := m.tmuxClient
+	bindings := make(map[string]string, len(m.sessions))
+	for terminalID, runtime := range m.sessions {
+		if backend, ok := runtime.backend.(*tmux.TmuxBackend); ok {
+			bindings[backend.GetPaneID()] = terminalID
+		}
+	}
+	m.mu.Unlock()
+	if client == nil {
+		return nil
+	}
+	topology := client.GetTopology()
+	panes := make([]runtimestore.TopologyPane, 0, len(bindings))
+	for paneID, terminalID := range bindings {
+		pane := topology.Panes[paneID]
+		if pane == nil {
+			continue
+		}
+		window := topology.Windows[pane.WindowID]
+		session := topology.Sessions[pane.SessionID]
+		if window == nil || session == nil {
+			continue
+		}
+		panes = append(panes, runtimestore.TopologyPane{TerminalSessionID: terminalID, ServerID: client.ServerID(), SessionID: pane.SessionID, WindowID: pane.WindowID, PaneID: pane.PaneID, SessionName: session.Name, WindowName: window.Name, WindowIndex: window.Index, PaneIndex: pane.Index, CWD: pane.Path, Active: pane.Active, UpdatedAt: time.Now().UTC()})
+	}
+	return m.runtime.RecordTopology(panes)
 }
 
 func (m *Manager) RuntimeSnapshot() (*runtimestore.Snapshot, error) { return m.runtime.Snapshot() }

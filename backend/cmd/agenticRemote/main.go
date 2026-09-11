@@ -21,6 +21,7 @@ import (
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/server"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
+	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 )
 
 const sniffDeadline = 5 * time.Second
@@ -323,6 +324,15 @@ func serve(configPath string) error {
 		return err
 	}
 	defer manager.Shutdown()
+	tmuxClient := tmux.NewControlClient(filepath.Join(stateDir, "tmux"), "tmux")
+	if err := tmuxClient.Start(context.Background()); err != nil {
+		return fmt.Errorf("start tmux runtime: %w", err)
+	}
+	defer tmuxClient.Close()
+	manager.SetTmux(tmuxClient)
+	if err := manager.ReconcileTmux(context.Background()); err != nil {
+		log.Printf("[WARNING] tmux topology reconciliation failed: %v", err)
+	}
 	agents := agent.NewService(manager, manager.RuntimeStore(), "")
 	defer agents.Close()
 	cfg.StateDir = stateDir

@@ -8,13 +8,15 @@ import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
 import { MultiTerminal } from '../../src/components/MultiTerminal';
 import { AddSessionFAB } from '../../src/components/AddSessionFAB';
 import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
+import { TmuxPaneSheet, type TmuxPaneSheetHandle } from '../../src/components/TmuxPaneSheet';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
 import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-channel';
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { MAX_MULTI_SESSIONS, addSession, closeSession, updateOutput, type MultiSessionState } from '../../src/lib/multi-session';
-import { useTabStore } from '../../src/lib/tabs/tab-store';
+import { useTabStore, updateTab } from '../../src/lib/tabs/tab-store';
 import type { TerminalWorkspaceTab } from '../../src/lib/tabs/types';
+import type { TmuxPane } from '../../src/protocol';
 
 // Displayed/REST session id -> multiplex channel id + this screen's listener teardown.
 type MultiChannelEntry = { channelId: string; unsubscribe: () => void };
@@ -23,9 +25,10 @@ export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
   const Wrapper = SafeAreaView;
   const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
-  const { state, closeTab } = useTabStore();
+  const { state, dispatch, closeTab } = useTabStore();
   const tab = state.tabs.find((t): t is TerminalWorkspaceTab => t.tabId === id && t.kind === 'terminal') ?? null;
   const [output, setOutput] = useState('');
+  const [panes, setPanes] = useState<TmuxPane[]>([]);
   const [multiSessions, setMultiSessions] = useState<Record<string, MultiSessionState>>({});
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
@@ -36,6 +39,7 @@ export default function TerminalScreen() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
+  const paneSheetRef = useRef<TmuxPaneSheetHandle>(null);
   const channelRef = useRef<DaemonChannel | null>(null);
   const primaryUnsubscribeRef = useRef<(() => void) | null>(null);
   const isMultiModeCheck = mode === 'multi';
@@ -105,9 +109,6 @@ export default function TerminalScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab?.tabId]);
 
-  // Runs `connect()` fresh each time `connection` resolves so the
-  // subscriber closure (and `finish`'s REST-close path) sees the current
-  // `connection`, not the null captured when the mount effect above fired.
   useEffect(() => {
     if (!connection || isMultiModeCheck) return;
     connect();
@@ -116,7 +117,7 @@ export default function TerminalScreen() {
     // actions tear those down.
     return () => primaryUnsubscribeRef.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection]);
+  }, [connection, tab?.remoteSessionId]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -153,7 +154,22 @@ export default function TerminalScreen() {
     ]);
   }, [api, tab, closeTab]);
 
-  // Detach: leave the process and the tab running, just stop listening here.
+  const openPaneSwitcher = useCallback(async () => {
+    if (!api) return;
+    try {
+      setPanes((await api.runtimeSnapshot()).topology);
+      paneSheetRef.current?.present();
+    } catch (error) {
+      Alert.alert('Could not load panes', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [api]);
+
+  const selectPane = useCallback((pane: TmuxPane) => {
+    if (!tab || pane.terminalSessionId === tab.remoteSessionId) return;
+    setOutput('');
+    dispatch((previous) => updateTab(previous, tab.tabId, { remoteSessionId: pane.terminalSessionId, tmuxPaneId: pane.paneId, title: pane.windowName }));
+  }, [dispatch, tab]);
+
   const detach = useCallback(() => {
     primaryUnsubscribeRef.current?.();
     setOutput('');
@@ -315,6 +331,7 @@ export default function TerminalScreen() {
       <Pressable accessibilityLabel="Detach" onPress={detach} style={styles.headerIcon}><Feather name="arrow-left" size={20} color="#46B8C4" /></Pressable>
       <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Terminal'}</Text>
       <View style={styles.actions}>
+        <Pressable accessibilityLabel="Switch pane" onPress={() => void openPaneSwitcher()} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="columns" size={18} color="#D19A2C" /></Pressable>
         <Pressable accessibilityLabel="Clear" onPress={() => setOutput('')} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="trash-2" size={18} color="#B8B8B8" /></Pressable>
         <Pressable accessibilityLabel="Close session" onPress={close} android_ripple={{ color: 'rgba(255,255,255,0.15)' }} style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}><Feather name="x" size={20} color="#EF6666" /></Pressable>
       </View>
@@ -323,6 +340,7 @@ export default function TerminalScreen() {
       {connection && tab ? <Terminal ref={terminalRef} output={output} onInput={(data) => shortcutKeyboardRef.current?.input(data)} onResize={(cols, rows) => channelRef.current?.send({ channelId: tab.remoteSessionId, kind: 'terminal', type: 'pty.resize', cols, rows })} /> : <Text style={styles.connecting}>Connecting…</Text>}
     </View>
     <ShortcutKeyboard ref={shortcutKeyboardRef} onInput={(data) => tab && channelRef.current?.send({ channelId: tab.remoteSessionId, kind: 'terminal', type: 'pty.input', data: base64(utf8(data)) })} bottomInset={insets.bottom} keyboardInset={keyboardInset} onCopy={() => terminalRef.current?.copy()} onPaste={() => terminalRef.current?.paste()} onSelectAll={() => terminalRef.current?.selectAll()} onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }} onCollapse={() => terminalRef.current?.focus()} />
+    <TmuxPaneSheet ref={paneSheetRef} panes={panes} currentPaneId={tab?.tmuxPaneId} onSelect={selectPane} />
     </KeyboardAvoidingView>
   </Wrapper>;
 }

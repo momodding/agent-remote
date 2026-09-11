@@ -39,6 +39,21 @@ type AgentSummary struct {
 	UpdatedAt         time.Time       `json:"updatedAt"`
 }
 
+type TopologyPane struct {
+	TerminalSessionID string    `json:"terminalSessionId"`
+	ServerID          string    `json:"serverId"`
+	SessionID         string    `json:"sessionId"`
+	WindowID          string    `json:"windowId"`
+	PaneID            string    `json:"paneId"`
+	SessionName       string    `json:"sessionName"`
+	WindowName        string    `json:"windowName"`
+	WindowIndex       int       `json:"windowIndex"`
+	PaneIndex         int       `json:"paneIndex"`
+	CWD               string    `json:"cwd"`
+	Active            bool      `json:"active"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
 type Event struct {
 	Cursor    int64           `json:"cursor"`
 	SurfaceID string          `json:"surfaceId"`
@@ -51,7 +66,7 @@ type Snapshot struct {
 	Cursor    int64             `json:"cursor"`
 	Terminals []TerminalSummary `json:"terminals"`
 	Agents    []AgentSummary    `json:"agents"`
-	Topology  []any             `json:"topology"`
+	Topology  []TopologyPane    `json:"topology"`
 	Desktops  []any             `json:"desktops"`
 }
 
@@ -77,7 +92,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}} {
+	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}} {
 		var applied bool
 		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)`, migration.version).Scan(&applied); err != nil {
 			return err
@@ -120,6 +135,24 @@ func migrate0002(tx *sql.Tx) error {
 	_, err := tx.Exec(`CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, adapter TEXT NOT NULL, terminal_session_id TEXT NOT NULL, cwd TEXT NOT NULL, state TEXT NOT NULL, capabilities BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
 	return err
 }
+func migrate0003(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE tmux_panes (pane_id TEXT PRIMARY KEY, terminal_session_id TEXT NOT NULL UNIQUE, server_id TEXT NOT NULL, session_id TEXT NOT NULL, window_id TEXT NOT NULL, session_name TEXT NOT NULL, window_name TEXT NOT NULL, window_index INTEGER NOT NULL, pane_index INTEGER NOT NULL, cwd TEXT NOT NULL, active INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
+	return err
+}
+
+func migrate0004(tx *sql.Tx) error {
+	for _, query := range []string{
+		`CREATE TABLE tmux_panes_v4 (pane_id TEXT NOT NULL, terminal_session_id TEXT NOT NULL UNIQUE, server_id TEXT NOT NULL, session_id TEXT NOT NULL, window_id TEXT NOT NULL, session_name TEXT NOT NULL, window_name TEXT NOT NULL, window_index INTEGER NOT NULL, pane_index INTEGER NOT NULL, cwd TEXT NOT NULL, active INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (server_id, pane_id))`,
+		`INSERT INTO tmux_panes_v4 (pane_id, terminal_session_id, server_id, session_id, window_id, session_name, window_name, window_index, pane_index, cwd, active, updated_at) SELECT pane_id, terminal_session_id, server_id, session_id, window_id, session_name, window_name, window_index, pane_index, cwd, active, updated_at FROM tmux_panes`,
+		`DROP TABLE tmux_panes`,
+		`ALTER TABLE tmux_panes_v4 RENAME TO tmux_panes`,
+	} {
+		if _, err := tx.Exec(query); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	payload, err := json.Marshal(term)
@@ -149,6 +182,7 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -158,6 +192,30 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 		return err
 	}
 	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, agent.ID, kind, payload, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RemoveTerminal removes a materialized terminal after a later create-stage failure.
+func (s *Store) RemoveTerminal(id string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, id); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(struct {
+		ID string `json:"id"`
+	}{ID: id})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, id, "terminal.removed", payload, time.Now().Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -178,6 +236,32 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 	return result.LastInsertId()
 }
 
+func (s *Store) RecordTopology(panes []TopologyPane) error {
+	payload, err := json.Marshal(panes)
+	if err != nil {
+		return err
+	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DELETE FROM tmux_panes`); err != nil {
+		return err
+	}
+	for _, pane := range panes {
+		if _, err = tx.Exec(`INSERT INTO tmux_panes (pane_id, terminal_session_id, server_id, session_id, window_id, session_name, window_name, window_index, pane_index, cwd, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, pane.PaneID, pane.TerminalSessionID, pane.ServerID, pane.SessionID, pane.WindowID, pane.SessionName, pane.WindowName, pane.WindowIndex, pane.PaneIndex, pane.CWD, boolToInt(pane.Active), pane.UpdatedAt.Unix()); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, "topology", "tmux.topology", payload, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Snapshot() (*Snapshot, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -190,7 +274,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	snapshot := &Snapshot{Cursor: cursor, Terminals: []TerminalSummary{}, Agents: []AgentSummary{}, Topology: []any{}, Desktops: []any{}}
+	snapshot := &Snapshot{Cursor: cursor, Terminals: []TerminalSummary{}, Agents: []AgentSummary{}, Topology: []TopologyPane{}, Desktops: []any{}}
 	for rows.Next() {
 		var term TerminalSummary
 		var exited, created, updated int64
@@ -218,7 +302,25 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 		agent.CreatedAt, agent.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 		snapshot.Agents = append(snapshot.Agents, agent)
 	}
-	return snapshot, agents.Err()
+	if err := agents.Err(); err != nil {
+		return nil, err
+	}
+	panes, err := s.db.Query(`SELECT terminal_session_id, server_id, session_id, window_id, pane_id, session_name, window_name, window_index, pane_index, cwd, active, updated_at FROM tmux_panes ORDER BY session_id, window_index, pane_index`)
+	if err != nil {
+		return nil, err
+	}
+	defer panes.Close()
+	for panes.Next() {
+		var pane TopologyPane
+		var active, updated int64
+		if err := panes.Scan(&pane.TerminalSessionID, &pane.ServerID, &pane.SessionID, &pane.WindowID, &pane.PaneID, &pane.SessionName, &pane.WindowName, &pane.WindowIndex, &pane.PaneIndex, &pane.CWD, &active, &updated); err != nil {
+			return nil, err
+		}
+		pane.Active = active != 0
+		pane.UpdatedAt = time.Unix(updated, 0)
+		snapshot.Topology = append(snapshot.Topology, pane)
+	}
+	return snapshot, panes.Err()
 }
 
 func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {

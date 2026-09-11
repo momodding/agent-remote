@@ -19,6 +19,7 @@ export interface TerminalWorkspaceTab extends BaseTab {
   remoteSessionId: string; // maps to backend Session.ID
   state: 'connecting' | 'running' | 'waiting' | 'exited' | 'detached';
   waitState?: WaitState;
+  tmuxPaneId?: string;
 }
 
 
@@ -39,6 +40,7 @@ export interface AgentWorkspaceTab extends BaseTab {
   terminalSessionId: string; // shared underlying Session.ID for terminal fallback
   state: 'working' | 'idle' | 'needsYou' | 'exited';
   view: 'chat' | 'terminal'; // which surface is focused for this tab
+  tmuxPaneId?: string;
 }
 
 export type WorkspaceTab = TerminalWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab | AgentWorkspaceTab;

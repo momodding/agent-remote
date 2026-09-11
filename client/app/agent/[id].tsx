@@ -18,6 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather';
 
 import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
+import { TmuxPaneSheet, type TmuxPaneSheetHandle } from '../../src/components/TmuxPaneSheet';
 import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
@@ -26,7 +27,7 @@ import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
 import type { AgentWorkspaceTab } from '../../src/lib/tabs/types';
-import type { AgentEvent } from '../../src/protocol';
+import type { AgentEvent, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
   id: string;
@@ -62,6 +63,8 @@ export default function AgentScreen() {
   const agentUnsubRef = useRef<(() => void) | null>(null);
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
+  const [panes, setPanes] = useState<TmuxPane[]>([]);
+  const paneSheetRef = useRef<TmuxPaneSheetHandle>(null);
 
   const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
 
@@ -162,6 +165,21 @@ export default function AgentScreen() {
       hidden.remove();
     };
   }, [insets.bottom, windowHeight]);
+
+  const openPaneSwitcher = useCallback(async () => {
+    if (!api) return;
+    try {
+      setPanes((await api.runtimeSnapshot()).topology);
+      paneSheetRef.current?.present();
+    } catch (error) {
+      Alert.alert('Could not load panes', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [api]);
+
+  const selectPane = useCallback((pane: TmuxPane) => {
+    if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
+    dispatch((previous) => updateTab(previous, tab.tabId, { terminalSessionId: pane.terminalSessionId, tmuxPaneId: pane.paneId }));
+  }, [dispatch, tab]);
 
   const sendPrompt = useCallback(async () => {
     if (!promptText.trim() || !api || !tab || sending) return;
@@ -316,7 +334,6 @@ export default function AgentScreen() {
         <Pressable accessibilityLabel="Back" style={styles.headerIcon} onPress={() => router.replace('/')}>
           <Feather name="arrow-left" size={20} color="#F0F0F0" />
         </Pressable>
-
         <View style={styles.headerTitleContainer}>
           <View style={styles.headerTitleRow}>
             <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
@@ -342,6 +359,10 @@ export default function AgentScreen() {
             <Feather name="terminal" size={16} color={viewMode === 'terminal' ? '#0A0A0A' : '#A0A0A0'} />
           </Pressable>
         </View>
+
+        <Pressable accessibilityLabel="Switch pane" style={styles.headerIcon} onPress={() => void openPaneSwitcher()}>
+          <Feather name="columns" size={18} color="#D19A2C" />
+        </Pressable>
 
         <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
           <Feather name="slash" size={18} color="#EF4444" />
@@ -428,6 +449,7 @@ export default function AgentScreen() {
           />
         </View>
       )}
+      <TmuxPaneSheet ref={paneSheetRef} panes={panes} currentPaneId={tab?.tmuxPaneId} onSelect={selectPane} />
     </SafeAreaView>
   );
 }

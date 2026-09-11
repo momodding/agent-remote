@@ -1,5 +1,5 @@
 <!-- omp-source-branch: main -->
-<!-- omp-work-branch: omp/recover-agent-architecture -->
+<!-- omp-work-branch: omp/recover-agent-architecture-2 -->
 # Agent Chat and Multi-Agent Runtime Recovery Plan
 
 ## Goal
