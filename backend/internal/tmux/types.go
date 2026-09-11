@@ -34,7 +34,13 @@ type CommandResult struct {
 	CommandID string
 	Lines     []string // Each line from %begin...%end block
 	Output    []byte   // Concatenated output
+	Sequence  uint64   // parser line sequence when this command completed
 	Error     *ControlError
+}
+
+type paneOutput struct {
+	sequence uint64
+	payload  []byte
 }
 
 // TopologySnapshot holds tmux state

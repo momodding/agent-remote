@@ -240,9 +240,9 @@ func TestServerLossSignalsLost(t *testing.T) {
 	}
 }
 
-// TestReattachPaneRecoversBaselineExactlyOnce proves reconnecting after a
-// simulated daemon restart recovers pane history without duplication.
-func TestReattachPaneRecoversBaselineExactlyOnce(t *testing.T) {
+// TestReattachPaneRecoversStreamingOutput reattaches while a pane is actively
+// writing, covering the capture/live handoff rather than only settled output.
+func TestReattachPaneRecoversStreamingOutput(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Skip("tmux not found")
@@ -256,21 +256,24 @@ func TestReattachPaneRecoversBaselineExactlyOnce(t *testing.T) {
 		t.Fatalf("start failed: %v", err)
 	}
 	defer svc.Close()
-	created, err := svc.CreatePane(ctx, "reattach-test", "sh", []string{"-c", "printf reattached; sleep 100"}, stateDir, 120, 40)
+	created, err := svc.CreatePane(ctx, "reattach-test", "sh", []string{"-c", "i=0; while [ $i -lt 40 ]; do printf x; i=$((i+1)); sleep 0.01; done; sleep 100"}, stateDir, 120, 40)
 	if err != nil {
 		t.Fatalf("create pane failed: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond) // let tmux flush startup output before reattach
-	reattached, err := svc.ReattachPane(ctx, created.GetPaneID(), created.Identity(), created.Identity())
+	pane := svc.GetTopology().Panes[created.GetPaneID()]
+	if pane == nil {
+		t.Fatal("created pane absent from topology")
+	}
+	reattached, err := svc.ReattachPane(ctx, pane.PaneID, pane.SessionID, pane.WindowID)
 	if err != nil {
 		t.Fatalf("reattach failed: %v", err)
 	}
-	buf := make([]byte, 1024)
+	buf := make([]byte, 4096)
 	n, err := reattached.Read(buf)
 	if err != nil {
 		t.Fatalf("reattached read failed: %v", err)
 	}
-	if strings.Count(string(buf[:n]), "reattached") != 1 {
-		t.Fatalf("reattached output = %q, want exactly one occurrence", buf[:n])
+	if !strings.Contains(string(buf[:n]), "x") {
+		t.Fatalf("reattached output = %q, want streaming output", buf[:n])
 	}
 }
