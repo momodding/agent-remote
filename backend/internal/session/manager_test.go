@@ -2,13 +2,16 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 )
 
 // TestManagerEmptyCWDUsesDefaultCWD verifies that empty request CWD uses injected default home.
@@ -281,5 +284,119 @@ func TestManagerCloseRestoredSession(t *testing.T) {
 	defer restored.Shutdown()
 	if err := restored.Close(created.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManagerCreateRollsBackTerminalWhenTopologyPersistenceFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewManager(tmpDir, filepath.Join(tmpDir, "state"), tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+	manager.recordTopology = func() error { return errors.New("topology unavailable") }
+	if _, err := manager.Create(context.Background(), protocol.CreateSessionRequest{Name: "test", Command: "sh", Args: []string{"-c", "sleep 60"}}); err == nil {
+		t.Fatal("Create succeeded despite topology persistence failure")
+	}
+	snapshot, err := manager.RuntimeSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Terminals) != 0 {
+		t.Fatalf("terminal projection survived rollback: %+v", snapshot.Terminals)
+	}
+}
+
+func TestManagerMarksTmuxRuntimesLostWithoutRecreating(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewManager(tmpDir, filepath.Join(tmpDir, "state"), tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+	client := tmux.NewControlClient(tmpDir, "tmux")
+	backend := tmux.NewTmuxBackend(client, "%0", "$0", "@0")
+	now := time.Now().UTC()
+	runtime := &TerminalRuntime{meta: Session{ID: "session-1", Name: "tmux-term", State: StateRunning, CreatedAt: now, UpdatedAt: now}, backend: backend, scrollback: filepath.Join(tmpDir, "session-1.scrollback"), outbound: make(chan outboundMessage, 16)}
+	manager.sessions["session-1"] = runtime
+	manager.SetTmux(client)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Close by client does not signal Lost; simulate unexpected server loss
+	manager.markTmuxRuntimesLost()
+	summary := manager.List(context.Background())
+	if len(summary) != 1 || summary[0].State != string(StateExited) {
+		t.Fatalf("unexpected summary state: %+v", summary)
+	}
+}
+
+// TestManagerReconcileTmuxSurvivesDaemonRestart proves the Phase 3 acceptance
+// path: killing the daemon process leaves the tmux pane alive, and a fresh
+// Manager pointed at the same private tmux socket recovers a running,
+// readable backend for the persisted terminal without recreating the pane.
+func TestManagerReconcileTmuxSurvivesDaemonRestart(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found in PATH")
+	}
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	tmuxStateDir := filepath.Join(stateDir, "tmux")
+
+	manager1, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client1 := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client1.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager1.SetTmux(client1)
+
+	summary, err := manager1.Create(ctx, protocol.CreateSessionRequest{Name: "restart-test", Command: "sh", Args: []string{"-c", "printf alive; sleep 100"}})
+	if err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+
+	// Simulate the daemon process exiting: close only the local control
+	// connection, not the tmux server, and drop the manager without Shutdown
+	// so the tmux pane is never killed.
+	if err := client1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	manager2, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager2.Shutdown()
+	client2 := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	if err := client2.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager2.SetTmux(client2)
+	if err := manager2.ReconcileTmux(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	summaries := manager2.List(ctx)
+	var restored *TerminalRuntime
+	manager2.mu.Lock()
+	restored = manager2.sessions[summary.ID]
+	manager2.mu.Unlock()
+	if restored == nil || restored.backend == nil || !restored.backend.Alive() {
+		t.Fatalf("session not reconciled to a live backend: %+v", summaries)
+	}
+	found := false
+	for _, s := range summaries {
+		if s.ID == summary.ID && s.State == string(StateRunning) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reconciled session not running: %+v", summaries)
 	}
 }

@@ -10,6 +10,7 @@ import type {
   PairingPayload,
   ReadFileResponse,
   RenameFileRequest,
+  RuntimeSnapshot,
   SessionSummary,
 } from '../protocol';
 import { clientProof, newClientNonce, validateClientName } from './auth';
@@ -65,6 +66,10 @@ export class AgenticRemoteAPI {
 
   async abortAgent(id: string): Promise<void> {
     await this.request(`/v1/agents/${encodeURIComponent(id)}/abort`, { method: 'POST' });
+  }
+
+  async runtimeSnapshot(): Promise<RuntimeSnapshot> {
+    return this.request('/v1/runtime/snapshot');
   }
 
   async files(path = ''): Promise<FileEntry[]> {

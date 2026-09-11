@@ -52,6 +52,28 @@ export type AgentEvent = {
   state?: string;
 };
 
+export type TmuxPane = {
+  terminalSessionId: string;
+  serverId: string;
+  sessionId: string;
+  windowId: string;
+  paneId: string;
+  sessionName: string;
+  windowName: string;
+  windowIndex: number;
+  paneIndex: number;
+  cwd: string;
+  active: boolean;
+};
+
+export type RuntimeSnapshot = {
+  cursor: number;
+  terminals: Array<{ id: string; name: string; cwd: string; seq: number; exited: boolean }>;
+  agents: AgentSession[];
+  topology: TmuxPane[];
+  desktops: unknown[];
+};
+
 export type ChannelOpenEnvelope = {
   type: 'channel.open'; requestId: string; channelId: string; kind: string; targetId: string; after?: number;
 };

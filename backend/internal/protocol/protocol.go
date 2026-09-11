@@ -73,6 +73,20 @@ type AgentEvent struct {
 	State      string `json:"state,omitempty"`
 }
 
+type TmuxPane struct {
+	TerminalSessionID string `json:"terminalSessionId"`
+	ServerID          string `json:"serverId"`
+	SessionID         string `json:"sessionId"`
+	WindowID          string `json:"windowId"`
+	PaneID            string `json:"paneId"`
+	SessionName       string `json:"sessionName"`
+	WindowName        string `json:"windowName"`
+	WindowIndex       int    `json:"windowIndex"`
+	PaneIndex         int    `json:"paneIndex"`
+	CWD               string `json:"cwd"`
+	Active            bool   `json:"active"`
+}
+
 type ChannelOpenEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"requestId"`
