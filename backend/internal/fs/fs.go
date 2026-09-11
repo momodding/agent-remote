@@ -33,6 +33,10 @@ func NewService(workspaceRoot, uploadRoot string, allowDestructive bool) (*Servi
 	if err != nil {
 		return nil, err
 	}
+	workspaceAbs, err = filepath.EvalSymlinks(workspaceAbs)
+	if err != nil {
+		return nil, err
+	}
 	uploadAbs, err := filepath.Abs(uploadRoot)
 	if err != nil {
 		return nil, err
@@ -40,35 +44,51 @@ func NewService(workspaceRoot, uploadRoot string, allowDestructive bool) (*Servi
 	return &Service{WorkspaceRoot: workspaceAbs, UploadRoot: uploadAbs, AllowDestructiveFiles: allowDestructive}, nil
 }
 
-func (s *Service) Resolve(rel string) (string, string, bool, error) {
+func (s *Service) Resolve(rel string) (string, string, error) {
 	cleaned := filepath.Clean(filepath.FromSlash(rel))
-	if filepath.IsAbs(cleaned) {
-		abs, err := filepath.Abs(cleaned)
-		if err != nil {
-			return "", "", false, err
-		}
-		return abs, filepath.ToSlash(abs), true, nil
+	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("path escapes workspaceRoot")
 	}
-	abs, err := filepath.Abs(filepath.Join(s.WorkspaceRoot, cleaned))
+	if cleaned == "." {
+		cleaned = ""
+	}
+	candidate := filepath.Join(s.WorkspaceRoot, cleaned)
+	resolved, err := resolveExistingPath(candidate)
 	if err != nil {
-		return "", "", false, err
+		return "", "", err
 	}
-	if abs == s.WorkspaceRoot || strings.HasPrefix(abs, s.WorkspaceRoot+string(filepath.Separator)) {
-		relPath, err := filepath.Rel(s.WorkspaceRoot, abs)
-		if err != nil {
-			return "", "", false, err
-		}
-		display := filepath.ToSlash(relPath)
-		if display == "." {
-			display = ""
-		}
-		return abs, display, false, nil
+	if resolved != s.WorkspaceRoot && !strings.HasPrefix(resolved, s.WorkspaceRoot+string(filepath.Separator)) {
+		return "", "", errors.New("path escapes workspaceRoot")
 	}
-	return abs, filepath.ToSlash(abs), true, nil
+	return resolved, filepath.ToSlash(cleaned), nil
+}
+
+func resolveExistingPath(path string) (string, error) {
+	ancestor := path
+	for {
+		if _, err := os.Lstat(ancestor); err == nil {
+			resolved, err := filepath.EvalSymlinks(ancestor)
+			if err != nil {
+				return "", err
+			}
+			rest, err := filepath.Rel(ancestor, path)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(resolved, rest), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", os.ErrNotExist
+		}
+		ancestor = parent
+	}
 }
 
 func (s *Service) List(rel string) ([]protocol.FileEntry, error) {
-	abs, display, _, err := s.Resolve(rel)
+	abs, display, err := s.Resolve(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +113,7 @@ func (s *Service) List(rel string) ([]protocol.FileEntry, error) {
 }
 
 func (s *Service) Search(rel, query string) ([]protocol.FileEntry, error) {
-	abs, _, absolute, err := s.Resolve(rel)
+	abs, _, err := s.Resolve(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +135,6 @@ func (s *Service) Search(rel, query string) ([]protocol.FileEntry, error) {
 				return err
 			}
 			relPath, err := filepath.Rel(s.WorkspaceRoot, path)
-			if absolute {
-				relPath, err = filepath.Abs(path)
-			}
 			if err != nil {
 				return err
 			}
@@ -132,7 +149,7 @@ func (s *Service) Search(rel, query string) ([]protocol.FileEntry, error) {
 }
 
 func (s *Service) ReadText(rel string) (*protocol.ReadFileResponse, error) {
-	abs, safeRel, _, err := s.Resolve(rel)
+	abs, safeRel, err := s.Resolve(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +171,7 @@ func (s *Service) ReadText(rel string) (*protocol.ReadFileResponse, error) {
 }
 
 func (s *Service) WriteText(rel, content, expectedSHA256 string) (*protocol.ReadFileResponse, error) {
-	abs, safeRel, _, err := s.Resolve(rel)
+	abs, safeRel, err := s.Resolve(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +201,7 @@ func (s *Service) Delete(rel string) error {
 	if !s.AllowDestructiveFiles {
 		return ErrDestructiveDisabled
 	}
-	abs, _, _, err := s.Resolve(rel)
+	abs, _, err := s.Resolve(rel)
 	if err != nil {
 		return err
 	}
@@ -195,11 +212,11 @@ func (s *Service) Rename(oldRel, newRel string) error {
 	if !s.AllowDestructiveFiles {
 		return ErrDestructiveDisabled
 	}
-	oldAbs, _, _, err := s.Resolve(oldRel)
+	oldAbs, _, err := s.Resolve(oldRel)
 	if err != nil {
 		return err
 	}
-	newAbs, _, _, err := s.Resolve(newRel)
+	newAbs, _, err := s.Resolve(newRel)
 	if err != nil {
 		return err
 	}
@@ -212,11 +229,14 @@ func (s *Service) Rename(oldRel, newRel string) error {
 }
 
 func (s *Service) Copy(oldRel, newRel string) error {
-	oldAbs, _, _, err := s.Resolve(oldRel)
+	oldAbs, _, err := s.Resolve(oldRel)
 	if err != nil {
 		return err
 	}
-	newAbs, _, _, err := s.Resolve(newRel)
+	if info, err := os.Lstat(filepath.Join(s.WorkspaceRoot, filepath.Clean(filepath.FromSlash(oldRel)))); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symlink copy is not allowed")
+	}
+	newAbs, _, err := s.Resolve(newRel)
 	if err != nil {
 		return err
 	}
@@ -265,7 +285,7 @@ func (s *Service) Copy(oldRel, newRel string) error {
 }
 
 func (s *Service) OpenDownload(rel string) (*os.File, os.FileInfo, string, error) {
-	abs, _, _, err := s.Resolve(rel)
+	abs, _, err := s.Resolve(rel)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -328,7 +348,7 @@ func (s *Service) Upload(relDir string, file multipart.File, header *multipart.F
 }
 
 func (s *Service) GitStatus(rel string) protocol.GitStatusResponse {
-	abs, _, _, err := s.Resolve(rel)
+	abs, _, err := s.Resolve(rel)
 	if err != nil {
 		return protocol.GitStatusResponse{Available: false, Entries: nil}
 	}

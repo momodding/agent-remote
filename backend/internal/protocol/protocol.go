@@ -26,7 +26,6 @@ type DaemonCapabilities struct {
 	Capabilities []Capability `json:"capabilities"`
 }
 
-
 type SessionSummary struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
@@ -44,6 +43,84 @@ type WaitState struct {
 	Label      string  `json:"label"`
 	Confidence float64 `json:"confidence"`
 	Matched    string  `json:"matched"`
+}
+
+type AgentCapability struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type AgentSession struct {
+	ID                string            `json:"id"`
+	Adapter           string            `json:"adapter"`
+	TerminalSessionID string            `json:"terminalSessionId"`
+	CWD               string            `json:"cwd"`
+	State             string            `json:"state"`
+	Capabilities      []AgentCapability `json:"capabilities"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
+type AgentEvent struct {
+	Type       string `json:"type"`
+	Cursor     int64  `json:"cursor,omitempty"`
+	AgentID    string `json:"agentId"`
+	MessageID  string `json:"messageId,omitempty"`
+	Text       string `json:"text,omitempty"`
+	ToolName   string `json:"toolName,omitempty"`
+	ToolInput  any    `json:"toolInput,omitempty"`
+	ToolOutput any    `json:"toolOutput,omitempty"`
+	State      string `json:"state,omitempty"`
+}
+
+type ChannelOpenEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"requestId"`
+	ChannelID string `json:"channelId"`
+	Kind      string `json:"kind"`
+	TargetID  string `json:"targetId"`
+	After     int64  `json:"after,omitempty"`
+}
+
+type ChannelCloseEnvelope struct {
+	Type      string `json:"type"`
+	ChannelID string `json:"channelId"`
+}
+
+type CommandEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"requestId"`
+	TargetID  string `json:"targetId"`
+	Command   string `json:"command"`
+	Args      any    `json:"args,omitempty"`
+}
+
+type ChannelOpenedEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"requestId"`
+	ChannelID string `json:"channelId"`
+	Cursor    int64  `json:"cursor"`
+}
+
+type RuntimeEventEnvelope struct {
+	Type      string `json:"type"`
+	ChannelID string `json:"channelId"`
+	Cursor    int64  `json:"cursor"`
+	Event     any    `json:"event"`
+}
+
+type CommandResultEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"requestId"`
+	OK        bool   `json:"ok"`
+	Result    any    `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type ChannelClosedEnvelope struct {
+	Type      string `json:"type"`
+	ChannelID string `json:"channelId"`
+	Reason    string `json:"reason"`
 }
 
 type CreateSessionRequest struct {

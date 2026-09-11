@@ -7,52 +7,45 @@ import (
 	"testing"
 )
 
-func TestRelativeParentCanLeaveWorkspace(t *testing.T) {
+func TestResolveRejectsEscapes(t *testing.T) {
 	parent := t.TempDir()
 	workspace := filepath.Join(parent, "workspace")
-	if err := os.Mkdir(workspace, 0o755); err != nil {
+	outside := filepath.Join(parent, "outside")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(parent, "sibling.txt"), []byte("ok"), 0o644); err != nil {
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "escape")); err != nil {
 		t.Fatal(err)
 	}
 	svc, err := NewService(workspace, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := svc.List("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.ToSlash(filepath.Join(parent, "sibling.txt"))
-	for _, entry := range entries {
-		if entry.Path == want {
-			return
+	for _, path := range []string{"..", "../outside", outside, "escape/file.txt"} {
+		if _, _, err := svc.Resolve(path); err == nil {
+			t.Errorf("Resolve(%q) succeeded", path)
 		}
 	}
-	t.Fatalf("expected parent listing to contain %q, got %#v", want, entries)
 }
 
-func TestAbsolutePathListingUsesAbsolutePaths(t *testing.T) {
-	workspace := t.TempDir()
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "host.txt"), []byte("ok"), 0o644); err != nil {
+func TestResolveAllowsNestedWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewService(workspace, t.TempDir(), false)
+	svc, err := NewService(root, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := svc.List(outside)
+	abs, display, err := svc.Resolve("nested/file.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected one entry, got %d", len(entries))
-	}
-	want := filepath.ToSlash(filepath.Join(outside, "host.txt"))
-	if entries[0].Path != want {
-		t.Fatalf("path = %q, want %q", entries[0].Path, want)
+	if abs != filepath.Join(root, "nested", "file.txt") || display != "nested/file.txt" {
+		t.Fatalf("Resolve returned %q, %q", abs, display)
 	}
 }
 
