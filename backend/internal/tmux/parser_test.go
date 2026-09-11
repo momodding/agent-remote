@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -64,6 +65,44 @@ func TestParserPaneOutput(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout on second output")
+	}
+}
+
+func TestParserCaptureHandoffBuffersBurstExactlyOnce(t *testing.T) {
+	parser := NewParser(strings.NewReader(""))
+	live := parser.BeginPaneCapture("%0")
+	for i := 1; i <= 32; i++ {
+		if err := parser.handleLine(fmt.Sprintf("%%output %%0 before-%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pending []byte
+	if err := parser.FinishPaneCapture("%0", 16, func(output []byte) error {
+		pending = output
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 16; i++ {
+		if strings.Contains(string(pending), fmt.Sprintf("before-%02d", i)) {
+			t.Fatalf("baseline event before-%02d leaked into pending output", i)
+		}
+	}
+	for i := 17; i <= 32; i++ {
+		if count := strings.Count(string(pending), fmt.Sprintf("before-%02d", i)); count != 1 {
+			t.Fatalf("pending event before-%02d count = %d, want 1", i, count)
+		}
+	}
+	if err := parser.handleLine("%output %0 live-33"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-live:
+		if string(event.payload) != "live-33" {
+			t.Fatalf("live payload = %q, want live-33", event.payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for live output after handoff")
 	}
 }
 

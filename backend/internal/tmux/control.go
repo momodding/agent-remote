@@ -367,15 +367,30 @@ func (c *ControlClient) GetTopology() *TopologySnapshot {
 	return c.topology
 }
 
-// SubscribePaneOutput returns sequenced pane output for capture/live handoff.
-func (c *ControlClient) SubscribePaneOutput(paneID string) <-chan paneOutput {
+func (c *ControlClient) BeginPaneCapture(paneID string) <-chan paneOutput {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.parser == nil {
-		c.mu.RUnlock()
 		return nil
 	}
-	c.mu.RUnlock()
-	return c.parser.SubscribePaneOutput(paneID)
+	return c.parser.BeginPaneCapture(paneID)
+}
+
+func (c *ControlClient) FinishPaneCapture(paneID string, sequence uint64, attach func([]byte) error) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.parser == nil {
+		return fmt.Errorf("tmux control client is not running")
+	}
+	return c.parser.FinishPaneCapture(paneID, sequence, attach)
+}
+
+func (c *ControlClient) AbortPaneCapture(paneID string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.parser != nil {
+		c.parser.AbortPaneCapture(paneID)
+	}
 }
 
 // forwardNotifications routes notifications
@@ -442,13 +457,8 @@ func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command str
 		pane := topology.Panes[window.Panes[0]]
 		if pane != nil {
 			backend := NewTmuxBackend(c, pane.PaneID, pane.SessionID, pane.WindowID)
-			ch := c.SubscribePaneOutput(pane.PaneID)
-			baseline, pending, err := c.captureBaselineAndDrain(ctx, pane.PaneID, ch)
-			if err != nil {
-				backend.Close()
-				return nil, err
-			}
-			if err := backend.Subscribe(ch, baseline, pending); err != nil {
+			ch := c.BeginPaneCapture(pane.PaneID)
+			if err := c.captureBaselineAndAttach(ctx, pane.PaneID, backend, ch); err != nil {
 				backend.Close()
 				return nil, err
 			}
@@ -458,25 +468,18 @@ func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command str
 	return nil, fmt.Errorf("tmux did not create session %q", sessionName)
 }
 
-// captureBaselineAndDrain snapshots pane history and retains only output
-// parsed after capture-pane's %end marker. Earlier events are represented by
-// the snapshot; later ones are appended to the live buffer.
-func (c *ControlClient) captureBaselineAndDrain(ctx context.Context, paneID string, ch <-chan paneOutput) ([]byte, []byte, error) {
+// captureBaselineAndAttach atomically snapshots history and activates the
+// backend while parser output remains losslessly buffered. Output at or before
+// the capture %end marker is in the baseline; later output is pending.
+func (c *ControlClient) captureBaselineAndAttach(ctx context.Context, paneID string, backend *TmuxBackend, ch <-chan paneOutput) error {
 	baseline, sequence, err := c.capturePane(ctx, paneID)
 	if err != nil {
-		return nil, nil, err
+		c.AbortPaneCapture(paneID)
+		return err
 	}
-	var pending []byte
-	for {
-		select {
-		case event := <-ch:
-			if event.sequence > sequence {
-				pending = append(pending, event.payload...)
-			}
-		default:
-			return baseline, pending, nil
-		}
-	}
+	return c.FinishPaneCapture(paneID, sequence, func(pending []byte) error {
+		return backend.Subscribe(ch, baseline, pending)
+	})
 }
 
 func (c *ControlClient) capturePane(ctx context.Context, paneID string) ([]byte, uint64, error) {
@@ -509,13 +512,8 @@ func (c *ControlClient) capturePane(ctx context.Context, paneID string) ([]byte,
 // ReattachPane rebuilds a backend for a pane that survived a daemon restart.
 func (c *ControlClient) ReattachPane(ctx context.Context, paneID, sessionID, windowID string) (*TmuxBackend, error) {
 	backend := NewTmuxBackend(c, paneID, sessionID, windowID)
-	ch := c.SubscribePaneOutput(paneID)
-	baseline, pending, err := c.captureBaselineAndDrain(ctx, paneID, ch)
-	if err != nil {
-		_ = backend.Close()
-		return nil, err
-	}
-	if err := backend.Subscribe(ch, baseline, pending); err != nil {
+	ch := c.BeginPaneCapture(paneID)
+	if err := c.captureBaselineAndAttach(ctx, paneID, backend, ch); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}

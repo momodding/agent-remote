@@ -15,27 +15,29 @@ import (
 // Notifications: %output %pane <octal>, %sessions-changed, etc. outside blocks
 // Decodes octal escapes and fans out pane output.
 type Parser struct {
-	mu            sync.Mutex
-	scanner       *bufio.Scanner
-	currentCmd    *ControlCommand   // Currently parsed command
-	cmdQueue      []*ControlCommand // FIFO pending commands
-	cmdCounter    int64             // For unique command IDs
-	sequence      uint64            // monotonically increases for every control line
-	paneOutputCh  map[string]chan paneOutput
-	closed        bool
-	ignoringBlock bool
-	ready         chan struct{}
-	readyOnce     sync.Once
-	notifyChan    chan NotificationEvent
+	mu             sync.Mutex
+	scanner        *bufio.Scanner
+	currentCmd     *ControlCommand   // Currently parsed command
+	cmdQueue       []*ControlCommand // FIFO pending commands
+	cmdCounter     int64             // For unique command IDs
+	sequence       uint64            // monotonically increases for every control line
+	paneOutputCh   map[string]chan paneOutput
+	captureOutputs map[string][]paneOutput // unbounded only during capture-pane handoff
+	closed         bool
+	ignoringBlock  bool
+	ready          chan struct{}
+	readyOnce      sync.Once
+	notifyChan     chan NotificationEvent
 }
 
 func NewParser(reader io.Reader) *Parser {
 	return &Parser{
-		scanner:      bufio.NewScanner(reader),
-		cmdQueue:     make([]*ControlCommand, 0, 32),
-		paneOutputCh: make(map[string]chan paneOutput),
-		ready:        make(chan struct{}),
-		notifyChan:   make(chan NotificationEvent, 64),
+		scanner:        bufio.NewScanner(reader),
+		cmdQueue:       make([]*ControlCommand, 0, 32),
+		paneOutputCh:   make(map[string]chan paneOutput),
+		captureOutputs: make(map[string][]paneOutput),
+		ready:          make(chan struct{}),
+		notifyChan:     make(chan NotificationEvent, 64),
 	}
 }
 
@@ -247,12 +249,16 @@ func (p *Parser) handlePaneOutput(line string) error {
 	// Decode octal escapes
 	payload := decodeOctalEscapes(octals)
 
-	// Send to pane output channel if subscribed
+	event := paneOutput{sequence: p.sequence, payload: payload}
+	if buffered, capturing := p.captureOutputs[paneID]; capturing {
+		p.captureOutputs[paneID] = append(buffered, event)
+		return nil
+	}
 	if ch, ok := p.paneOutputCh[paneID]; ok {
 		select {
-		case ch <- paneOutput{sequence: p.sequence, payload: payload}:
+		case ch <- event:
 		default:
-			// Channel full, drop
+			// The normal terminal consumer applies its own bounded backpressure.
 		}
 	}
 
@@ -319,24 +325,59 @@ func (p *Parser) SubmitCommand(cmdLine string) (chan *CommandResult, error) {
 	return resultChan, nil
 }
 
-// SubscribePaneOutput returns a sequenced channel for one pane's output.
+// SubscribePaneOutput returns the normal bounded live-output channel.
 func (p *Parser) SubscribePaneOutput(paneID string) <-chan paneOutput {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if ch, exists := p.paneOutputCh[paneID]; exists {
-		return ch
+	ch := p.paneOutputCh[paneID]
+	if ch == nil {
+		ch = make(chan paneOutput, 16)
+		p.paneOutputCh[paneID] = ch
 	}
-
-	ch := make(chan paneOutput, 16)
-	p.paneOutputCh[paneID] = ch
 	return ch
 }
 
+// BeginPaneCapture starts lossless temporary buffering for one pane and
+// returns its live channel. FinishPaneCapture atomically hands off to ch.
+func (p *Parser) BeginPaneCapture(paneID string) <-chan paneOutput {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ch := p.paneOutputCh[paneID]
+	if ch == nil {
+		ch = make(chan paneOutput, 16)
+		p.paneOutputCh[paneID] = ch
+	}
+	p.captureOutputs[paneID] = nil
+	return ch
+}
+
+func (p *Parser) FinishPaneCapture(paneID string, sequence uint64, attach func([]byte) error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	events := p.captureOutputs[paneID]
+	var pending []byte
+	for _, event := range events {
+		if event.sequence > sequence {
+			pending = append(pending, event.payload...)
+		}
+	}
+	if err := attach(pending); err != nil {
+		return err
+	}
+	delete(p.captureOutputs, paneID)
+	return nil
+}
+
+func (p *Parser) AbortPaneCapture(paneID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.captureOutputs, paneID)
+}
+
+// GetNotifications returns notification channel
 // Ready closes after the initial uncorrelated control block completes.
 func (p *Parser) Ready() <-chan struct{} { return p.ready }
 
-// GetNotifications returns notification channel
 func (p *Parser) GetNotifications() <-chan NotificationEvent {
 	return p.notifyChan
 }
