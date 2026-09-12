@@ -74,6 +74,11 @@ type AgentEvent struct {
 	ToolOutput any    `json:"toolOutput,omitempty"`
 	State      string `json:"state,omitempty"`
 }
+type RuntimeLifecycleEvent struct {
+	SurfaceID string `json:"surfaceId"`
+	Type      string `json:"type"`
+	Payload   any    `json:"payload"`
+}
 
 type TmuxPane struct {
 	TerminalSessionID string `json:"terminalSessionId"`

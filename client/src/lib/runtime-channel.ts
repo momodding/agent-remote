@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import type { Connection } from './connection';
-import type { AgentEvent } from '../protocol';
+import type { AgentEvent, RuntimeLifecycleEvent } from '../protocol';
 
 // One `RuntimeChannel` per daemon multiplexes the JSON control-plane socket
 // (`/v1/ws/runtime`): agent event subscriptions + request/response commands.
@@ -11,7 +11,7 @@ type Pending = { resolve: (v: any) => void; reject: (err: Error) => void };
 export class RuntimeChannel {
   private socket: WebSocket | null = null;
   private queue: object[] = [];
-  private subscribers = new Map<string, Set<(event: AgentEvent) => void>>();
+  private subscribers = new Map<string, Set<(event: unknown) => void>>();
   private pendingOpens = new Map<string, Pending>(); // requestId -> resolves with cursor
   private pendingCommands = new Map<string, Pending>(); // requestId -> resolves with result
 
@@ -107,7 +107,7 @@ export class RuntimeChannel {
 	/** Opens an agent event channel and replays history from `after`. */
 	async openAgentChannel(agentId: string, after = 0, subscriber?: (event: AgentEvent) => void): Promise<{ channelId: string; cursor: number }> {
 		const channelId = Crypto.randomUUID();
-		if (subscriber) this.subscribeChannel(channelId, subscriber);
+		if (subscriber) this.subscribeChannel(channelId, (event) => subscriber(event as AgentEvent));
 		const requestId = Crypto.randomUUID();
 		const { promise, resolve, reject } = Promise.withResolvers<number>();
 		this.pendingOpens.set(requestId, { resolve, reject });
@@ -116,7 +116,19 @@ export class RuntimeChannel {
 		return { channelId, cursor };
 	}
 
-  subscribeChannel(channelId: string, fn: (event: AgentEvent) => void): () => void {
+	/** Opens the daemon-wide lifecycle channel; agent semantic streams stay separate. */
+	async openRuntimeChannel(after = 0, subscriber?: (event: RuntimeLifecycleEvent) => void): Promise<{ channelId: string; cursor: number }> {
+		const channelId = Crypto.randomUUID();
+		if (subscriber) this.subscribeChannel(channelId, (event) => subscriber(event as RuntimeLifecycleEvent));
+		const requestId = Crypto.randomUUID();
+		const { promise, resolve, reject } = Promise.withResolvers<number>();
+		this.pendingOpens.set(requestId, { resolve, reject });
+		this.send({ type: 'channel.open', requestId, channelId, kind: 'runtime', targetId: 'runtime', after });
+		const cursor = await promise;
+		return { channelId, cursor };
+	}
+
+  subscribeChannel(channelId: string, fn: (event: unknown) => void): () => void {
     let set = this.subscribers.get(channelId);
     if (!set) {
       set = new Set();

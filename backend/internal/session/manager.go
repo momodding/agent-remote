@@ -329,6 +329,9 @@ func (m *Manager) RuntimeSnapshot() (*runtimestore.Snapshot, error) { return m.r
 func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error) {
 	return m.runtime.Events(after, limit)
 }
+func (m *Manager) SubscribeRuntime(fn func(runtimestore.Event)) func() {
+	return m.runtime.Subscribe(fn)
+}
 
 func (m *Manager) Shutdown() error {
 	m.shutdownOnce.Do(func() {

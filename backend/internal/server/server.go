@@ -44,6 +44,7 @@ type SessionAPI interface {
 type RuntimeAPI interface {
 	RuntimeSnapshot() (*runtimestore.Snapshot, error)
 	RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error)
+	SubscribeRuntime(func(runtimestore.Event)) func()
 }
 type AgentAPI interface {
 	CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error)
@@ -1005,20 +1006,88 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: env.ChannelID, Cursor: cursor})
-			} else if env.Kind == "runtime" {
-				var cursor int64
-				if s.runtime != nil {
-					_, cursor, _ = s.runtime.RuntimeEvents(env.After, 500)
+			} else if env.Kind == "runtime" && s.runtime != nil {
+				channelID := env.ChannelID
+				toEnvelope := func(event runtimestore.Event) protocol.RuntimeEventEnvelope {
+					return protocol.RuntimeEventEnvelope{Type: "event", ChannelID: channelID, Cursor: event.Cursor, Event: protocol.RuntimeLifecycleEvent{SurfaceID: event.SurfaceID, Type: event.Kind, Payload: event.Payload}}
 				}
-				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: env.ChannelID, Cursor: cursor})
-			} else {
-				_ = write(protocol.CommandResultEnvelope{
-					Type:      "command.result",
-					RequestID: env.RequestID,
-					OK:        false,
-					Error:     "unsupported channel kind",
+				var liveMu sync.Mutex
+				replaying := true
+				liveEvents := []runtimestore.Event{}
+				unsub := s.runtime.SubscribeRuntime(func(event runtimestore.Event) {
+					liveMu.Lock()
+					if replaying {
+						liveEvents = append(liveEvents, event)
+						liveMu.Unlock()
+						return
+					}
+					liveMu.Unlock()
+					_ = write(toEnvelope(event))
 				})
+				channelsMu.Lock()
+				if prev, ok := channels[channelID]; ok {
+					prev()
+				}
+				channels[channelID] = unsub
+				channelsMu.Unlock()
+
+				snapshot, err := s.runtime.RuntimeSnapshot()
+				if err != nil {
+					unsub()
+					channelsMu.Lock()
+					delete(channels, channelID)
+					channelsMu.Unlock()
+					_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: err.Error()})
+					continue
+				}
+				cursor := snapshot.Cursor
+				replayAfter := env.After
+				replayFailed := false
+				for replayAfter < cursor {
+					events, next, err := s.runtime.RuntimeEvents(replayAfter, 500)
+					if err != nil {
+						replayFailed = true
+						_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: err.Error()})
+						break
+					}
+					for _, event := range events {
+						if event.Cursor <= cursor {
+							_ = write(toEnvelope(event))
+						}
+					}
+					if len(events) == 0 || next <= replayAfter {
+						replayFailed = true
+						_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: "runtime replay incomplete"})
+						break
+					}
+					replayAfter = next
+				}
+				if replayFailed {
+					unsub()
+					channelsMu.Lock()
+					delete(channels, channelID)
+					channelsMu.Unlock()
+					continue
+				}
+				for {
+					liveMu.Lock()
+					pending := liveEvents
+					liveEvents = nil
+					if len(pending) == 0 {
+						replaying = false
+						liveMu.Unlock()
+						break
+					}
+					liveMu.Unlock()
+					for _, event := range pending {
+						if event.Cursor > cursor {
+							_ = write(toEnvelope(event))
+						}
+					}
+				}
+				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
+			} else {
+				_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: "unsupported channel kind"})
 			}
 		case "channel.close":
 			var env protocol.ChannelCloseEnvelope

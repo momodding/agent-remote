@@ -1,4 +1,4 @@
-import { applyAgentEvent } from './runtime-reconcile';
+import { applyAgentEvent, applyRuntimeEvent } from './runtime-reconcile';
 
 describe('applyAgentEvent', () => {
   const snapshot = {
@@ -18,4 +18,14 @@ describe('applyAgentEvent', () => {
     expect(snapshot.agents.map((agent) => agent.state)).toEqual(['idle', 'working']);
   });
 
+});
+
+describe('applyRuntimeEvent', () => {
+  const snapshot = { cursor: 4, terminals: [], agents: [], topology: [], desktops: [] };
+
+  it('projects daemon lifecycle rows without agent channels', () => {
+    const created = applyRuntimeEvent(snapshot, { surfaceId: 'terminal-a', type: 'terminal.created', payload: { id: 'terminal-a', name: 'Shell', cwd: '', seq: 0, exited: false } }, 5);
+    const removed = applyRuntimeEvent(created, { surfaceId: 'terminal-a', type: 'terminal.removed', payload: { id: 'terminal-a' } }, 6);
+    expect(removed).toMatchObject({ cursor: 6, terminals: [] });
+  });
 });

@@ -14,8 +14,11 @@ import (
 var ErrCursorExpired = errors.New("runtime cursor expired")
 
 type Store struct {
-	db   *sql.DB
-	lock sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
+	db          *sql.DB
+	lock        sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
+	watchMu     sync.Mutex
+	watchers    map[uint64]func(Event)
+	nextWatcher uint64
 }
 
 type TerminalSummary struct {
@@ -80,7 +83,7 @@ func Open(stateDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, watchers: make(map[uint64]func(Event))}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -169,10 +172,18 @@ func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	if _, err = tx.Exec(`INSERT INTO terminal_sessions (id, name, cwd, seq, exited, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, cwd=excluded.cwd, seq=excluded.seq, exited=excluded.exited, updated_at=excluded.updated_at`, term.ID, term.Name, term.CWD, term.Seq, boolToInt(term.Exited), term.CreatedAt.Unix(), term.UpdatedAt.Unix()); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, term.ID, kind, payload, time.Now().Unix()); err != nil {
+	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, term.ID, kind, payload, time.Now().Unix())
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	cursor, err := result.LastInsertId()
+	if err == nil {
+		s.publish(Event{Cursor: cursor, SurfaceID: term.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
+	}
+	return err
 }
 
 func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
@@ -182,7 +193,6 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -191,10 +201,18 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, agent.ID, kind, payload, time.Now().Unix()); err != nil {
+	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, agent.ID, kind, payload, time.Now().Unix())
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	cursor, err := result.LastInsertId()
+	if err == nil {
+		s.publish(Event{Cursor: cursor, SurfaceID: agent.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
+	}
+	return err
 }
 
 // MigrateAgentID separates legacy agent rows that reused a terminal ID. Only
@@ -234,10 +252,18 @@ func (s *Store) RemoveTerminal(id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, id, "terminal.removed", payload, time.Now().Unix()); err != nil {
+	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, id, "terminal.removed", payload, time.Now().Unix())
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	cursor, err := result.LastInsertId()
+	if err == nil {
+		s.publish(Event{Cursor: cursor, SurfaceID: id, Kind: "terminal.removed", Payload: payload, CreatedAt: time.Now().UTC()})
+	}
+	return err
 }
 
 // RecordEvent appends a replayable surface event and returns its daemon-wide cursor.
@@ -252,7 +278,11 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
-	return result.LastInsertId()
+	cursor, err := result.LastInsertId()
+	if err == nil {
+		s.publish(Event{Cursor: cursor, SurfaceID: surfaceID, Kind: kind, Payload: data, CreatedAt: time.Now().UTC()})
+	}
+	return cursor, err
 }
 
 func (s *Store) RecordTopology(panes []TopologyPane) error {
@@ -275,10 +305,18 @@ func (s *Store) RecordTopology(panes []TopologyPane) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, "topology", "tmux.topology", payload, time.Now().Unix()); err != nil {
+	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, "topology", "tmux.topology", payload, time.Now().Unix())
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	cursor, err := result.LastInsertId()
+	if err == nil {
+		s.publish(Event{Cursor: cursor, SurfaceID: "topology", Kind: "tmux.topology", Payload: payload, CreatedAt: time.Now().UTC()})
+	}
+	return err
 }
 
 func (s *Store) Snapshot() (*Snapshot, error) {
@@ -360,6 +398,7 @@ func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {
 	next := after
 	for rows.Next() {
 		var event Event
+
 		var created int64
 		if err := rows.Scan(&event.Cursor, &event.SurfaceID, &event.Kind, &event.Payload, &created); err != nil {
 			return nil, 0, err
@@ -378,4 +417,30 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// Subscribe receives events only after their transaction commits.
+func (s *Store) Subscribe(fn func(Event)) func() {
+	s.watchMu.Lock()
+	id := s.nextWatcher
+	s.nextWatcher++
+	s.watchers[id] = fn
+	s.watchMu.Unlock()
+	return func() {
+		s.watchMu.Lock()
+		delete(s.watchers, id)
+		s.watchMu.Unlock()
+	}
+}
+
+func (s *Store) publish(event Event) {
+	s.watchMu.Lock()
+	watchers := make([]func(Event), 0, len(s.watchers))
+	for _, watcher := range s.watchers {
+		watchers = append(watchers, watcher)
+	}
+	s.watchMu.Unlock()
+	for _, watcher := range watchers {
+		watcher(event)
+	}
 }

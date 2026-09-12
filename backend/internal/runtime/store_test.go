@@ -43,6 +43,24 @@ func TestRecordTerminalSnapshotAndEvents(t *testing.T) {
 	}
 }
 
+func TestSubscribeReceivesCommittedRuntimeEvent(t *testing.T) {
+	s := makeTestDB(t)
+	events := make(chan Event, 1)
+	defer s.Subscribe(func(event Event) { events <- event })()
+	term := TerminalSummary{ID: "t1", Name: "shell", CWD: "/workspace", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := s.RecordTerminal(term, "terminal.created"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Cursor == 0 || event.SurfaceID != term.ID || event.Kind != "terminal.created" {
+			t.Fatalf("unexpected event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive committed event")
+	}
+}
+
 func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()
