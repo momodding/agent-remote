@@ -1,3 +1,7 @@
+# SUPERSEDED
+
+> This historical gap analysis is superseded by [the approved recovery architecture](plans/recover-agent-architecture.md). Do not use it for implementation decisions.
+
 # agenticRemote Gap Remediation Plan
 
 ## Goal
