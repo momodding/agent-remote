@@ -106,7 +106,7 @@ describe('RuntimeChannel reconnects subscriptions', () => {
 
   it('refreshes an expired Agent replay cursor', async () => {
     const channel = new RuntimeChannel(connection);
-    const received: Array<{ agentId: string; cursor: number }> = [];
+    const received: Array<{ agentId: string; cursor?: number }> = [];
     const opening = channel.openAgentChannel('agent-1', 7, (event) => received.push(event), async () => 20);
     const socket = FakeWebSocket.instances[0];
     socket.open();
