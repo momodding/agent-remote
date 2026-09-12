@@ -94,30 +94,28 @@ export default function AgentScreen() {
     const runtime = runtimeChannelRef.current;
     let active = true;
 
-    void runtime.openAgentChannel(tab.agentSessionId, 0).then(({ channelId }) => {
-      if (!active) return;
-      currentAgentChannelIdRef.current = channelId;
-      const unsub = runtime.subscribeChannel(channelId, (event: AgentEvent) => {
-        if (!active) return;
-        if (event.state) {
-          dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
-        }
-        setMessages((prev) => {
-          const item: MessageItem = {
-            id: event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`,
-            type: event.type,
-            text: event.text,
-            toolName: event.toolName,
-            toolInput: event.toolInput,
-            toolOutput: event.toolOutput,
-            state: event.state,
-            cursor: event.cursor,
-          };
-          return [...prev, item];
-        });
-      });
-      agentUnsubRef.current = unsub;
-    }).catch((err) => {
+	void runtime.openAgentChannel(tab.agentSessionId, 0, (event: AgentEvent) => {
+		if (!active) return;
+		if (event.state) {
+			dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
+		}
+		setMessages((prev) => {
+			const item: MessageItem = {
+				id: event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`,
+				type: event.type,
+				text: event.text,
+				toolName: event.toolName,
+				toolInput: event.toolInput,
+				toolOutput: event.toolOutput,
+				state: event.state,
+				cursor: event.cursor,
+			};
+			return [...prev, item];
+		});
+	}).then(({ channelId }) => {
+		if (!active) return;
+		currentAgentChannelIdRef.current = channelId;
+	}).catch((err) => {
       if (active) {
         console.error('Failed to open agent channel:', err);
       }

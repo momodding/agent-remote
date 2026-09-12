@@ -7,7 +7,8 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { AgenticRemoteAPI, authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
-import type { PairingPayload } from '../src/protocol';
+import { reconcileDaemon, type DaemonRuntime } from '../src/lib/runtime-reconcile';
+import type { AgentSession, PairingPayload, RuntimeSnapshot } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
 import { useTabStore } from '../src/lib/tabs/tab-store';
@@ -15,18 +16,21 @@ import { createDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
+const agentStatusRank = (state: AgentSession['state']) => ({ needsYou: 0, working: 1, idle: 2, exited: 3 })[state];
+
 
 export default function TabDeckScreen() {
   const { state, dispatch, closeTab, activateTab } = useTabStore();
-  const [store, setStore] = useState<ConnectionStore>({ connections: [] });
-  // Manage UI connection selection merely for opening daemons view to correct item
-  const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [pairingOpen, setPairingOpen] = useState(false);
-  const [daemonsOpen, setDaemonsOpen] = useState(false);
-  const [diagnostics, setDiagnostics] = useState<string[]>([]);
-  const { width } = useWindowDimensions();
-  const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
+	const [store, setStore] = useState<ConnectionStore>({ connections: [] });
+	const [runtimes, setRuntimes] = useState<Record<string, DaemonRuntime>>({});
+	// Manage UI connection selection merely for opening daemons view to correct item
+	const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
+	const [loading, setLoading] = useState(true);
+	const [pairingOpen, setPairingOpen] = useState(false);
+	const [daemonsOpen, setDaemonsOpen] = useState(false);
+	const [diagnostics, setDiagnostics] = useState<string[]>([]);
+	const { width } = useWindowDimensions();
+	const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
 
   useEffect(() => {
     void loadConnections()
@@ -37,6 +41,25 @@ export default function TabDeckScreen() {
       .catch(() => Alert.alert('Could not load daemon connections'))
       .finally(() => setLoading(false));
   }, []);
+
+	useEffect(() => {
+		let active = true;
+		const cleanups: Array<() => void> = [];
+		for (const connection of store.connections) {
+			void reconcileDaemon(connection, (runtime) => {
+				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: runtime }));
+			}).then((cleanup) => {
+				if (active) cleanups.push(cleanup);
+				else cleanup();
+			}).catch((error) => {
+				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: { status: 'error', error: error instanceof Error ? error.message : 'Could not reconcile daemon' } }));
+			});
+		}
+		return () => {
+			active = false;
+			for (const cleanup of cleanups) cleanup();
+		};
+	}, [store.connections]);
 
   const connect = async (payload: PairingPayload, clientName: string, onStage?: (message: string) => void) => {
     setDiagnostics([]);
@@ -140,10 +163,30 @@ export default function TabDeckScreen() {
         });
         router.push({ pathname: '/agent/[id]', params: { id: tabId } });
       }
-    } catch (error) {
-      Alert.alert('Could not open tab', error instanceof Error ? error.message : 'Daemon rejected the session request.');
-    }
+	} catch (error) {
+		Alert.alert('Could not open tab', error instanceof Error ? error.message : 'Daemon rejected the session request.');
+	}
   };
+
+	const openAgentSurface = (daemonId: string, agent: AgentSession) => {
+		const tabId = Crypto.randomUUID();
+		dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
+			tabId, daemonId, kind: 'agent', title: agent.adapter || 'OMP Agent',
+			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+			agentSessionId: agent.id, terminalSessionId: agent.terminalSessionId, state: agent.state, view: 'chat',
+		}], activeId: tabId }));
+		router.push({ pathname: '/agent/[id]', params: { id: tabId } });
+	};
+
+	const openTerminalSurface = (daemonId: string, terminal: RuntimeSnapshot['terminals'][number]) => {
+		const tabId = Crypto.randomUUID();
+		dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
+			tabId, daemonId, kind: 'terminal', title: terminal.name || 'Shell',
+			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+			remoteSessionId: terminal.id, state: terminal.exited ? 'exited' : 'running',
+		}], activeId: tabId }));
+		router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
+	};
   
   const openTab = (tab: WorkspaceTab) => {
     activateTab(tab.tabId);
@@ -175,7 +218,9 @@ export default function TabDeckScreen() {
         contentContainerStyle={store.connections.length === 0 ? [styles.deck, { flex: 1 }] : styles.deck}
         ListEmptyComponent={<View style={styles.emptyShell}><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></View>}
         renderItem={({ item: connection }) => {
-          const matchedTabs = state.tabs.filter(t => t.daemonId === connection.hostId);
+		  const matchedTabs = state.tabs.filter(t => t.daemonId === connection.hostId);
+		  const runtime = runtimes[connection.hostId];
+		  const snapshot = runtime?.snapshot;
           return (
             <View style={styles.daemonSection}>
               <View style={styles.daemonSectionHeader}>
@@ -197,6 +242,22 @@ export default function TabDeckScreen() {
                   </Pressable>
                 </View>
               </View>
+
+			  {runtime?.status === 'error' && <View style={styles.runtimeError}><Text style={styles.runtimeErrorText}>Reconnect required: {runtime.error}</Text></View>}
+			  {snapshot && (snapshot.agents.length > 0 || snapshot.terminals.length > 0) && <View style={styles.runtimeList}>
+				{[...snapshot.agents].sort((a, b) => agentStatusRank(a.state) - agentStatusRank(b.state)).map((agent) => (
+					<Pressable key={`agent-${agent.id}`} accessibilityLabel={`Open agent ${agent.adapter}`} style={styles.runtimeRow} onPress={() => openAgentSurface(connection.hostId, agent)}>
+						<Feather name="cpu" size={16} color="#A78BFA" />
+						<View style={styles.tabContent}><Text style={styles.tabTitle}>{agent.adapter || 'OMP Agent'}</Text><Text style={styles.tabStatus}>{agent.state}</Text></View>
+					</Pressable>
+				))}
+				{snapshot.terminals.map((terminal) => (
+					<Pressable key={`terminal-${terminal.id}`} accessibilityLabel={`Open terminal ${terminal.name}`} style={styles.runtimeRow} onPress={() => openTerminalSurface(connection.hostId, terminal)}>
+						<Feather name="terminal" size={16} color="#D19A2C" />
+						<View style={styles.tabContent}><Text style={styles.tabTitle}>{terminal.name || 'Shell'}</Text><Text style={styles.tabStatus}>{terminal.exited ? 'exited' : 'running'}</Text></View>
+					</Pressable>
+				))}
+			  </View>}
               
               {matchedTabs.length === 0 ? (
                 <View style={styles.noTabs}><Text style={styles.noTabsText}>No open tabs for this daemon</Text></View>
@@ -265,6 +326,10 @@ const styles = StyleSheet.create({
   tabStatus: { fontSize: 13, color: '#888', marginTop: 2 },
   tabClose: { padding: 8 },
   diagnostics: { position: 'absolute', bottom: 32, alignSelf: 'center', backgroundColor: '#1A1A1A', padding: 16, borderRadius: 8, borderColor: '#3A3A3A', borderWidth: 1, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12 }, 
+	 runtimeList: { borderTopWidth: 1, borderColor: '#262626' },
+	 runtimeRow: { minHeight: 54, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderColor: '#202020' },
+	 runtimeError: { padding: 12, backgroundColor: '#2A1C1C' },
+	 runtimeErrorText: { color: '#F19999', fontSize: 13 },
   diagnostic: { color: '#888', fontSize: 13, marginVertical: 2 }, 
   diagnosticDone: { color: '#46B86B' }
 });
