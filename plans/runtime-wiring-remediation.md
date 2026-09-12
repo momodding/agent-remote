@@ -1,3 +1,7 @@
+# SUPERSEDED
+
+> Superseded by [the approved recovery architecture](recover-agent-architecture.md). Do not use this historical plan for implementation decisions.
+
 <!-- source-branch: main -->
 <!-- work-branch: omp/runtime-wiring-remediation -->
 
