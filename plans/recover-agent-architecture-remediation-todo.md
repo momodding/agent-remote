@@ -12,7 +12,7 @@ Required tests: same-process semantic command and fallback capability coverage.
 
 ## RAR-002 — Agent cursor expiration can loop
 Severity: P0
-Status: TODO
+Status: DONE
 Source: external-code-review
 Plan requirement: snapshot/history bootstrap establishes a cursor before agent replay with no live-event gap.
 Required tests: expired initial cursor recovers once and receives subsequent live events.

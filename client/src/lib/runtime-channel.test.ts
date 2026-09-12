@@ -104,6 +104,23 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     await expect(opening).resolves.toMatchObject({ cursor: 20 });
   });
 
+  it('refreshes an expired Agent replay cursor', async () => {
+    const channel = new RuntimeChannel(connection);
+    const received: Array<{ agentId: string; cursor: number }> = [];
+    const opening = channel.openAgentChannel('agent-1', 7, (event) => received.push(event), async () => 20);
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const firstOpen = JSON.parse(socket.sent[1]);
+    socket.receive({ type: 'command.result', requestId: firstOpen.requestId, ok: false, error: 'runtime cursor expired' });
+    await Promise.resolve();
+    const retry = JSON.parse(socket.sent[2]);
+    expect(retry.after).toBe(20);
+    socket.receive({ type: 'channel.opened', requestId: retry.requestId, channelId: firstOpen.channelId, cursor: 20 });
+    await expect(opening).resolves.toMatchObject({ cursor: 20 });
+    socket.receive({ type: 'event', channelId: firstOpen.channelId, cursor: 21, event: { agentId: 'agent-1', cursor: 21, type: 'state', state: 'working' } });
+    expect(received).toMatchObject([{ agentId: 'agent-1', cursor: 21, type: 'state', state: 'working' }]);
+  });
+
   it('resynchronizes after the server closes an overflowed channel', async () => {
     const channel = new RuntimeChannel(connection);
     const received: number[] = [];
