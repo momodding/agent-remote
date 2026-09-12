@@ -40,7 +40,7 @@ Required tests: protocol/state projection agreement.
 
 ## RAR-006 — Agent replay omits state events
 Severity: P1
-Status: TODO
+Status: DONE
 Source: external-code-review
 Plan requirement: canonical semantic state events survive disconnect and replay.
 Required tests: persisted state event appears on agent replay.
