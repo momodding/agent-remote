@@ -35,6 +35,10 @@ type TerminalManager interface {
 	Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
+type terminalTTYProvider interface {
+	TerminalTTY(id string) string
+}
+
 type AgentSubscriber struct {
 	fn func(event protocol.AgentEvent)
 }
@@ -216,7 +220,6 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 func (s *Service) pollTranscript(inst *agentInstance) {
 	ticker := time.NewTicker(inst.pollInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-inst.stopPoll:
@@ -230,12 +233,18 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 func (s *Service) checkTranscript(inst *agentInstance) {
 	inst.mu.Lock()
 	if inst.tailer == nil {
-		// Attempt discovery:
-		// 1. Check if sessionFile is discovered
 		if inst.sessionFile == "" {
-			sessionsDir := ComputeDefaultSessionDir(inst.agentDir, inst.meta.CWD)
-			if latest, err := FindLatestSessionFile(sessionsDir); err == nil {
-				inst.sessionFile = latest
+			if provider, ok := s.termMgr.(terminalTTYProvider); ok {
+				_, sessionFile, fresh, err := ReadTerminalBreadcrumb(inst.agentDir, TerminalIDFromTTY(provider.TerminalTTY(inst.meta.TerminalSessionID)))
+				if err == nil && !fresh && sessionFile != "" {
+					inst.sessionFile = sessionFile
+				}
+			}
+			if inst.sessionFile == "" {
+				sessionsDir := ComputeDefaultSessionDir(inst.agentDir, inst.meta.CWD)
+				if latest, err := FindOnlySessionFile(sessionsDir); err == nil {
+					inst.sessionFile = latest
+				}
 			}
 		}
 		if inst.sessionFile != "" {
@@ -244,11 +253,9 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	tailer := inst.tailer
 	inst.mu.Unlock()
-
 	if tailer == nil {
 		return
 	}
-
 	events, err := tailer.Read()
 	if err != nil || len(events) == 0 {
 		return
