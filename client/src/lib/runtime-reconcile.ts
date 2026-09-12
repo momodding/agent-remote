@@ -43,6 +43,10 @@ export async function reconcileDaemon(connection: Connection, update: (runtime: 
     if (!active) return;
     snapshot = applyRuntimeEvent(snapshot, event, event.cursor ?? snapshot.cursor);
     update({ snapshot, status: 'ready' });
+  }, async () => {
+    snapshot = await api.runtimeSnapshot();
+    if (active) update({ snapshot, status: 'ready' });
+    return snapshot.cursor;
   });
 
   return () => {
