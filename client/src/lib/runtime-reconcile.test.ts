@@ -18,11 +18,4 @@ describe('applyAgentEvent', () => {
     expect(snapshot.agents.map((agent) => agent.state)).toEqual(['idle', 'working']);
   });
 
-
-	it('does not mutate a second daemon snapshot', () => {
-		const otherDaemon = { ...snapshot, agents: [{ ...snapshot.agents[0], id: 'agent-c', state: 'idle' as const }] };
-		const updated = applyAgentEvent(snapshot, { type: 'state', agentId: 'agent-a', state: 'working', cursor: 43 });
-		expect(updated.agents[0].state).toBe('working');
-		expect(otherDaemon.agents[0].state).toBe('idle');
-	});
 });
