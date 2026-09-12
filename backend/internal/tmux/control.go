@@ -527,9 +527,9 @@ func (c *ControlClient) Lost() <-chan struct{} { return c.lost }
 // ServerID identifies this private tmux server in persisted topology.
 func (c *ControlClient) ServerID() string { return c.socketPath }
 
-// SendKey writes text through the correlated control command queue.
+// SendKey writes literal bytes through the correlated control command queue.
 func (c *ControlClient) SendKey(ctx context.Context, paneID string, data []byte) (int, error) {
-	errCh, err := c.SendCommand(ctx, fmt.Sprintf("send-keys -t %s %q", paneID, string(data)))
+	errCh, err := c.SendCommand(ctx, literalSendKeysCommand(paneID, data))
 	if err != nil {
 		return 0, err
 	}
@@ -542,6 +542,10 @@ func (c *ControlClient) SendKey(ctx context.Context, paneID string, data []byte)
 		}
 		return len(data), nil
 	}
+}
+
+func literalSendKeysCommand(paneID string, data []byte) string {
+	return fmt.Sprintf("send-keys -l -t %s %q", paneID, string(data))
 }
 
 // ResizePane sets pane dimensions through the correlated control command queue.

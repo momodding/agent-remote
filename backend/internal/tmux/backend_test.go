@@ -27,6 +27,16 @@ func TestBackendGetPaneID(t *testing.T) {
 	}
 }
 
+func TestLiteralSendKeysCommand(t *testing.T) {
+	data := []byte(`Enter Space 'quoted' "double" $HOME; []{}!`)
+	data = append(data, '\n')
+	got := literalSendKeysCommand("%12", data)
+	want := `send-keys -l -t %12 "Enter Space 'quoted' \"double\" $HOME; []{}!\n"`
+	if got != want {
+		t.Fatalf("literalSendKeysCommand() = %q, want %q", got, want)
+	}
+}
+
 func TestBackendReadClosed(t *testing.T) {
 	client := NewControlClient("/tmp/test", "tmux")
 	backend := NewTmuxBackend(client, "%0", "$0", "@0")
