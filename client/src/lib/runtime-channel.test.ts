@@ -59,6 +59,23 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     expect(received).toEqual([8, 9]);
   });
 
+  it('reopens an initial subscription after disconnecting before acknowledgement', async () => {
+    const channel = new RuntimeChannel(connection);
+    const opening = channel.openRuntimeChannel(3);
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    const firstOpen = JSON.parse(first.sent[1]);
+    first.close();
+
+    jest.advanceTimersByTime(250);
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    const secondOpen = JSON.parse(second.sent[1]);
+    expect(secondOpen.after).toBe(3);
+    second.receive({ type: 'channel.opened', requestId: secondOpen.requestId, channelId: firstOpen.channelId, cursor: 3 });
+    await expect(opening).resolves.toMatchObject({ channelId: firstOpen.channelId, cursor: 3 });
+  });
+
 
   it('refreshes its cursor when replay expires', async () => {
     const channel = new RuntimeChannel(connection);
