@@ -49,6 +49,7 @@ const mockChannel: DaemonChannel = {
   }),
   openChannel: jest.fn(async () => 'mock-channel-id'),
   closeChannel: jest.fn(),
+  dispose: jest.fn(),
 };
 let mockSubscribers: Array<(msg: ChannelEnvelope) => void> = [];
 const mockEmit = (msg: ChannelEnvelope) => {

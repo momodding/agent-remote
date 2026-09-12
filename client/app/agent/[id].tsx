@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import * as Crypto from 'expo-crypto';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 
@@ -25,8 +26,8 @@ import { getConnection, loadConnections, type Connection } from '../../src/lib/c
 import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-channel';
 import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime-channel';
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
-import { updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
-import type { AgentWorkspaceTab } from '../../src/lib/tabs/types';
+import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
+import type { AgentWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
 import type { AgentEvent, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
@@ -60,7 +61,6 @@ export default function AgentScreen() {
   const daemonChannelRef = useRef<DaemonChannel | null>(null);
   const runtimeChannelRef = useRef<RuntimeChannel | null>(null);
   const ptyUnsubRef = useRef<(() => void) | null>(null);
-  const agentUnsubRef = useRef<(() => void) | null>(null);
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const [panes, setPanes] = useState<TmuxPane[]>([]);
@@ -100,8 +100,10 @@ export default function AgentScreen() {
 			dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
 		}
 		setMessages((prev) => {
+			const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
+			if (prev.some((item) => item.id === id)) return prev;
 			const item: MessageItem = {
-				id: event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`,
+				id,
 				type: event.type,
 				text: event.text,
 				toolName: event.toolName,
@@ -113,7 +115,10 @@ export default function AgentScreen() {
 			return [...prev, item];
 		});
 	}).then(({ channelId }) => {
-		if (!active) return;
+		if (!active) {
+			runtime.closeChannel(channelId);
+			return;
+		}
 		currentAgentChannelIdRef.current = channelId;
 	}).catch((err) => {
       if (active) {
@@ -123,9 +128,9 @@ export default function AgentScreen() {
 
     return () => {
       active = false;
-      agentUnsubRef.current?.();
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
+        currentAgentChannelIdRef.current = null;
       }
     };
   }, [tab?.agentSessionId, connection]);
@@ -174,10 +179,16 @@ export default function AgentScreen() {
     }
   }, [api]);
 
-  const selectPane = useCallback((pane: TmuxPane) => {
-    if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
-    dispatch((previous) => updateTab(previous, tab.tabId, { terminalSessionId: pane.terminalSessionId, tmuxPaneId: pane.paneId }));
-  }, [dispatch, tab]);
+	const selectPane = useCallback((pane: TmuxPane) => {
+		if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
+		const terminalTab: TerminalWorkspaceTab = {
+			tabId: Crypto.randomUUID(), daemonId: tab.daemonId, kind: 'terminal', title: pane.windowName || 'Shell',
+			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, remoteSessionId: pane.terminalSessionId,
+			state: 'running', tmuxPaneId: pane.paneId,
+		};
+		dispatch((previous) => addTab(previous, terminalTab));
+		router.push({ pathname: '/terminal/[id]', params: { id: terminalTab.tabId } });
+	}, [dispatch, tab]);
 
   const sendPrompt = useCallback(async () => {
     if (!promptText.trim() || !api || !tab || sending) return;
@@ -229,10 +240,10 @@ export default function AgentScreen() {
         text: 'Close',
         style: 'destructive',
         onPress: async () => {
-          agentUnsubRef.current?.();
           ptyUnsubRef.current?.();
           if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
             runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
+            currentAgentChannelIdRef.current = null;
           }
           if (api) {
             try {

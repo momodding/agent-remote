@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,14 @@ var (
 	ErrAgentExited   = errors.New("agent has exited")
 )
 
+func newAgentID() (string, error) {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return "agent_" + hex.EncodeToString(data), nil
+}
+
 // TerminalManager is the minimal interface needed from session.Manager.
 type TerminalManager interface {
 	Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error)
@@ -25,8 +35,12 @@ type TerminalManager interface {
 	Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
+type terminalTTYProvider interface {
+	TerminalTTY(id string) string
+}
+
 type AgentSubscriber struct {
-	fn func(event protocol.AgentEvent)
+	fn func(protocol.AgentEvent)
 }
 
 type agentInstance struct {
@@ -39,6 +53,7 @@ type agentInstance struct {
 	subscribers  map[int]*AgentSubscriber
 	nextSubID    int
 	stopPoll     chan struct{}
+	stopTerminal func()
 	pollInterval time.Duration
 }
 
@@ -94,6 +109,17 @@ func (s *Service) restorePersisted() {
 			stopPoll:     make(chan struct{}),
 			pollInterval: 250 * time.Millisecond,
 		}
+		if a.ID == a.TerminalSessionID {
+			newID, err := newAgentID()
+			if err != nil || s.store.MigrateAgentID(a.ID, newID) != nil {
+				continue
+			}
+			a.ID = newID
+			inst.meta.ID = newID
+		}
+		s.watchTerminal(inst)
+		go s.pollTranscript(inst)
+
 		s.agents[a.ID] = inst
 		s.byTerminal[a.TerminalSessionID] = a.ID
 	}
@@ -127,8 +153,13 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		{Name: "abort", Enabled: false},
 	}
 	now := time.Now().UTC()
+	agentID, err := newAgentID()
+	if err != nil {
+		_ = s.termMgr.Close(termSummary.ID)
+		return nil, err
+	}
 	agentSession := protocol.AgentSession{
-		ID:                termSummary.ID,
+		ID:                agentID,
 		Adapter:           "omp",
 		TerminalSessionID: termSummary.ID,
 		CWD:               termSummary.CWD,
@@ -137,36 +168,39 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-
-	inst := &agentInstance{
-		meta:         agentSession,
-		agentDir:     s.agentDir,
-		subscribers:  make(map[int]*AgentSubscriber),
-		stopPoll:     make(chan struct{}),
-		pollInterval: 200 * time.Millisecond,
-	}
-
+	inst := &agentInstance{meta: agentSession, agentDir: s.agentDir, subscribers: make(map[int]*AgentSubscriber), stopPoll: make(chan struct{}), pollInterval: 200 * time.Millisecond}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		_ = s.termMgr.Close(termSummary.ID)
+		return nil, errors.New("service closing")
+	}
 	s.agents[agentSession.ID] = inst
 	s.byTerminal[termSummary.ID] = agentSession.ID
-	s.mu.Unlock()
-
 	s.recordAgentSummary(inst, "agent.created")
-
-	// Hook terminal lifecycle for exit/wait-state sync
-	_, _ = s.termMgr.Subscribe(termSummary.ID, func(out protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
-		if st.State == "exited" {
-			inst.mu.Lock()
-			inst.meta.State = "exited"
-			inst.meta.UpdatedAt = time.Now().UTC()
-			inst.mu.Unlock()
-			s.recordAgentSummary(inst, "agent.updated")
-		}
-	})
-
+	s.watchTerminal(inst)
 	go s.pollTranscript(inst)
-
+	s.mu.Unlock()
 	return &agentSession, nil
+}
+
+func (s *Service) watchTerminal(inst *agentInstance) {
+	stop, err := s.termMgr.Subscribe(inst.meta.TerminalSessionID, func(_ protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
+		if st.State != "exited" {
+			return
+		}
+		inst.mu.Lock()
+		inst.meta.State = "exited"
+		inst.meta.UpdatedAt = time.Now().UTC()
+		inst.mu.Unlock()
+		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
+	})
+	if err == nil {
+		inst.mu.Lock()
+		inst.stopTerminal = stop
+		inst.mu.Unlock()
+	}
 }
 
 func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
@@ -190,10 +224,27 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 	}, kind)
 }
 
+func (s *Service) emitState(inst *agentInstance) {
+	inst.mu.RLock()
+	event := protocol.AgentEvent{Type: "state", EventID: fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)), AgentID: inst.meta.ID, State: inst.meta.State}
+	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
+	for _, sub := range inst.subscribers {
+		subscribers = append(subscribers, sub.fn)
+	}
+	inst.mu.RUnlock()
+	if s.store != nil {
+		if cursor, err := s.store.RecordEvent(inst.meta.ID, event.Type, event); err == nil {
+			event.Cursor = cursor
+		}
+	}
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
+}
+
 func (s *Service) pollTranscript(inst *agentInstance) {
 	ticker := time.NewTicker(inst.pollInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-inst.stopPoll:
@@ -207,12 +258,18 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 func (s *Service) checkTranscript(inst *agentInstance) {
 	inst.mu.Lock()
 	if inst.tailer == nil {
-		// Attempt discovery:
-		// 1. Check if sessionFile is discovered
 		if inst.sessionFile == "" {
-			sessionsDir := ComputeDefaultSessionDir(inst.agentDir, inst.meta.CWD)
-			if latest, err := FindLatestSessionFile(sessionsDir); err == nil {
-				inst.sessionFile = latest
+			if provider, ok := s.termMgr.(terminalTTYProvider); ok {
+				_, sessionFile, _, err := ReadTerminalBreadcrumb(inst.agentDir, TerminalIDFromTTY(provider.TerminalTTY(inst.meta.TerminalSessionID)))
+				if err == nil && sessionFile != "" {
+					inst.sessionFile = sessionFile
+				}
+			}
+			if inst.sessionFile == "" {
+				sessionsDir := ComputeDefaultSessionDir(inst.agentDir, inst.meta.CWD)
+				if latest, err := FindOnlySessionFile(sessionsDir); err == nil {
+					inst.sessionFile = latest
+				}
 			}
 		}
 		if inst.sessionFile != "" {
@@ -221,11 +278,9 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	tailer := inst.tailer
 	inst.mu.Unlock()
-
 	if tailer == nil {
 		return
 	}
-
 	events, err := tailer.Read()
 	if err != nil || len(events) == 0 {
 		return
@@ -270,6 +325,7 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 
 	if stateChanged {
 		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
 	}
 }
 
@@ -353,10 +409,23 @@ func (s *Service) Close() error {
 		return nil
 	}
 	s.closing = true
+	instances := make([]*agentInstance, 0, len(s.agents))
+	for _, inst := range s.agents {
+		instances = append(instances, inst)
+	}
+	s.agents = make(map[string]*agentInstance)
+	s.byTerminal = make(map[string]string)
 	s.mu.Unlock()
 
-	for _, inst := range s.agents {
+	for _, inst := range instances {
 		close(inst.stopPoll)
+		inst.mu.Lock()
+		stop := inst.stopTerminal
+		inst.stopTerminal = nil
+		inst.mu.Unlock()
+		if stop != nil {
+			stop()
+		}
 	}
 	return nil
 }

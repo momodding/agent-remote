@@ -246,7 +246,6 @@ func TestVNCPortValidation(t *testing.T) {
 	}
 }
 
-
 func TestListenSchemeValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -270,5 +269,20 @@ func TestListenSchemeValidation(t *testing.T) {
 				t.Fatalf("unexpected validation error: %v", err)
 			}
 		})
+	}
+}
+
+func TestTerminalBackendValidation(t *testing.T) {
+	for _, backend := range []string{"auto", "pty", "tmux"} {
+		cfg := Default()
+		cfg.TerminalBackend = backend
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("%s should validate: %v", backend, err)
+		}
+	}
+	cfg := Default()
+	cfg.TerminalBackend = "invalid"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected invalid terminal backend to fail")
 	}
 }

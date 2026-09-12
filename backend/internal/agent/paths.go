@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,4 +117,26 @@ func FindLatestSessionFile(sessionsDir string) (string, error) {
 		return "", os.ErrNotExist
 	}
 	return latestFile, nil
+}
+
+// FindOnlySessionFile permits cwd recovery only when exactly one transcript exists.
+func FindOnlySessionFile(sessionsDir string) (string, error) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return "", err
+	}
+	var file string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		if file != "" {
+			return "", errors.New("ambiguous OMP session files")
+		}
+		file = filepath.Join(sessionsDir, entry.Name())
+	}
+	if file == "" {
+		return "", os.ErrNotExist
+	}
+	return file, nil
 }

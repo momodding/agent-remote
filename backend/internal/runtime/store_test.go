@@ -43,6 +43,24 @@ func TestRecordTerminalSnapshotAndEvents(t *testing.T) {
 	}
 }
 
+func TestSubscribeReceivesCommittedRuntimeEvent(t *testing.T) {
+	s := makeTestDB(t)
+	events := make(chan Event, 1)
+	defer s.Subscribe(func(event Event) { events <- event })()
+	term := TerminalSummary{ID: "t1", Name: "shell", CWD: "/workspace", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := s.RecordTerminal(term, "terminal.created"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Cursor == 0 || event.SurfaceID != term.ID || event.Kind != "terminal.created" {
+			t.Fatalf("unexpected event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive committed event")
+	}
+}
+
 func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()
@@ -141,5 +159,22 @@ func TestOpenReusesAppliedMigration(t *testing.T) {
 	}
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEventsExpireCursorsBeforeRetention(t *testing.T) {
+	s := makeTestDB(t)
+	if _, err := s.db.Exec(`WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < ?) INSERT INTO runtime_events (surface_id, kind, payload, created_at) SELECT 'terminal', 'terminal.updated', '{}', 0 FROM seq`, maxRuntimeEvents); err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+	if _, err := s.RecordEvent("terminal", "terminal.updated", "latest"); err != nil {
+		t.Fatalf("record retained event: %v", err)
+	}
+	if _, _, err := s.Events(0, 1); err != ErrCursorExpired {
+		t.Fatalf("Events before retention = %v, want %v", err, ErrCursorExpired)
+	}
+	events, cursor, err := s.Events(maxRuntimeEvents, 1)
+	if err != nil || len(events) != 1 || cursor != maxRuntimeEvents+1 {
+		t.Fatalf("Events at retained cursor = %+v, %d, %v", events, cursor, err)
 	}
 }

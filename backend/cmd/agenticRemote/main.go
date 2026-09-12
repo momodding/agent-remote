@@ -324,14 +324,23 @@ func serve(configPath string) error {
 		return err
 	}
 	defer manager.Shutdown()
-	tmuxClient := tmux.NewControlClient(filepath.Join(stateDir, "tmux"), "tmux")
-	if err := tmuxClient.Start(context.Background()); err != nil {
-		return fmt.Errorf("start tmux runtime: %w", err)
+	var tmuxClient *tmux.ControlClient
+	if cfg.TerminalBackend != "pty" {
+		tmuxClient = tmux.NewControlClient(filepath.Join(stateDir, "tmux"), "tmux")
+		if err := tmuxClient.Start(context.Background()); err != nil {
+			if cfg.TerminalBackend == "tmux" {
+				return fmt.Errorf("start tmux runtime: %w", err)
+			}
+			log.Printf("[WARNING] tmux unavailable; using direct PTYs: %v", err)
+			tmuxClient = nil
+		}
 	}
-	defer tmuxClient.Close()
-	manager.SetTmux(tmuxClient)
-	if err := manager.ReconcileTmux(context.Background()); err != nil {
-		log.Printf("[WARNING] tmux topology reconciliation failed: %v", err)
+	if tmuxClient != nil {
+		defer tmuxClient.Close()
+		manager.SetTmux(tmuxClient)
+		if err := manager.ReconcileTmux(context.Background()); err != nil {
+			log.Printf("[WARNING] tmux topology reconciliation failed: %v", err)
+		}
 	}
 	agents := agent.NewService(manager, manager.RuntimeStore(), "")
 	defer agents.Close()

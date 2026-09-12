@@ -324,14 +324,24 @@ func copyFile(src, dst string, mode os.FileMode) error {
 }
 
 func (s *Service) Upload(relDir string, file multipart.File, header *multipart.FileHeader) (string, error) {
-	targetRoot, _, err := s.resolveUpload(relDir)
+	uploadRel, err := filepath.Rel(s.WorkspaceRoot, s.UploadRoot)
+	if err != nil || uploadRel == ".." || strings.HasPrefix(uploadRel, ".."+string(filepath.Separator)) || filepath.IsAbs(uploadRel) {
+		return "", errors.New("upload path escapes workspaceRoot")
+	}
+	uploadRoot, _, err := s.Resolve(uploadRel)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+	target, display, err := s.Resolve(filepath.Join(uploadRel, relDir, filepath.Base(header.Filename)))
+	if err != nil {
 		return "", err
 	}
-	target := filepath.Join(targetRoot, filepath.Base(header.Filename))
+	if target != uploadRoot && !strings.HasPrefix(target, uploadRoot+string(filepath.Separator)) {
+		return "", errors.New("upload path escapes uploadRoot")
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return "", err
@@ -340,11 +350,7 @@ func (s *Service) Upload(relDir string, file multipart.File, header *multipart.F
 	if _, err := io.Copy(out, io.LimitReader(file, 50<<20)); err != nil {
 		return "", err
 	}
-	relPath, err := filepath.Rel(s.WorkspaceRoot, target)
-	if err != nil {
-		return "", err
-	}
-	return filepath.ToSlash(relPath), nil
+	return display, nil
 }
 
 func (s *Service) GitStatus(rel string) protocol.GitStatusResponse {
@@ -369,22 +375,6 @@ func (s *Service) GitStatus(rel string) protocol.GitStatusResponse {
 		entries = append(entries, protocol.GitEntry{Code: strings.TrimSpace(line[:2]), Path: strings.TrimSpace(line[3:])})
 	}
 	return protocol.GitStatusResponse{Available: true, Entries: entries}
-}
-
-func (s *Service) resolveUpload(rel string) (string, string, error) {
-	joined := filepath.Join(s.UploadRoot, filepath.Clean(rel))
-	abs, err := filepath.Abs(joined)
-	if err != nil {
-		return "", "", err
-	}
-	if abs != s.UploadRoot && !strings.HasPrefix(abs, s.UploadRoot+string(filepath.Separator)) {
-		return "", "", errors.New("upload path escapes uploadRoot")
-	}
-	relPath, err := filepath.Rel(s.UploadRoot, abs)
-	if err != nil {
-		return "", "", err
-	}
-	return abs, filepath.ToSlash(relPath), nil
 }
 
 func sha256Text(data []byte) string {

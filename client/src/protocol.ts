@@ -43,13 +43,21 @@ export type AgentSession = {
 export type AgentEvent = {
   type: string;
   cursor?: number;
+  eventId?: string;
   agentId: string;
   messageId?: string;
+  toolCallId?: string;
   text?: string;
   toolName?: string;
   toolInput?: unknown;
   toolOutput?: unknown;
   state?: string;
+};
+export type RuntimeLifecycleEvent = {
+  cursor?: number;
+  surfaceId: string;
+  type: string;
+  payload: unknown;
 };
 
 export type TmuxPane = {

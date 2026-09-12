@@ -1,140 +1,174 @@
 import * as Crypto from 'expo-crypto';
 import type { Connection } from './connection';
-import type { AgentEvent } from '../protocol';
+import type { AgentEvent, RuntimeLifecycleEvent } from '../protocol';
 
 // One `RuntimeChannel` per daemon multiplexes the JSON control-plane socket
 // (`/v1/ws/runtime`): agent event subscriptions + request/response commands.
 // Distinct from `DaemonChannel`, which multiplexes raw PTY/VNC byte streams.
 
 type Pending = { resolve: (v: any) => void; reject: (err: Error) => void };
+type Subscription = { kind: 'agent' | 'runtime'; targetId: string; cursor: number; onCursorExpired: () => Promise<number>; pending?: Pending };
+type PendingOpen = { channelId: string; pending?: Pending };
 
 export class RuntimeChannel {
   private socket: WebSocket | null = null;
   private queue: object[] = [];
-  private subscribers = new Map<string, Set<(event: AgentEvent) => void>>();
-  private pendingOpens = new Map<string, Pending>(); // requestId -> resolves with cursor
-  private pendingCommands = new Map<string, Pending>(); // requestId -> resolves with result
+  private subscribers = new Map<string, Set<(event: unknown) => void>>();
+  private subscriptions = new Map<string, Subscription>();
+  private pendingOpens = new Map<string, PendingOpen>();
+  private pendingCommands = new Map<string, Pending>();
+  private reconnectTimer: number | null = null;
+  private disposed = false;
 
   constructor(private readonly connection: Connection) {}
 
   private ensureSocket(): void {
-    if (this.socket) return;
+    if (this.disposed || this.socket) return;
     const url = `${this.connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/runtime`;
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
       socket.send(JSON.stringify({ type: 'auth.token', token: this.connection.token }));
-      const pending = this.queue;
+      const queued = this.queue;
       this.queue = [];
-      for (const frame of pending) socket.send(JSON.stringify(frame));
+      for (const frame of queued) socket.send(JSON.stringify(frame));
+      for (const [channelId, subscription] of this.subscriptions) {
+        if (![...this.pendingOpens.values()].some((open) => open.channelId === channelId)) this.openSubscription(channelId, subscription);
+      }
     };
     socket.onmessage = (event) => {
-      let frame: any;
-      try {
-        frame = JSON.parse(String(event.data));
-      } catch {
-        return;
-      }
-      this.handleFrame(frame);
+      try { this.handleFrame(JSON.parse(String(event.data))); } catch {}
     };
-    const fail = (message: string) => {
-      const err = new Error(message);
-      for (const p of this.pendingOpens.values()) p.reject(err);
-      for (const p of this.pendingCommands.values()) p.reject(err);
-      this.pendingOpens.clear();
-      this.pendingCommands.clear();
-    };
-    socket.onerror = () => fail('runtime connection error');
     socket.onclose = () => {
+      if (this.socket !== socket) return;
       this.socket = null;
-      fail('runtime connection closed');
+      this.queue = [];
+      for (const pending of this.pendingCommands.values()) pending.reject(new Error('runtime connection closed'));
+      this.pendingCommands.clear();
+      this.pendingOpens.clear();
+      this.scheduleReconnect();
     };
   }
 
+  private scheduleReconnect(): void {
+    if (this.disposed || this.subscriptions.size === 0 || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.ensureSocket();
+    }, 250);
+  }
+
   private handleFrame(frame: any): void {
-    switch (frame.type) {
-      case 'channel.opened': {
-        const pending = this.pendingOpens.get(frame.requestId);
-        if (pending) {
-          this.pendingOpens.delete(frame.requestId);
-          pending.resolve(frame.cursor as number);
-        }
-        return;
-      }
-      case 'command.result': {
-        const openPending = this.pendingOpens.get(frame.requestId);
-        if (openPending) {
-          this.pendingOpens.delete(frame.requestId);
-          openPending.reject(new Error(frame.error || 'channel open failed'));
+    if (frame.type === 'channel.opened') {
+      const open = this.pendingOpens.get(frame.requestId);
+      if (!open) return;
+      this.pendingOpens.delete(frame.requestId);
+      const subscription = this.subscriptions.get(open.channelId);
+      if (subscription) subscription.cursor = Math.max(subscription.cursor, frame.cursor as number);
+      open.pending?.resolve(frame.cursor as number);
+      if (subscription) subscription.pending = undefined;
+      return;
+    }
+    if (frame.type === 'command.result') {
+      const open = this.pendingOpens.get(frame.requestId);
+      if (open) {
+        this.pendingOpens.delete(frame.requestId);
+        const subscription = this.subscriptions.get(open.channelId);
+        if (subscription && String(frame.error || '').includes('cursor expired')) {
+          void subscription.onCursorExpired().then((cursor) => {
+            subscription.cursor = cursor;
+            this.openSubscription(open.channelId, subscription);
+          }).catch((error) => open.pending?.reject(error instanceof Error ? error : new Error(String(error))));
           return;
         }
-        const cmdPending = this.pendingCommands.get(frame.requestId);
-        if (cmdPending) {
-          this.pendingCommands.delete(frame.requestId);
-          if (frame.ok) cmdPending.resolve(frame.result);
-          else cmdPending.reject(new Error(frame.error || 'command failed'));
-        }
+        open.pending?.reject(new Error(frame.error || 'channel open failed'));
+        if (subscription) subscription.pending = undefined;
         return;
       }
-      case 'event': {
-		const set = this.subscribers.get(frame.channelId);
-		if (!set) return;
-		const event = { ...(frame.event as AgentEvent), cursor: frame.cursor as number };
-		for (const fn of set) {
-          try {
-            fn(event);
-          } catch (err) {
-            console.error('runtime event subscriber error:', err);
-          }
-        }
-        return;
+      const command = this.pendingCommands.get(frame.requestId);
+      if (!command) return;
+      this.pendingCommands.delete(frame.requestId);
+      if (frame.ok) command.resolve(frame.result); else command.reject(new Error(frame.error || 'command failed'));
+      return;
+    }
+    if (frame.type === 'event') {
+      const subscription = this.subscriptions.get(frame.channelId);
+      const listeners = this.subscribers.get(frame.channelId);
+      if (!subscription || !listeners || frame.cursor <= subscription.cursor) return;
+      subscription.cursor = frame.cursor as number;
+      const event = { ...(frame.event as object), cursor: frame.cursor as number };
+      for (const listener of listeners) {
+        try { listener(event); } catch (error) { console.error('runtime event subscriber error:', error); }
       }
-      default:
-        return;
     }
   }
 
   private send(frame: object): void {
     this.ensureSocket();
-    const socket = this.socket;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(frame));
-    } else {
-      this.queue.push(frame);
-    }
+    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame));
+    else this.queue.push(frame);
   }
 
-	/** Opens an agent event channel and replays history from `after`. */
-	async openAgentChannel(agentId: string, after = 0, subscriber?: (event: AgentEvent) => void): Promise<{ channelId: string; cursor: number }> {
-		const channelId = Crypto.randomUUID();
-		if (subscriber) this.subscribeChannel(channelId, subscriber);
-		const requestId = Crypto.randomUUID();
-		const { promise, resolve, reject } = Promise.withResolvers<number>();
-		this.pendingOpens.set(requestId, { resolve, reject });
-		this.send({ type: 'channel.open', requestId, channelId, kind: 'agent', targetId: agentId, after });
-		const cursor = await promise;
-		return { channelId, cursor };
-	}
+  private openSubscription(channelId: string, subscription: Subscription): void {
+    const requestId = Crypto.randomUUID();
+    this.pendingOpens.set(requestId, { channelId, pending: subscription.pending });
+    this.send({ type: 'channel.open', requestId, channelId, kind: subscription.kind, targetId: subscription.targetId, after: subscription.cursor });
+  }
 
-  subscribeChannel(channelId: string, fn: (event: AgentEvent) => void): () => void {
+  private async openChannel(kind: Subscription['kind'], targetId: string, after: number, subscriber: (event: unknown) => void, onCursorExpired: () => Promise<number>): Promise<{ channelId: string; cursor: number }> {
+    const channelId = Crypto.randomUUID();
+    this.subscribeChannel(channelId, subscriber);
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+    const subscription: Subscription = { kind, targetId, cursor: after, onCursorExpired, pending: { resolve, reject } };
+    this.subscriptions.set(channelId, subscription);
+    this.openSubscription(channelId, subscription);
+    const cursor = await promise;
+    return { channelId, cursor };
+  }
+
+  openAgentChannel(agentId: string, after = 0, subscriber?: (event: AgentEvent) => void, onCursorExpired = async () => 0): Promise<{ channelId: string; cursor: number }> {
+    return this.openChannel('agent', agentId, after, (event) => subscriber?.(event as AgentEvent), onCursorExpired);
+  }
+
+  openRuntimeChannel(after = 0, subscriber?: (event: RuntimeLifecycleEvent) => void, onCursorExpired = async () => 0): Promise<{ channelId: string; cursor: number }> {
+    return this.openChannel('runtime', 'runtime', after, (event) => subscriber?.(event as RuntimeLifecycleEvent), onCursorExpired);
+  }
+
+  subscribeChannel(channelId: string, fn: (event: unknown) => void): () => void {
     let set = this.subscribers.get(channelId);
-    if (!set) {
-      set = new Set();
-      this.subscribers.set(channelId, set);
-    }
+    if (!set) this.subscribers.set(channelId, set = new Set());
     set.add(fn);
     return () => {
       const current = this.subscribers.get(channelId);
-      if (current) {
-        current.delete(fn);
-        if (current.size === 0) this.subscribers.delete(channelId);
-      }
+      if (!current) return;
+      current.delete(fn);
+      if (current.size === 0) this.subscribers.delete(channelId);
     };
   }
 
   closeChannel(channelId: string): void {
     this.subscribers.delete(channelId);
+    this.subscriptions.delete(channelId);
     this.send({ type: 'channel.close', channelId });
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
+    this.queue = [];
+    for (const { pending } of this.pendingOpens.values()) pending?.reject(new Error('Runtime channel disposed'));
+    for (const pending of this.pendingCommands.values()) pending.reject(new Error('Runtime channel disposed'));
+    this.pendingOpens.clear();
+    this.pendingCommands.clear();
+    this.subscriptions.clear();
+    this.subscribers.clear();
   }
 
   async sendCommand(command: string, targetId: string, args?: unknown): Promise<unknown> {
@@ -154,4 +188,10 @@ export function createRuntimeChannel(connection: Connection): RuntimeChannel {
   const channel = new RuntimeChannel(connection);
   runtimeChannelRegistry.set(connection.hostId, channel);
   return channel;
+}
+
+export function disposeRuntimeChannel(hostId: string): void {
+  const channel = runtimeChannelRegistry.get(hostId);
+  channel?.dispose();
+  runtimeChannelRegistry.delete(hostId);
 }

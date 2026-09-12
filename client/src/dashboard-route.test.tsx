@@ -53,6 +53,7 @@ const mockChannel: DaemonChannel = {
   subscribe: jest.fn(),
   openChannel: jest.fn(async () => 'remote-session-id'),
   closeChannel: jest.fn(),
+  dispose: jest.fn(),
 };
 
 jest.mock('./lib/tabs/tab-store', () => ({
@@ -67,6 +68,10 @@ jest.mock('./lib/tabs/tab-store', () => ({
 
 jest.mock('./lib/daemon-channel', () => ({
   createDaemonChannel: jest.fn(() => mockChannel),
+  disposeDaemonChannel: jest.fn(),
+}));
+jest.mock('./lib/runtime-channel', () => ({
+  disposeRuntimeChannel: jest.fn(),
 }));
 
 jest.mock('./lib/connection', () => ({
@@ -250,7 +255,7 @@ describe('dashboard tab deck actions', () => {
     
     expect(tree.root.findByProps({ children: 'Desktop' })).toBeTruthy();
     
-    act(() => { actionFor(tree, 'Open tab Desktop')(); });
+    act(() => { actionFor(tree, 'Open desktop Desktop')(); });
     
     expect(mockActivateTab).toHaveBeenCalledWith('tab-2');
     expect(router.push).toHaveBeenCalledWith({ pathname: '/desktop', params: { tabId: 'tab-2' } });

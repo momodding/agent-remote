@@ -1,3 +1,7 @@
+# SUPERSEDED
+
+> Superseded by [the approved recovery architecture](recover-agent-architecture.md). Do not use this historical plan for implementation decisions.
+
 <!-- omp-source-branch: main -->
 <!-- omp-work-branch: omp/full-gap-remediation-plan -->
 # Full Gap Remediation Plan

@@ -27,6 +27,14 @@ func TestBackendGetPaneID(t *testing.T) {
 	}
 }
 
+func TestLiteralSendKeysCommand(t *testing.T) {
+	got := literalSendKeysCommand("%12", []byte{'A', '$', 0x1b, '\n'})
+	want := `send-keys -l -t %12 \101 \044 \033 \012`
+	if got != want {
+		t.Fatalf("literalSendKeysCommand() = %q, want %q", got, want)
+	}
+}
+
 func TestBackendReadClosed(t *testing.T) {
 	client := NewControlClient("/tmp/test", "tmux")
 	backend := NewTmuxBackend(client, "%0", "$0", "@0")

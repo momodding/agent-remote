@@ -329,6 +329,9 @@ func (m *Manager) RuntimeSnapshot() (*runtimestore.Snapshot, error) { return m.r
 func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error) {
 	return m.runtime.Events(after, limit)
 }
+func (m *Manager) SubscribeRuntime(fn func(runtimestore.Event)) func() {
+	return m.runtime.Subscribe(fn)
+}
 
 func (m *Manager) Shutdown() error {
 	m.shutdownOnce.Do(func() {
@@ -427,6 +430,26 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 		return nil
 	}
 	return runtime.backend.Resize(cols, rows)
+}
+
+// TerminalTTY returns the child TTY for exact OMP breadcrumb association.
+func (m *Manager) TerminalTTY(id string) string {
+	m.mu.Lock()
+	runtime := m.sessions[id]
+	client := m.tmuxClient
+	m.mu.Unlock()
+	if runtime == nil || runtime.backend == nil {
+		return ""
+	}
+	if backend, ok := runtime.backend.(*PtyBackend); ok {
+		return backend.TTY()
+	}
+	if backend, ok := runtime.backend.(*tmux.TmuxBackend); ok && client != nil {
+		if pane := client.GetTopology().Panes[backend.GetPaneID()]; pane != nil {
+			return pane.TTY
+		}
+	}
+	return ""
 }
 
 func (m *Manager) Close(id string) error {

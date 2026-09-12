@@ -7,16 +7,17 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { AgenticRemoteAPI, authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
+import { disposeRuntimeChannel } from '../src/lib/runtime-channel';
 import { reconcileDaemon, type DaemonRuntime } from '../src/lib/runtime-reconcile';
-import type { AgentSession, PairingPayload, RuntimeSnapshot } from '../src/protocol';
+import type { PairingPayload } from '../src/protocol';
+import { buildSessionSurfaces, type SessionSurface } from '../src/lib/session-surface';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
 import { useTabStore } from '../src/lib/tabs/tab-store';
-import { createDaemonChannel } from '../src/lib/daemon-channel';
+import { createDaemonChannel, disposeDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
-const agentStatusRank = (state: AgentSession['state']) => ({ needsYou: 0, working: 1, idle: 2, exited: 3 })[state];
 
 
 export default function TabDeckScreen() {
@@ -70,6 +71,8 @@ export default function TabDeckScreen() {
         onStage?.(message);
       });
       const name = getConnection(store, paired.hostId)?.name ?? new URL(paired.endpoint).host;
+      disposeDaemonChannel(paired.hostId);
+      disposeRuntimeChannel(paired.hostId);
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
       setSelectedHostId(paired.hostId);
@@ -84,6 +87,8 @@ export default function TabDeckScreen() {
     try {
       const wasSelected = hostId === selectedHostId;
       const nextStore = await deleteConnection(hostId);
+      disposeDaemonChannel(hostId);
+      disposeRuntimeChannel(hostId);
       setStore(nextStore);
       if (wasSelected) setSelectedHostId(nextStore.connections[0]?.hostId ?? null);
       
@@ -97,9 +102,16 @@ export default function TabDeckScreen() {
 
   const saveEdit = async (originalHostId: string, replacement: Connection) => {
     const nextStore = await updateConnection(originalHostId, replacement);
+    disposeDaemonChannel(originalHostId);
+    disposeRuntimeChannel(originalHostId);
+    if (replacement.hostId !== originalHostId) {
+      disposeDaemonChannel(replacement.hostId);
+      disposeRuntimeChannel(replacement.hostId);
+    }
     setStore(nextStore);
     if (originalHostId === selectedHostId) setSelectedHostId(replacement.hostId);
   };
+
   
   const spawnTab = async (hostId: string, kind: TabKind) => {
     const connection = getConnection(store, hostId);
@@ -168,24 +180,26 @@ export default function TabDeckScreen() {
 	}
   };
 
-	const openAgentSurface = (daemonId: string, agent: AgentSession) => {
+	const openSurface = (daemonId: string, surface: SessionSurface) => {
+		if (surface.tab) return openTab(surface.tab);
 		const tabId = Crypto.randomUUID();
-		dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
-			tabId, daemonId, kind: 'agent', title: agent.adapter || 'OMP Agent',
-			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-			agentSessionId: agent.id, terminalSessionId: agent.terminalSessionId, state: agent.state, view: 'chat',
-		}], activeId: tabId }));
-		router.push({ pathname: '/agent/[id]', params: { id: tabId } });
-	};
-
-	const openTerminalSurface = (daemonId: string, terminal: RuntimeSnapshot['terminals'][number]) => {
-		const tabId = Crypto.randomUUID();
-		dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
-			tabId, daemonId, kind: 'terminal', title: terminal.name || 'Shell',
-			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-			remoteSessionId: terminal.id, state: terminal.exited ? 'exited' : 'running',
-		}], activeId: tabId }));
-		router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
+		if (surface.agent) {
+			const agent = surface.agent;
+			dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
+				tabId, daemonId, kind: 'agent', title: agent.adapter || 'OMP Agent',
+				createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+				agentSessionId: agent.id, terminalSessionId: agent.terminalSessionId, state: agent.state, view: 'chat',
+			}], activeId: tabId }));
+			router.push({ pathname: '/agent/[id]', params: { id: tabId } });
+		} else if (surface.terminal) {
+			const terminal = surface.terminal;
+			dispatch((prev) => ({ ...prev, tabs: [...prev.tabs, {
+				tabId, daemonId, kind: 'terminal', title: terminal.name || 'Shell',
+				createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+				remoteSessionId: terminal.id, state: terminal.exited ? 'exited' : 'running',
+			}], activeId: tabId }));
+			router.push({ pathname: '/terminal/[id]', params: { id: tabId } });
+		}
 	};
   
   const openTab = (tab: WorkspaceTab) => {
@@ -218,9 +232,8 @@ export default function TabDeckScreen() {
         contentContainerStyle={store.connections.length === 0 ? [styles.deck, { flex: 1 }] : styles.deck}
         ListEmptyComponent={<View style={styles.emptyShell}><Text style={styles.emptyTitle}>Your terminal, at reach.</Text><Text style={styles.emptyText}>Pair this device with a running daemon to browse sessions and work from anywhere.</Text><Pressable accessibilityLabel="Connect daemon" style={styles.primary} onPress={() => setPairingOpen(true)}><Feather name="link" size={20} color="#0A0A0A" /><Text style={styles.primaryText}>Connect daemon</Text></Pressable></View>}
         renderItem={({ item: connection }) => {
-		  const matchedTabs = state.tabs.filter(t => t.daemonId === connection.hostId);
+		  const surfaces = buildSessionSurfaces(connection.hostId, runtimes[connection.hostId]?.snapshot, state.tabs);
 		  const runtime = runtimes[connection.hostId];
-		  const snapshot = runtime?.snapshot;
           return (
             <View style={styles.daemonSection}>
               <View style={styles.daemonSectionHeader}>
@@ -244,42 +257,28 @@ export default function TabDeckScreen() {
               </View>
 
 			  {runtime?.status === 'error' && <View style={styles.runtimeError}><Text style={styles.runtimeErrorText}>Reconnect required: {runtime.error}</Text></View>}
-			  {snapshot && (snapshot.agents.length > 0 || snapshot.terminals.length > 0) && <View style={styles.runtimeList}>
-				{[...snapshot.agents].sort((a, b) => agentStatusRank(a.state) - agentStatusRank(b.state)).map((agent) => (
-					<Pressable key={`agent-${agent.id}`} accessibilityLabel={`Open agent ${agent.adapter}`} style={styles.runtimeRow} onPress={() => openAgentSurface(connection.hostId, agent)}>
-						<Feather name="cpu" size={16} color="#A78BFA" />
-						<View style={styles.tabContent}><Text style={styles.tabTitle}>{agent.adapter || 'OMP Agent'}</Text><Text style={styles.tabStatus}>{agent.state}</Text></View>
-					</Pressable>
-				))}
-				{snapshot.terminals.map((terminal) => (
-					<Pressable key={`terminal-${terminal.id}`} accessibilityLabel={`Open terminal ${terminal.name}`} style={styles.runtimeRow} onPress={() => openTerminalSurface(connection.hostId, terminal)}>
-						<Feather name="terminal" size={16} color="#D19A2C" />
-						<View style={styles.tabContent}><Text style={styles.tabTitle}>{terminal.name || 'Shell'}</Text><Text style={styles.tabStatus}>{terminal.exited ? 'exited' : 'running'}</Text></View>
-					</Pressable>
-				))}
-			  </View>}
-              
-              {matchedTabs.length === 0 ? (
-                <View style={styles.noTabs}><Text style={styles.noTabsText}>No open tabs for this daemon</Text></View>
+
+              {surfaces.length === 0 ? (
+                <View style={styles.noTabs}><Text style={styles.noTabsText}>No open sessions for this daemon</Text></View>
               ) : (
                 <View style={styles.tabGrid}>
-                  {matchedTabs.map(tab => (
-                    <Pressable key={tab.tabId} accessibilityLabel={`Open tab ${tab.title}`} style={styles.tabCard} onPress={() => openTab(tab)}>
+                  {surfaces.map((surface) => (
+                    <Pressable key={surface.key} accessibilityLabel={`Open ${surface.kind} ${surface.title}`} style={styles.tabCard} onPress={() => openSurface(connection.hostId, surface)}>
                       <View style={styles.tabIcon}>
-                        {tab.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
-                        {tab.kind === 'agent' && <Feather name="cpu" size={20} color="#A78BFA" />}
-                        {tab.kind === 'files' && <Feather name="folder" size={20} color="#F19999" />}
-                        {tab.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
+                        {surface.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
+                        {surface.kind === 'agent' && <Feather name="cpu" size={20} color="#A78BFA" />}
+                        {surface.kind === 'files' && <Feather name="folder" size={20} color="#F19999" />}
+                        {surface.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
                       </View>
                       <View style={styles.tabContent}>
-                        <Text style={styles.tabTitle} numberOfLines={1}>{tab.title}</Text>
-                        <Text style={styles.tabStatus} numberOfLines={1}>
-                          {tab.kind === 'terminal' || tab.kind === 'desktop' || tab.kind === 'agent' ? tab.state : 'Navigating'}
-                        </Text>
+                        <Text style={styles.tabTitle} numberOfLines={1}>{surface.title}</Text>
+                        <Text style={styles.tabStatus} numberOfLines={1}>{surface.status}</Text>
                       </View>
-                      <Pressable accessibilityLabel={`Close tab ${tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(tab.tabId); }}>
-                        <Feather name="x" size={16} color="#888" />
-                      </Pressable>
+                      {surface.tab && (
+                        <Pressable accessibilityLabel={`Close tab ${surface.tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(surface.tab!.tabId); }}>
+                          <Feather name="x" size={16} color="#888" />
+                        </Pressable>
+                      )}
                     </Pressable>
                   ))}
                 </View>

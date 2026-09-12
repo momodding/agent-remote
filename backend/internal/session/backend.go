@@ -96,3 +96,16 @@ func (b *PtyBackend) Identity() string {
 	}
 	return strconv.Itoa(b.cmd.Process.Pid)
 }
+
+func (b *PtyBackend) TTY() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed || b.cmd.Process == nil {
+		return ""
+	}
+	tty, err := os.Readlink("/proc/" + strconv.Itoa(b.cmd.Process.Pid) + "/fd/0")
+	if err != nil {
+		return ""
+	}
+	return tty
+}

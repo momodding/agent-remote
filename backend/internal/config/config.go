@@ -30,6 +30,7 @@ type Config struct {
 	PairingPageUsername         string   `json:"pairingPageUsername"`
 	PairingPagePassword         string   `json:"pairingPagePassword"`
 	VNCPort                     int      `json:"vncPort"`
+	TerminalBackend             string   `json:"terminalBackend"`
 }
 
 func Default() Config {
@@ -50,6 +51,7 @@ func Default() Config {
 		ExpoPushEndpoint:            "https://exp.host/--/api/v2/push/send",
 		PairingRotationSeconds:      45,
 		VNCPort:                     5900,
+		TerminalBackend:             "auto",
 	}
 }
 
@@ -117,6 +119,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.VNCPort < 1 || cfg.VNCPort > 65535 {
 		return errors.New("vncPort must be 1-65535")
+	}
+	if cfg.TerminalBackend != "auto" && cfg.TerminalBackend != "pty" && cfg.TerminalBackend != "tmux" {
+		return errors.New("terminalBackend must be auto, pty, or tmux")
 	}
 	return nil
 }

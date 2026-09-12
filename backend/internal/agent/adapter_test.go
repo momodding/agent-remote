@@ -55,6 +55,22 @@ func (m *mockTermMgr) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, p
 	return func() { delete(m.subscribers, id) }, nil
 }
 
+type blockingTermMgr struct {
+	*mockTermMgr
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingTermMgr) Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
+	close(m.started)
+	select {
+	case <-m.release:
+		return m.mockTermMgr.Create(ctx, req)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	stateDir := t.TempDir()
 	store, err := runtimestore.Open(stateDir)
@@ -71,8 +87,11 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error creating agent: %v", err)
 	}
-	if agent.ID != "term-123" || agent.Adapter != "omp" || agent.State != "idle" {
+	if agent.ID == agent.TerminalSessionID || agent.TerminalSessionID != "term-123" || agent.Adapter != "omp" || agent.State != "idle" {
 		t.Fatalf("unexpected agent summary: %+v", agent)
+	}
+	if len(agent.ID) <= len("agent_") || agent.ID[:len("agent_")] != "agent_" {
+		t.Fatalf("agent ID = %q, want stable agent_ prefix", agent.ID)
 	}
 
 	// Transcript-only projection must not inject prompts or interrupts.
@@ -87,6 +106,31 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateAgentClosesTerminalWhenShutdownWins(t *testing.T) {
+	store, err := runtimestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := &blockingTermMgr{mockTermMgr: newMockTermMgr(), started: make(chan struct{}), release: make(chan struct{})}
+	svc := NewService(termMgr, store, t.TempDir())
+	result := make(chan error, 1)
+	go func() { _, err := svc.CreateAgent(context.Background(), "/workspace", "Agent"); result <- err }()
+	<-termMgr.started
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(termMgr.release)
+	if err := <-result; err == nil || err.Error() != "service closing" {
+		t.Fatalf("CreateAgent error = %v", err)
+	}
+	if !termMgr.closed["term-123"] {
+		t.Fatal("terminal was not closed after shutdown won")
+	}
+	if agents := svc.ListAgents(); len(agents) != 0 {
+		t.Fatalf("agents = %+v, want none", agents)
+	}
+}
 func TestAgentServiceTranscriptIngestion(t *testing.T) {
 	stateDir := t.TempDir()
 	store, err := runtimestore.Open(stateDir)
@@ -140,5 +184,69 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for agent event from transcript")
+	}
+
+	line = `{"type":"message","id":"msg-2","message":{"role":"user","content":"continue"}}` + "\n"
+	f, err = os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(line)
+	_ = f.Close()
+	for {
+		select {
+		case ev := <-received:
+			if ev.Type == "state" {
+				if ev.State != "running" || ev.EventID == "" {
+					t.Fatalf("unexpected state event: %+v", ev)
+				}
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for agent state event")
+		}
+	}
+}
+
+func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{ID: "agent_restored", Adapter: "omp", TerminalSessionID: "term-123", CWD: "/workspace", Capabilities: []byte("[]"), State: "idle", CreatedAt: now, UpdatedAt: now}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+	dir := ComputeDefaultSessionDir(stateDir, "/workspace")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "restored.jsonl")
+	if err := os.WriteFile(file, []byte(`{"type":"message","id":"old","message":{"role":"assistant","content":"restored"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	received := make(chan protocol.AgentEvent, 1)
+	unsub, err := svc.Subscribe("agent_restored", func(event protocol.AgentEvent) { received <- event })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	select {
+	case event := <-received:
+		if event.AgentID != "agent_restored" || event.Text != "restored" {
+			t.Fatalf("unexpected restored event: %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restored agent did not resume transcript polling")
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(termMgr.subscribers) != 0 {
+		t.Fatal("agent service retained terminal subscription after close")
 	}
 }
