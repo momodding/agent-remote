@@ -1120,7 +1120,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-	case "message.user", "message.assistant", "tool.call", "tool.result":
+	case "message.user", "message.assistant", "tool.call", "tool.result", "state":
 		return true
 	default:
 		return false
@@ -1128,7 +1128,6 @@ func isAgentEventKind(kind string) bool {
 }
 
 func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelope, write func(any) error) {
-
 	switch cmd.Command {
 	case "agent.create":
 		if s.agents == nil {

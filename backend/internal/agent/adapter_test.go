@@ -185,6 +185,27 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for agent event from transcript")
 	}
+
+	line = `{"type":"message","id":"msg-2","message":{"role":"user","content":"continue"}}` + "\n"
+	f, err = os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(line)
+	_ = f.Close()
+	for {
+		select {
+		case ev := <-received:
+			if ev.Type == "state" {
+				if ev.State != "running" || ev.EventID == "" {
+					t.Fatalf("unexpected state event: %+v", ev)
+				}
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for agent state event")
+		}
+	}
 }
 
 func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {

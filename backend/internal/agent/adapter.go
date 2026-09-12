@@ -194,6 +194,7 @@ func (s *Service) watchTerminal(inst *agentInstance) {
 		inst.meta.UpdatedAt = time.Now().UTC()
 		inst.mu.Unlock()
 		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
 	})
 	if err == nil {
 		inst.mu.Lock()
@@ -221,6 +222,24 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 		CreatedAt:         meta.CreatedAt,
 		UpdatedAt:         meta.UpdatedAt,
 	}, kind)
+}
+
+func (s *Service) emitState(inst *agentInstance) {
+	inst.mu.RLock()
+	event := protocol.AgentEvent{Type: "state", EventID: fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)), AgentID: inst.meta.ID, State: inst.meta.State}
+	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
+	for _, sub := range inst.subscribers {
+		subscribers = append(subscribers, sub.fn)
+	}
+	inst.mu.RUnlock()
+	if s.store != nil {
+		if cursor, err := s.store.RecordEvent(inst.meta.ID, event.Type, event); err == nil {
+			event.Cursor = cursor
+		}
+	}
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
 }
 
 func (s *Service) pollTranscript(inst *agentInstance) {
@@ -306,6 +325,7 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 
 	if stateChanged {
 		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
 	}
 }
 
