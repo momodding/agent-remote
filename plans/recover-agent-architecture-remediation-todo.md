@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `2d3e839`; 2026-09-12.
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: IN_PROGRESS
+Status: DONE — OMP exposes no supported semantic command bridge; transcript-only chat with needs_terminal prompt/abort fallback is the supported integration.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
