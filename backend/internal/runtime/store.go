@@ -197,6 +197,25 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	return tx.Commit()
 }
 
+// MigrateAgentID separates legacy agent rows that reused a terminal ID. Only
+// agent-owned event kinds move; terminal history stays on the terminal surface.
+func (s *Store) MigrateAgentID(oldID, newID string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE agent_sessions SET id = ? WHERE id = ?`, newID, oldID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE runtime_events SET surface_id = ? WHERE surface_id = ? AND kind LIKE 'agent.%'`, newID, oldID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // RemoveTerminal removes a materialized terminal after a later create-stage failure.
 func (s *Store) RemoveTerminal(id string) error {
 	s.lock.Lock()

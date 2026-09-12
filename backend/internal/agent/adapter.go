@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,14 @@ var (
 	ErrAgentNotFound = errors.New("agent not found")
 	ErrAgentExited   = errors.New("agent has exited")
 )
+
+func newAgentID() (string, error) {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return "agent_" + hex.EncodeToString(data), nil
+}
 
 // TerminalManager is the minimal interface needed from session.Manager.
 type TerminalManager interface {
@@ -94,6 +104,14 @@ func (s *Service) restorePersisted() {
 			stopPoll:     make(chan struct{}),
 			pollInterval: 250 * time.Millisecond,
 		}
+		if a.ID == a.TerminalSessionID {
+			newID, err := newAgentID()
+			if err != nil || s.store.MigrateAgentID(a.ID, newID) != nil {
+				continue
+			}
+			a.ID = newID
+			inst.meta.ID = newID
+		}
 		s.agents[a.ID] = inst
 		s.byTerminal[a.TerminalSessionID] = a.ID
 	}
@@ -127,8 +145,13 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		{Name: "abort", Enabled: false},
 	}
 	now := time.Now().UTC()
+	agentID, err := newAgentID()
+	if err != nil {
+		_ = s.termMgr.Close(termSummary.ID)
+		return nil, err
+	}
 	agentSession := protocol.AgentSession{
-		ID:                termSummary.ID,
+		ID:                agentID,
 		Adapter:           "omp",
 		TerminalSessionID: termSummary.ID,
 		CWD:               termSummary.CWD,

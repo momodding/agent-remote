@@ -71,8 +71,11 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error creating agent: %v", err)
 	}
-	if agent.ID != "term-123" || agent.Adapter != "omp" || agent.State != "idle" {
+	if agent.ID == agent.TerminalSessionID || agent.TerminalSessionID != "term-123" || agent.Adapter != "omp" || agent.State != "idle" {
 		t.Fatalf("unexpected agent summary: %+v", agent)
+	}
+	if len(agent.ID) <= len("agent_") || agent.ID[:len("agent_")] != "agent_" {
+		t.Fatalf("agent ID = %q, want stable agent_ prefix", agent.ID)
 	}
 
 	// Transcript-only projection must not inject prompts or interrupts.
