@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import * as Crypto from 'expo-crypto';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
 
@@ -25,8 +26,8 @@ import { getConnection, loadConnections, type Connection } from '../../src/lib/c
 import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-channel';
 import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime-channel';
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
-import { updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
-import type { AgentWorkspaceTab } from '../../src/lib/tabs/types';
+import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
+import type { AgentWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
 import type { AgentEvent, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
@@ -176,10 +177,16 @@ export default function AgentScreen() {
     }
   }, [api]);
 
-  const selectPane = useCallback((pane: TmuxPane) => {
-    if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
-    dispatch((previous) => updateTab(previous, tab.tabId, { terminalSessionId: pane.terminalSessionId, tmuxPaneId: pane.paneId }));
-  }, [dispatch, tab]);
+	const selectPane = useCallback((pane: TmuxPane) => {
+		if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
+		const terminalTab: TerminalWorkspaceTab = {
+			tabId: Crypto.randomUUID(), daemonId: tab.daemonId, kind: 'terminal', title: pane.windowName || 'Shell',
+			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, remoteSessionId: pane.terminalSessionId,
+			state: 'running', tmuxPaneId: pane.paneId,
+		};
+		dispatch((previous) => addTab(previous, terminalTab));
+		router.push({ pathname: '/terminal/[id]', params: { id: terminalTab.tabId } });
+	}, [dispatch, tab]);
 
   const sendPrompt = useCallback(async () => {
     if (!promptText.trim() || !api || !tab || sending) return;
