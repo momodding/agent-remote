@@ -131,6 +131,43 @@ func TestSlowSubscriberDoesNotBlockWriters(t *testing.T) {
 	close(release)
 }
 
+func TestStalledSubscriberIsDetached(t *testing.T) {
+	s := makeTestDB(t)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s.Subscribe(func(Event) {
+		started <- struct{}{}
+		<-release
+	})
+	if _, err := s.RecordEvent("first", "agent.updated", 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not start")
+	}
+	for i := 1; i <= maxSubscriberEvents+1; i++ {
+		if _, err := s.RecordEvent("event", "agent.updated", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.watchMu.Lock()
+		remaining := len(s.watchers)
+		s.watchMu.Unlock()
+		if remaining == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stalled subscriber was not detached")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+}
+
 func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()

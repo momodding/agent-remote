@@ -77,6 +77,19 @@ describe('RuntimeChannel reconnects subscriptions', () => {
   });
 
 
+
+  it('delivers replay events received before the channel acknowledgement', async () => {
+    const channel = new RuntimeChannel(connection);
+    const received: number[] = [];
+    const opening = channel.openRuntimeChannel(0, (event) => received.push(event.cursor ?? 0));
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const open = JSON.parse(socket.sent[1]);
+    socket.receive({ type: 'event', channelId: open.channelId, cursor: 1, event: { surfaceId: 't1', type: 'terminal.created', payload: {} } });
+    socket.receive({ type: 'channel.opened', requestId: open.requestId, channelId: open.channelId, cursor: 1 });
+    await expect(opening).resolves.toMatchObject({ channelId: open.channelId, cursor: 1 });
+    expect(received).toEqual([1]);
+  });
   it('refreshes its cursor when replay expires', async () => {
     const channel = new RuntimeChannel(connection);
     const opening = channel.openRuntimeChannel(7, undefined, async () => 20);

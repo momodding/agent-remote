@@ -91,6 +91,42 @@ func TestRuntimeEventsExposeCreatedSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeWSReplaysEventsBeforeChannelOpened(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	if _, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{Name: "runtime", Command: "sh", Args: []string{"-c", "sleep 1"}}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/runtime", &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, protocol.ChannelOpenEnvelope{Type: "channel.open", RequestID: "request", ChannelID: "runtime", Kind: "runtime", TargetID: "runtime", After: 0}); err != nil {
+		t.Fatal(err)
+	}
+	var frames []string
+	for {
+		var frame map[string]any
+		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, frame["type"].(string))
+		if frame["type"] == "channel.opened" {
+			break
+		}
+	}
+	if len(frames) < 2 || frames[0] != "event" || frames[len(frames)-1] != "channel.opened" {
+		t.Fatalf("runtime replay order = %v", frames)
+	}
+}
+
 func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/daemon/identity", nil)

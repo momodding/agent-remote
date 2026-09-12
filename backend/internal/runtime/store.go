@@ -13,13 +13,17 @@ import (
 
 var ErrCursorExpired = errors.New("runtime cursor expired")
 
-const maxRuntimeEvents = 5_000
+const (
+	maxRuntimeEvents    = 5_000
+	maxPublishedEvents  = 1_024
+	maxSubscriberEvents = 64
+)
 
 type Store struct {
 	db            *sql.DB
 	lock          sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
 	watchMu       sync.Mutex
-	watchers      map[uint64]func(Event)
+	watchers      map[uint64]*watcher
 	nextWatcher   uint64
 	publishMu     sync.Mutex
 	publishWake   *sync.Cond
@@ -72,6 +76,11 @@ type Event struct {
 	CreatedAt time.Time       `json:"createdAt"`
 }
 
+type watcher struct {
+	events chan Event
+	fn     func(Event)
+}
+
 type Snapshot struct {
 	Cursor    int64             `json:"cursor"`
 	Terminals []TerminalSummary `json:"terminals"`
@@ -90,7 +99,7 @@ func Open(stateDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db, watchers: make(map[uint64]func(Event)), publishDone: make(chan struct{})}
+	store := &Store{db: db, watchers: make(map[uint64]*watcher), publishDone: make(chan struct{})}
 	store.publishWake = sync.NewCond(&store.publishMu)
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
@@ -481,9 +490,15 @@ func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {
 func (s *Store) Close() error {
 	s.publishMu.Lock()
 	s.publishClosed = true
-	s.publishWake.Signal()
+	s.publishWake.Broadcast()
 	s.publishMu.Unlock()
 	<-s.publishDone
+	s.watchMu.Lock()
+	for id, watcher := range s.watchers {
+		delete(s.watchers, id)
+		close(watcher.events)
+	}
+	s.watchMu.Unlock()
 	return s.db.Close()
 }
 
@@ -494,24 +509,39 @@ func boolToInt(value bool) int {
 	return 0
 }
 
-// Subscribe receives events only after their transaction commits.
+// Subscribe receives events only after their transaction commits. A stalled
+// subscriber is detached rather than retaining an unbounded event backlog.
 func (s *Store) Subscribe(fn func(Event)) func() {
+	watcher := &watcher{events: make(chan Event, maxSubscriberEvents), fn: fn}
 	s.watchMu.Lock()
 	id := s.nextWatcher
 	s.nextWatcher++
-	s.watchers[id] = fn
+	s.watchers[id] = watcher
 	s.watchMu.Unlock()
+	go func() {
+		for event := range watcher.events {
+			watcher.fn(event)
+		}
+	}()
 	return func() {
 		s.watchMu.Lock()
-		delete(s.watchers, id)
+		if current, ok := s.watchers[id]; ok {
+			delete(s.watchers, id)
+			close(current.events)
+		}
 		s.watchMu.Unlock()
 	}
 }
 
 func (s *Store) enqueuePublished(event Event) {
 	s.publishMu.Lock()
-	s.publishQueue = append(s.publishQueue, event)
-	s.publishWake.Signal()
+	for len(s.publishQueue) >= maxPublishedEvents && !s.publishClosed {
+		s.publishWake.Wait()
+	}
+	if !s.publishClosed {
+		s.publishQueue = append(s.publishQueue, event)
+		s.publishWake.Signal()
+	}
 	s.publishMu.Unlock()
 }
 
@@ -528,6 +558,7 @@ func (s *Store) dispatchPublished() {
 		}
 		event := s.publishQueue[0]
 		s.publishQueue = s.publishQueue[1:]
+		s.publishWake.Broadcast()
 		s.publishMu.Unlock()
 		s.publish(event)
 	}
@@ -535,12 +566,13 @@ func (s *Store) dispatchPublished() {
 
 func (s *Store) publish(event Event) {
 	s.watchMu.Lock()
-	watchers := make([]func(Event), 0, len(s.watchers))
-	for _, watcher := range s.watchers {
-		watchers = append(watchers, watcher)
+	for id, watcher := range s.watchers {
+		select {
+		case watcher.events <- event:
+		default:
+			delete(s.watchers, id)
+			close(watcher.events)
+		}
 	}
 	s.watchMu.Unlock()
-	for _, watcher := range watchers {
-		watcher(event)
-	}
 }
