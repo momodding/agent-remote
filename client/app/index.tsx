@@ -7,12 +7,13 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { AgenticRemoteAPI, authenticatePairing } from '../src/lib/api';
 import { deleteConnection, getConnection, loadConnections, saveConnection, updateConnection, type Connection, type ConnectionStore } from '../src/lib/connection';
+import { disposeRuntimeChannel } from '../src/lib/runtime-channel';
 import { reconcileDaemon, type DaemonRuntime } from '../src/lib/runtime-reconcile';
 import type { AgentSession, PairingPayload, RuntimeSnapshot } from '../src/protocol';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
 import { useTabStore } from '../src/lib/tabs/tab-store';
-import { createDaemonChannel } from '../src/lib/daemon-channel';
+import { createDaemonChannel, disposeDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
@@ -70,6 +71,8 @@ export default function TabDeckScreen() {
         onStage?.(message);
       });
       const name = getConnection(store, paired.hostId)?.name ?? new URL(paired.endpoint).host;
+      disposeDaemonChannel(paired.hostId);
+      disposeRuntimeChannel(paired.hostId);
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
       setSelectedHostId(paired.hostId);
@@ -84,6 +87,8 @@ export default function TabDeckScreen() {
     try {
       const wasSelected = hostId === selectedHostId;
       const nextStore = await deleteConnection(hostId);
+      disposeDaemonChannel(hostId);
+      disposeRuntimeChannel(hostId);
       setStore(nextStore);
       if (wasSelected) setSelectedHostId(nextStore.connections[0]?.hostId ?? null);
       
@@ -97,9 +102,16 @@ export default function TabDeckScreen() {
 
   const saveEdit = async (originalHostId: string, replacement: Connection) => {
     const nextStore = await updateConnection(originalHostId, replacement);
+    disposeDaemonChannel(originalHostId);
+    disposeRuntimeChannel(originalHostId);
+    if (replacement.hostId !== originalHostId) {
+      disposeDaemonChannel(replacement.hostId);
+      disposeRuntimeChannel(replacement.hostId);
+    }
     setStore(nextStore);
     if (originalHostId === selectedHostId) setSelectedHostId(replacement.hostId);
   };
+
   
   const spawnTab = async (hostId: string, kind: TabKind) => {
     const connection = getConnection(store, hostId);

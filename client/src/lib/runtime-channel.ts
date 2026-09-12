@@ -152,6 +152,25 @@ export class RuntimeChannel {
     this.send({ type: 'channel.close', channelId });
   }
 
+  dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
+    this.queue = [];
+    for (const { pending } of this.pendingOpens.values()) pending?.reject(new Error('Runtime channel disposed'));
+    for (const pending of this.pendingCommands.values()) pending.reject(new Error('Runtime channel disposed'));
+    this.pendingOpens.clear();
+    this.pendingCommands.clear();
+    this.subscriptions.clear();
+    this.subscribers.clear();
+  }
+
   async sendCommand(command: string, targetId: string, args?: unknown): Promise<unknown> {
     const requestId = Crypto.randomUUID();
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
@@ -169,4 +188,10 @@ export function createRuntimeChannel(connection: Connection): RuntimeChannel {
   const channel = new RuntimeChannel(connection);
   runtimeChannelRegistry.set(connection.hostId, channel);
   return channel;
+}
+
+export function disposeRuntimeChannel(hostId: string): void {
+  const channel = runtimeChannelRegistry.get(hostId);
+  channel?.dispose();
+  runtimeChannelRegistry.delete(hostId);
 }

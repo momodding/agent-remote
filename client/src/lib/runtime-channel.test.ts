@@ -1,4 +1,4 @@
-import { RuntimeChannel } from './runtime-channel';
+import { RuntimeChannel, runtimeChannelRegistry, createRuntimeChannel, disposeRuntimeChannel } from './runtime-channel';
 import type { Connection } from './connection';
 
 class FakeWebSocket {
@@ -72,5 +72,13 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     expect(retry.after).toBe(20);
     socket.receive({ type: 'channel.opened', requestId: retry.requestId, channelId: firstOpen.channelId, cursor: 20 });
     await expect(opening).resolves.toMatchObject({ cursor: 20 });
+  });
+
+  it('dispose rejects pending opens and removes the registry entry', async () => {
+    const channel = createRuntimeChannel({ ...connection, hostId: 'host-x' });
+    const opening = channel.openRuntimeChannel(0);
+    disposeRuntimeChannel('host-x');
+    await expect(opening).rejects.toThrow('Runtime channel disposed');
+    expect(runtimeChannelRegistry.has('host-x')).toBe(false);
   });
 });

@@ -53,6 +53,7 @@ const mockChannel: DaemonChannel = {
   subscribe: jest.fn(),
   openChannel: jest.fn(async () => 'remote-session-id'),
   closeChannel: jest.fn(),
+  dispose: jest.fn(),
 };
 
 jest.mock('./lib/tabs/tab-store', () => ({
@@ -67,6 +68,10 @@ jest.mock('./lib/tabs/tab-store', () => ({
 
 jest.mock('./lib/daemon-channel', () => ({
   createDaemonChannel: jest.fn(() => mockChannel),
+  disposeDaemonChannel: jest.fn(),
+}));
+jest.mock('./lib/runtime-channel', () => ({
+  disposeRuntimeChannel: jest.fn(),
 }));
 
 jest.mock('./lib/connection', () => ({

@@ -54,6 +54,7 @@ export interface DaemonChannel {
   /** Opens a new multiplexed channel for one tab; resolves once the daemon acks it. */
   openChannel(kind: TabKind, meta: Record<string, unknown>): Promise<string>;
   closeChannel(channelId: string): void;
+  dispose(): void;
 }
 
 export class WebSocketDaemonChannel implements DaemonChannel {
@@ -147,6 +148,13 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   closeChannel(channelId: string): void {
     this.subscribers.delete(channelId);
     this.closeSocket(channelId);
+  }
+
+  dispose(): void {
+    for (const channelId of this.sockets.keys()) this.closeSocket(channelId);
+    this.subscribers.clear();
+    this.pendingSends.clear();
+    this.status = 'closed';
   }
 
   private ensureSocket(channelId: string): void {
@@ -255,4 +263,10 @@ export function createDaemonChannel(connection: Connection): DaemonChannel {
   const channel = new WebSocketDaemonChannel(connection);
   channelRegistry.set(connection.hostId, channel);
   return channel;
+}
+
+export function disposeDaemonChannel(hostId: DaemonId): void {
+  const channel = channelRegistry.get(hostId);
+  channel?.dispose();
+  channelRegistry.delete(hostId);
 }

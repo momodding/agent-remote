@@ -1,4 +1,4 @@
-import { createDaemonChannel, channelRegistry, WebSocketDaemonChannel } from './daemon-channel';
+import { createDaemonChannel, channelRegistry, disposeDaemonChannel, WebSocketDaemonChannel } from './daemon-channel';
 import type { Connection } from './connection';
 
 const conn: Connection = {
@@ -14,4 +14,13 @@ describe('daemon-channel', () => {
     expect(channel).toBeInstanceOf(WebSocketDaemonChannel);
   });
 
+  it('dispose removes the registry entry and closes its sockets', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'host-456' });
+    const closeSpy = jest.fn();
+    (channel as any).sockets.set('chan-1', { close: closeSpy, readyState: 1 });
+    disposeDaemonChannel('host-456');
+    expect(closeSpy).toHaveBeenCalled();
+    expect(channelRegistry.has('host-456')).toBe(false);
+    expect(createDaemonChannel({ ...conn, hostId: 'host-456' })).not.toBe(channel);
+  });
 });
