@@ -13,6 +13,8 @@ import (
 
 var ErrCursorExpired = errors.New("runtime cursor expired")
 
+const maxRuntimeEvents = 5_000
+
 type Store struct {
 	db          *sql.DB
 	lock        sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
@@ -172,7 +174,7 @@ func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	if _, err = tx.Exec(`INSERT INTO terminal_sessions (id, name, cwd, seq, exited, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, cwd=excluded.cwd, seq=excluded.seq, exited=excluded.exited, updated_at=excluded.updated_at`, term.ID, term.Name, term.CWD, term.Seq, boolToInt(term.Exited), term.CreatedAt.Unix(), term.UpdatedAt.Unix()); err != nil {
 		return err
 	}
-	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, term.ID, kind, payload, time.Now().Unix())
+	result, err := appendRuntimeEvent(tx, term.ID, kind, payload)
 	if err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
 		return err
 	}
-	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, agent.ID, kind, payload, time.Now().Unix())
+	result, err := appendRuntimeEvent(tx, agent.ID, kind, payload)
 	if err != nil {
 		return err
 	}
@@ -252,7 +254,7 @@ func (s *Store) RemoveTerminal(id string) error {
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, id, "terminal.removed", payload, time.Now().Unix())
+	result, err := appendRuntimeEvent(tx, id, "terminal.removed", payload)
 	if err != nil {
 		return err
 	}
@@ -274,8 +276,16 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	result, err := s.db.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, surfaceID, kind, data, time.Now().Unix())
+	tx, err := s.db.Begin()
 	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := appendRuntimeEvent(tx, surfaceID, kind, data)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	cursor, err := result.LastInsertId()
@@ -283,6 +293,15 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 		s.publish(Event{Cursor: cursor, SurfaceID: surfaceID, Kind: kind, Payload: data, CreatedAt: time.Now().UTC()})
 	}
 	return cursor, err
+}
+
+func appendRuntimeEvent(tx *sql.Tx, surfaceID, kind string, payload []byte) (sql.Result, error) {
+	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, surfaceID, kind, payload, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(`DELETE FROM runtime_events WHERE global_seq <= COALESCE((SELECT global_seq FROM runtime_events ORDER BY global_seq DESC LIMIT 1 OFFSET ?), 0)`, maxRuntimeEvents)
+	return result, err
 }
 
 func (s *Store) RecordTopology(panes []TopologyPane) error {
@@ -305,7 +324,7 @@ func (s *Store) RecordTopology(panes []TopologyPane) error {
 			return err
 		}
 	}
-	result, err := tx.Exec(`INSERT INTO runtime_events (surface_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`, "topology", "tmux.topology", payload, time.Now().Unix())
+	result, err := appendRuntimeEvent(tx, "topology", "tmux.topology", payload)
 	if err != nil {
 		return err
 	}
@@ -389,6 +408,13 @@ func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	var earliest int64
+	if err := s.db.QueryRow(`SELECT COALESCE(MIN(global_seq), 0) FROM runtime_events`).Scan(&earliest); err != nil {
+		return nil, 0, err
+	}
+	if earliest > 0 && after < earliest-1 {
+		return nil, 0, ErrCursorExpired
+	}
 	rows, err := s.db.Query(`SELECT global_seq, surface_id, kind, payload, created_at FROM runtime_events WHERE global_seq > ? ORDER BY global_seq LIMIT ?`, after, limit)
 	if err != nil {
 		return nil, 0, err

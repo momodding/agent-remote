@@ -161,3 +161,20 @@ func TestOpenReusesAppliedMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEventsExpireCursorsBeforeRetention(t *testing.T) {
+	s := makeTestDB(t)
+	if _, err := s.db.Exec(`WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < ?) INSERT INTO runtime_events (surface_id, kind, payload, created_at) SELECT 'terminal', 'terminal.updated', '{}', 0 FROM seq`, maxRuntimeEvents); err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+	if _, err := s.RecordEvent("terminal", "terminal.updated", "latest"); err != nil {
+		t.Fatalf("record retained event: %v", err)
+	}
+	if _, _, err := s.Events(0, 1); err != ErrCursorExpired {
+		t.Fatalf("Events before retention = %v, want %v", err, ErrCursorExpired)
+	}
+	events, cursor, err := s.Events(maxRuntimeEvents, 1)
+	if err != nil || len(events) != 1 || cursor != maxRuntimeEvents+1 {
+		t.Fatalf("Events at retained cursor = %+v, %d, %v", events, cursor, err)
+	}
+}
