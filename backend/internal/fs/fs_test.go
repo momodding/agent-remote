@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,5 +132,38 @@ func TestCopyRejectsSymlinkSource(t *testing.T) {
 	}
 	if err := svc.Copy("link.txt", "dst.txt"); err == nil {
 		t.Fatal("expected symlink copy to fail")
+	}
+}
+
+func TestUploadUsesWorkspaceResolver(t *testing.T) {
+	workspace := t.TempDir()
+	uploadRoot := filepath.Join(workspace, "uploads")
+	svc, err := NewService(workspace, uploadRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.CreateTemp(t.TempDir(), "upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	if _, err := input.WriteString("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := input.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := svc.Upload("nested", input, &multipart.FileHeader{Filename: "note.txt"})
+	if err != nil || stored != "uploads/nested/note.txt" {
+		t.Fatalf("Upload = %q, %v", stored, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, stored)); err != nil || string(data) != "hello" {
+		t.Fatalf("stored file = %q, %v", data, err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(uploadRoot, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Upload("escape", input, &multipart.FileHeader{Filename: "blocked.txt"}); err == nil {
+		t.Fatal("Upload through symlink succeeded")
 	}
 }
