@@ -61,7 +61,6 @@ export default function AgentScreen() {
   const daemonChannelRef = useRef<DaemonChannel | null>(null);
   const runtimeChannelRef = useRef<RuntimeChannel | null>(null);
   const ptyUnsubRef = useRef<(() => void) | null>(null);
-  const agentUnsubRef = useRef<(() => void) | null>(null);
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const [panes, setPanes] = useState<TmuxPane[]>([]);
@@ -116,7 +115,10 @@ export default function AgentScreen() {
 			return [...prev, item];
 		});
 	}).then(({ channelId }) => {
-		if (!active) return;
+		if (!active) {
+			runtime.closeChannel(channelId);
+			return;
+		}
 		currentAgentChannelIdRef.current = channelId;
 	}).catch((err) => {
       if (active) {
@@ -126,9 +128,9 @@ export default function AgentScreen() {
 
     return () => {
       active = false;
-      agentUnsubRef.current?.();
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
+        currentAgentChannelIdRef.current = null;
       }
     };
   }, [tab?.agentSessionId, connection]);
@@ -238,10 +240,10 @@ export default function AgentScreen() {
         text: 'Close',
         style: 'destructive',
         onPress: async () => {
-          agentUnsubRef.current?.();
           ptyUnsubRef.current?.();
           if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
             runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
+            currentAgentChannelIdRef.current = null;
           }
           if (api) {
             try {
