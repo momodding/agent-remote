@@ -255,7 +255,7 @@ describe('dashboard tab deck actions', () => {
     
     expect(tree.root.findByProps({ children: 'Desktop' })).toBeTruthy();
     
-    act(() => { actionFor(tree, 'Open tab Desktop')(); });
+    act(() => { actionFor(tree, 'Open desktop Desktop')(); });
     
     expect(mockActivateTab).toHaveBeenCalledWith('tab-2');
     expect(router.push).toHaveBeenCalledWith({ pathname: '/desktop', params: { tabId: 'tab-2' } });
