@@ -61,14 +61,14 @@ Required tests: command availability and client behavior coverage.
 
 ## RAR-009 — Legacy Agent migration misses semantic history
 Severity: P1
-Status: TODO
+Status: DONE
 Source: external-code-review
 Plan requirement: migrate all Agent-owned semantic history, not terminal lifecycle history.
 Required tests: mixed terminal/Agent history migration.
 
 ## RAR-010 — Transcript tail position is not durable
 Severity: P1/P2
-Status: TODO
+Status: DONE
 Source: external-code-review
 Plan requirement: persist safe tail identity/offset state and handle continuation, replacement, and truncation.
 Required tests: restart continuation and replacement/truncation behavior.
