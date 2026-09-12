@@ -236,8 +236,8 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	if inst.tailer == nil {
 		if inst.sessionFile == "" {
 			if provider, ok := s.termMgr.(terminalTTYProvider); ok {
-				_, sessionFile, fresh, err := ReadTerminalBreadcrumb(inst.agentDir, TerminalIDFromTTY(provider.TerminalTTY(inst.meta.TerminalSessionID)))
-				if err == nil && !fresh && sessionFile != "" {
+				_, sessionFile, _, err := ReadTerminalBreadcrumb(inst.agentDir, TerminalIDFromTTY(provider.TerminalTTY(inst.meta.TerminalSessionID)))
+				if err == nil && sessionFile != "" {
 					inst.sessionFile = sessionFile
 				}
 			}

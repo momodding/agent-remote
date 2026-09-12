@@ -958,6 +958,9 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 								break
 							}
 							for _, event := range events {
+								if !isAgentEventKind(event.Kind) {
+									continue
+								}
 								if event.Cursor > cursor || event.SurfaceID != env.TargetID {
 									continue
 								}
@@ -1046,7 +1049,17 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func isAgentEventKind(kind string) bool {
+	switch kind {
+	case "message.user", "message.assistant", "tool.call", "tool.result":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelope, write func(any) error) {
+
 	switch cmd.Command {
 	case "agent.create":
 		if s.agents == nil {
