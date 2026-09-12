@@ -77,10 +77,10 @@ export class RuntimeChannel {
         return;
       }
       case 'event': {
-        const set = this.subscribers.get(frame.channelId);
-        if (!set) return;
-        const event = frame.event as AgentEvent;
-        for (const fn of set) {
+		const set = this.subscribers.get(frame.channelId);
+		if (!set) return;
+		const event = { ...(frame.event as AgentEvent), cursor: frame.cursor as number };
+		for (const fn of set) {
           try {
             fn(event);
           } catch (err) {
@@ -104,16 +104,17 @@ export class RuntimeChannel {
     }
   }
 
-  /** Opens an agent event channel and replays history from `after` (default: full history). Resolves once replay completes. */
-  async openAgentChannel(agentId: string, after = 0): Promise<{ channelId: string; cursor: number }> {
-    const channelId = Crypto.randomUUID();
-    const requestId = Crypto.randomUUID();
-    const { promise, resolve, reject } = Promise.withResolvers<number>();
-    this.pendingOpens.set(requestId, { resolve, reject });
-    this.send({ type: 'channel.open', requestId, channelId, kind: 'agent', targetId: agentId, after });
-    const cursor = await promise;
-    return { channelId, cursor };
-  }
+	/** Opens an agent event channel and replays history from `after`. */
+	async openAgentChannel(agentId: string, after = 0, subscriber?: (event: AgentEvent) => void): Promise<{ channelId: string; cursor: number }> {
+		const channelId = Crypto.randomUUID();
+		if (subscriber) this.subscribeChannel(channelId, subscriber);
+		const requestId = Crypto.randomUUID();
+		const { promise, resolve, reject } = Promise.withResolvers<number>();
+		this.pendingOpens.set(requestId, { resolve, reject });
+		this.send({ type: 'channel.open', requestId, channelId, kind: 'agent', targetId: agentId, after });
+		const cursor = await promise;
+		return { channelId, cursor };
+	}
 
   subscribeChannel(channelId: string, fn: (event: AgentEvent) => void): () => void {
     let set = this.subscribers.get(channelId);
