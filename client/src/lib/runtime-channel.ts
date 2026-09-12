@@ -58,7 +58,28 @@ export class RuntimeChannel {
     }, 250);
   }
 
+  private recoverSubscription(channelId: string, subscription: Subscription, pending?: Pending): void {
+    void subscription.onCursorExpired().then((cursor) => {
+      subscription.cursor = cursor;
+      this.openSubscription(channelId, subscription);
+    }).catch((error) => pending?.reject(error instanceof Error ? error : new Error(String(error))));
+  }
+
   private handleFrame(frame: any): void {
+    if (frame.type === 'channel.closed' && frame.reason === 'resync_required') {
+      const subscription = this.subscriptions.get(frame.channelId);
+      if (!subscription) return;
+      let pending: Pending | undefined;
+      for (const [requestId, open] of this.pendingOpens) {
+        if (open.channelId === frame.channelId) {
+          pending = open.pending;
+          this.pendingOpens.delete(requestId);
+        }
+      }
+      this.recoverSubscription(frame.channelId, subscription, pending);
+      return;
+    }
+
     if (frame.type === 'channel.opened') {
       const open = this.pendingOpens.get(frame.requestId);
       if (!open) return;
@@ -75,10 +96,7 @@ export class RuntimeChannel {
         this.pendingOpens.delete(frame.requestId);
         const subscription = this.subscriptions.get(open.channelId);
         if (subscription && String(frame.error || '').includes('cursor expired')) {
-          void subscription.onCursorExpired().then((cursor) => {
-            subscription.cursor = cursor;
-            this.openSubscription(open.channelId, subscription);
-          }).catch((error) => open.pending?.reject(error instanceof Error ? error : new Error(String(error))));
+          this.recoverSubscription(open.channelId, subscription, open.pending);
           return;
         }
         open.pending?.reject(new Error(frame.error || 'channel open failed'));

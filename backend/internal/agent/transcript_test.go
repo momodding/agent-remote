@@ -11,7 +11,7 @@ func TestTranscriptTailerReadsCompleteAppendsOnce(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"title","v":1}`+"\n"+`{"type":"session","id":"s1"}`+"\n"+`{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tailer := NewTranscriptTailer("a1", path)
+	tailer := NewTranscriptTailer("a1", path, nil)
 	if events, err := tailer.Read(); err != nil || len(events) != 0 {
 		t.Fatalf("partial read = %+v, %v", events, err)
 	}

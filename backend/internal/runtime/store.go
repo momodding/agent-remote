@@ -113,7 +113,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}} {
+	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}, {version: 5, apply: migrate0005}} {
 		var applied bool
 		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)`, migration.version).Scan(&applied); err != nil {
 			return err
@@ -173,6 +173,19 @@ func migrate0004(tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func migrate0005(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE transcript_state (
+		agent_id TEXT PRIMARY KEY,
+		transcript_path TEXT NOT NULL,
+		file_offset INTEGER NOT NULL,
+		file_inode INTEGER NOT NULL,
+		file_size INTEGER NOT NULL,
+		file_mtime INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`)
+	return err
 }
 
 func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
@@ -260,7 +273,8 @@ func (s *Store) MigrateAgentID(oldID, newID string) error {
 	if _, err = tx.Exec(`UPDATE agent_sessions SET id = ? WHERE id = ?`, newID, oldID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE runtime_events SET surface_id = ? WHERE surface_id = ? AND kind LIKE 'agent.%'`, newID, oldID); err != nil {
+	// ponytail: one OR condition covers agent.*, message.*, tool.* prefixes + exact canonical-state match
+	if _, err = tx.Exec(`UPDATE runtime_events SET surface_id = ? WHERE surface_id = ? AND (kind LIKE 'agent.%' OR kind LIKE 'message.%' OR kind LIKE 'tool.%' OR kind = 'agent.state')`, newID, oldID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -575,4 +589,45 @@ func (s *Store) publish(event Event) {
 		}
 	}
 	s.watchMu.Unlock()
+}
+
+type TranscriptState struct {
+	AgentID        string
+	TranscriptPath string
+	FileOffset     int64
+	FileInode      uint64
+	FileSize       int64
+	FileMtime      int64
+}
+
+func (s *Store) SaveTranscriptState(agentID string, transcriptPath string, offset int64, inode uint64, size int64, mtime int64) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`INSERT INTO transcript_state (agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			transcript_path = excluded.transcript_path,
+			file_offset = excluded.file_offset,
+			file_inode = excluded.file_inode,
+			file_size = excluded.file_size,
+			file_mtime = excluded.file_mtime,
+			updated_at = excluded.updated_at`,
+		agentID, transcriptPath, offset, inode, size, mtime, now)
+	return err
+}
+
+func (s *Store) LoadTranscriptState(agentID string) (*TranscriptState, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	var ts TranscriptState
+	err := s.db.QueryRow(`SELECT agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime FROM transcript_state WHERE agent_id = ?`, agentID).
+		Scan(&ts.AgentID, &ts.TranscriptPath, &ts.FileOffset, &ts.FileInode, &ts.FileSize, &ts.FileMtime)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
 }

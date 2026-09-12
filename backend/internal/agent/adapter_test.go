@@ -197,7 +197,7 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 		select {
 		case ev := <-received:
 			if ev.Type == "state" {
-				if ev.State != "running" || ev.EventID == "" {
+				if ev.State != "working" || ev.EventID == "" {
 					t.Fatalf("unexpected state event: %+v", ev)
 				}
 				return

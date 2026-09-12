@@ -273,7 +273,8 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 			}
 		}
 		if inst.sessionFile != "" {
-			inst.tailer = NewTranscriptTailer(inst.meta.ID, inst.sessionFile)
+			inst.tailer = NewTranscriptTailer(inst.meta.ID, inst.sessionFile, s.store)
+			_ = inst.tailer.RestoreState()
 		}
 	}
 	tailer := inst.tailer
@@ -291,8 +292,8 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	for _, ev := range events {
 		switch ev.Type {
 		case "message.user", "tool.call":
-			if inst.meta.State != "running" && inst.meta.State != "exited" {
-				inst.meta.State = "running"
+			if inst.meta.State != "working" && inst.meta.State != "exited" {
+				inst.meta.State = "working"
 				stateChanged = true
 			}
 		case "message.assistant":

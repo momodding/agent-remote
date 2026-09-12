@@ -32,6 +32,8 @@ import (
 	"github.com/coder/websocket"
 )
 
+const maxReplayLiveEvents = 64
+
 type SessionAPI interface {
 	List(context.Context) []protocol.SessionSummary
 	Create(context.Context, protocol.CreateSessionRequest) (*protocol.SessionSummary, error)
@@ -1014,11 +1016,16 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 				}
 				var liveMu sync.Mutex
 				replaying := true
-				liveEvents := []runtimestore.Event{}
+				liveEvents := make([]runtimestore.Event, 0, maxReplayLiveEvents)
+				overflowed := false
 				unsub := s.runtime.SubscribeRuntime(func(event runtimestore.Event) {
 					liveMu.Lock()
 					if replaying {
-						liveEvents = append(liveEvents, event)
+						if len(liveEvents) == cap(liveEvents) {
+							overflowed = true
+						} else {
+							liveEvents = append(liveEvents, event)
+						}
 						liveMu.Unlock()
 						return
 					}
@@ -1070,6 +1077,19 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 					channelsMu.Unlock()
 					continue
 				}
+				liveMu.Lock()
+				if overflowed {
+					replaying = false
+					liveMu.Unlock()
+					unsub()
+					channelsMu.Lock()
+					delete(channels, channelID)
+					channelsMu.Unlock()
+					_ = write(protocol.ChannelClosedEnvelope{Type: "channel.closed", ChannelID: channelID, Reason: "resync_required"})
+					continue
+				}
+				liveMu.Unlock()
+
 				for {
 					liveMu.Lock()
 					pending := liveEvents

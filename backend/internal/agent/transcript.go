@@ -3,24 +3,56 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
 
-// TranscriptTailer projects complete OMP JSONL entries without reading terminal output.
 type TranscriptTailer struct {
-	agentID string
-	path    string
-	offset  int64
-	pending []byte
-	seen    map[string]struct{}
+	agentID   string
+	path      string
+	offset    int64
+	pending   []byte
+	seen      map[string]struct{}
+	store     *runtimestore.Store
+	lastInode uint64
+	lastSize  int64
+	lastMtime int64
 }
 
-func NewTranscriptTailer(agentID, path string) *TranscriptTailer {
-	return &TranscriptTailer{agentID: agentID, path: path, seen: map[string]struct{}{}}
+func NewTranscriptTailer(agentID, path string, store *runtimestore.Store) *TranscriptTailer {
+	return &TranscriptTailer{
+		agentID: agentID,
+		path:    path,
+		store:   store,
+		seen:    map[string]struct{}{},
+	}
+}
+
+// RestoreState loads prior tailer state from persistent store
+func (t *TranscriptTailer) RestoreState() error {
+	if t.store == nil {
+		return nil
+	}
+	ts, err := t.store.LoadTranscriptState(t.agentID)
+	if err != nil {
+		return err
+	}
+	if ts == nil {
+		return nil
+	}
+	// Only restore if path matches (file may have moved)
+	if ts.TranscriptPath != t.path {
+		return nil
+	}
+	t.offset = ts.FileOffset
+	t.lastInode = ts.FileInode
+	t.lastSize = ts.FileSize
+	t.lastMtime = ts.FileMtime
+	return nil
 }
 
 func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
@@ -29,11 +61,24 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		return nil, err
 	}
 	defer file.Close()
+
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if info.Size() < t.offset {
+
+	// Detect rotation: inode changed, size decreased, or mtime went backward
+	stat := info.Sys().(*syscall.Stat_t)
+	size := info.Size()
+	mtime := info.ModTime().Unix()
+	if t.lastInode != 0 && (stat.Ino != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime < t.lastMtime)) {
+		t.offset, t.pending, t.seen = 0, nil, map[string]struct{}{}
+	}
+	t.lastInode = stat.Ino
+	t.lastSize = size
+	t.lastMtime = mtime
+
+	if size < t.offset {
 		t.offset, t.pending, t.seen = 0, nil, map[string]struct{}{}
 	}
 	if _, err := file.Seek(t.offset, io.SeekStart); err != nil {
@@ -43,7 +88,7 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.offset += int64(len(data))
+
 	data = append(t.pending, data...)
 	lastNewline := bytes.LastIndexByte(data, '\n')
 	if lastNewline < 0 {
@@ -56,7 +101,10 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 	events := make([]protocol.AgentEvent, 0, len(lines))
 	for _, line := range lines {
 		entry := transcriptEntry{}
-		if err := json.Unmarshal(line, &entry); err != nil || entry.Type != "message" || entry.ID == "" {
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.ID == "" {
 			continue
 		}
 		if _, ok := t.seen[entry.ID]; ok {
@@ -65,55 +113,53 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		t.seen[entry.ID] = struct{}{}
 		events = append(events, entry.events(t.agentID)...)
 	}
+
+	pos, _ := file.Seek(0, io.SeekCurrent)
+	t.offset = pos
+
+	// Persist state after successful read
+	if t.store != nil {
+		_ = t.store.SaveTranscriptState(t.agentID, t.path, t.offset, t.lastInode, t.lastSize, t.lastMtime)
+	}
+
 	return events, nil
 }
 
 type transcriptEntry struct {
-	Type    string          `json:"type"`
-	ID      string          `json:"id"`
-	Message json.RawMessage `json:"message"`
+	Type    string             `json:"type"`
+	ID      string             `json:"id"`
+	Message *transcriptMessage `json:"message,omitempty"`
 }
 
 type transcriptMessage struct {
-	Role     string          `json:"role"`
-	Content  json.RawMessage `json:"content"`
-	ToolName string          `json:"toolName"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 type transcriptContent struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
-	message := transcriptMessage{}
-	if json.Unmarshal(e.Message, &message) != nil {
+	if e.Type != "message" || e.Message == nil || e.ID == "" {
 		return nil
 	}
-	text, blocks := transcriptText(message.Content)
-	switch message.Role {
-	case "user":
-		if text != "" {
-			return []protocol.AgentEvent{{Type: "message.user", EventID: e.ID + ":user", AgentID: agentID, MessageID: e.ID, Text: text}}
-		}
-	case "assistant":
-		events := make([]protocol.AgentEvent, 0, len(blocks)+1)
-		if text != "" {
-			events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":assistant", AgentID: agentID, MessageID: e.ID, Text: text})
-		}
-		for index, block := range blocks {
-			if block.Type == "toolCall" {
-				toolCallID := fmt.Sprintf("%s:tool:%d", e.ID, index)
-				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: toolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: toolCallID, ToolName: block.Name, ToolInput: json.RawMessage(block.Arguments)})
-			}
-		}
-		return events
-	case "toolResult":
-		return []protocol.AgentEvent{{Type: "tool.result", EventID: e.ID + ":result", AgentID: agentID, MessageID: e.ID, Text: text, ToolName: message.ToolName}}
+	text, _ := transcriptText(e.Message.Content)
+	if text == "" {
+		return nil
 	}
-	return nil
+	role := e.Message.Role
+	if role == "" {
+		role = "user"
+	}
+	return []protocol.AgentEvent{{
+		Type:      "message." + role,
+		EventID:   e.ID + ":" + role,
+		AgentID:   agentID,
+		MessageID: e.ID,
+		Text:      text,
+	}}
 }
 
 func transcriptText(content json.RawMessage) (string, []transcriptContent) {
@@ -121,16 +167,14 @@ func transcriptText(content json.RawMessage) (string, []transcriptContent) {
 	if json.Unmarshal(content, &text) == nil {
 		return text, nil
 	}
-	var blocks []transcriptContent
-	if json.Unmarshal(content, &blocks) != nil {
+	var contents []transcriptContent
+	if err := json.Unmarshal(content, &contents); err != nil {
 		return "", nil
 	}
-	var out string
-	for _, block := range blocks {
-		if block.Type != "text" {
-			continue
+	for _, c := range contents {
+		if c.Type == "text" {
+			text += c.Text
 		}
-		out += block.Text
 	}
-	return out, blocks
+	return text, contents
 }

@@ -511,6 +511,7 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
 	plain := detect.StripANSI(string(chunk))
 
+	stateChanged := false
 	m.mu.Lock()
 	runtime.seq++
 	seq := runtime.seq
@@ -521,8 +522,10 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 	if wait != nil {
 		runtime.meta.WaitState = wait
 		runtime.meta.State = StateWaiting
+		stateChanged = true
 	} else if runtime.meta.State == StateWaiting {
 		runtime.meta.State = StateRunning
+		stateChanged = true
 	}
 	m.mu.Unlock()
 
@@ -531,8 +534,9 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 		m.emitState(runtime)
 	}
 	m.enqueue(runtime, outboundMessage{output: &protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: runtime.meta.ID, Data: base64.StdEncoding.EncodeToString(chunk), Seq: seq}})
-	_ = m.saveMetadata()
-	_ = m.recordRuntime(runtime, "terminal.output")
+	if stateChanged {
+		_ = m.saveMetadata()
+	}
 }
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {

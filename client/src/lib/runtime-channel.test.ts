@@ -104,6 +104,24 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     await expect(opening).resolves.toMatchObject({ cursor: 20 });
   });
 
+  it('resynchronizes after the server closes an overflowed channel', async () => {
+    const channel = new RuntimeChannel(connection);
+    const received: number[] = [];
+    const opening = channel.openRuntimeChannel(5, (event) => received.push(event.cursor ?? 0), async () => 20);
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const firstOpen = JSON.parse(socket.sent[1]);
+    socket.receive({ type: 'channel.opened', requestId: firstOpen.requestId, channelId: firstOpen.channelId, cursor: 5 });
+    await opening;
+    socket.receive({ type: 'channel.closed', channelId: firstOpen.channelId, reason: 'resync_required' });
+    await Promise.resolve();
+    const retry = JSON.parse(socket.sent[2]);
+    expect(retry.after).toBe(20);
+    socket.receive({ type: 'channel.opened', requestId: retry.requestId, channelId: firstOpen.channelId, cursor: 20 });
+    socket.receive({ type: 'event', channelId: firstOpen.channelId, cursor: 21, event: { surfaceId: 't1', type: 'terminal.created', payload: {} } });
+    expect(received).toEqual([21]);
+  });
+
   it('dispose rejects pending opens and removes the registry entry', async () => {
     const channel = createRuntimeChannel({ ...connection, hostId: 'host-x' });
     const opening = channel.openRuntimeChannel(0);

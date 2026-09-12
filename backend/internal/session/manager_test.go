@@ -400,3 +400,27 @@ func TestManagerReconcileTmuxSurvivesDaemonRestart(t *testing.T) {
 		t.Fatalf("reconciled session not running: %+v", summaries)
 	}
 }
+
+func TestRecordOutputDoesNotPersistEveryChunk(t *testing.T) {
+	stateDir := t.TempDir()
+	manager, err := NewManager(stateDir, stateDir, stateDir, 1<<20, 128, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	runtime := &TerminalRuntime{
+		meta:       Session{ID: "high-output", State: StateRunning},
+		scrollback: filepath.Join(stateDir, "sessions", "high-output.scrollback"),
+		outbound:   make(chan outboundMessage, 128),
+	}
+	manager.mu.Lock()
+	manager.sessions[runtime.meta.ID] = runtime
+	manager.mu.Unlock()
+	for range 100 {
+		manager.recordOutput(runtime, []byte("output\n"))
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sessions.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output chunks persisted metadata: %v", err)
+	}
+}

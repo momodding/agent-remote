@@ -127,6 +127,101 @@ func TestRuntimeWSReplaysEventsBeforeChannelOpened(t *testing.T) {
 	}
 }
 
+func TestRuntimeWSReplayHandoffAndReconnect(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	store := srv.runtime.(*session.Manager).RuntimeStore()
+	first, err := store.RecordEvent("test", "test.first", map[string]string{"value": "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.RecordEvent("test", "test.second", map[string]string{"value": "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token := testBearerToken(t, srv, pairings)
+
+	open := func(after int64) *websocket.Conn {
+		conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/runtime", &websocket.DialOptions{HTTPClient: ts.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: token}); err != nil {
+			t.Fatal(err)
+		}
+		if err := wsWriteJSON(ctx, conn, protocol.ChannelOpenEnvelope{Type: "channel.open", RequestID: "request", ChannelID: "runtime", Kind: "runtime", TargetID: "runtime", After: after}); err != nil {
+			t.Fatal(err)
+		}
+		return conn
+	}
+	readUntilOpened := func(conn *websocket.Conn) ([]int64, int64) {
+		var cursors []int64
+		for {
+			var frame struct {
+				Type   string `json:"type"`
+				Cursor int64  `json:"cursor"`
+			}
+			if err := wsReadJSON(ctx, conn, &frame); err != nil {
+				t.Fatal(err)
+			}
+			switch frame.Type {
+			case "event":
+				cursors = append(cursors, frame.Cursor)
+			case "channel.opened":
+				return cursors, frame.Cursor
+			default:
+				t.Fatalf("unexpected runtime frame: %+v", frame)
+			}
+		}
+	}
+	readEvent := func(conn *websocket.Conn) int64 {
+		var frame struct {
+			Type   string `json:"type"`
+			Cursor int64  `json:"cursor"`
+		}
+		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.Type != "event" {
+			t.Fatalf("expected runtime event, got %+v", frame)
+		}
+		return frame.Cursor
+	}
+
+	conn := open(0)
+	cursors, opened := readUntilOpened(conn)
+	if fmt.Sprint(cursors) != fmt.Sprint([]int64{first, second}) || opened != second {
+		t.Fatalf("initial replay = cursors %v opened %d", cursors, opened)
+	}
+	third, err := store.RecordEvent("test", "test.third", map[string]string{"value": "third"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readEvent(conn); got != third {
+		t.Fatalf("live handoff cursor = %d, want %d", got, third)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	conn = open(second)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	cursors, opened = readUntilOpened(conn)
+	if fmt.Sprint(cursors) != fmt.Sprint([]int64{third}) || opened != third {
+		t.Fatalf("reconnect replay = cursors %v opened %d", cursors, opened)
+	}
+	fourth, err := store.RecordEvent("test", "test.fourth", map[string]string{"value": "fourth"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readEvent(conn); got != fourth {
+		t.Fatalf("reconnected live cursor = %d, want %d", got, fourth)
+	}
+}
+
 func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/daemon/identity", nil)
