@@ -1006,6 +1006,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 			} else if env.Kind == "runtime" && s.runtime != nil {
 				channelID := env.ChannelID
 				toEnvelope := func(event runtimestore.Event) protocol.RuntimeEventEnvelope {

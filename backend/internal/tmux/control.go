@@ -545,7 +545,18 @@ func (c *ControlClient) SendKey(ctx context.Context, paneID string, data []byte)
 }
 
 func literalSendKeysCommand(paneID string, data []byte) string {
-	return fmt.Sprintf("send-keys -l -t %s %q", paneID, string(data))
+	var command strings.Builder
+	command.Grow(len("send-keys -l -t ") + len(paneID) + len(data)*4)
+	command.WriteString("send-keys -l -t ")
+	command.WriteString(paneID)
+	for _, b := range data {
+		command.WriteByte(' ')
+		command.WriteByte('\\')
+		command.WriteByte('0' + b>>6)
+		command.WriteByte('0' + (b>>3)&7)
+		command.WriteByte('0' + b&7)
+	}
+	return command.String()
 }
 
 // ResizePane sets pane dimensions through the correlated control command queue.

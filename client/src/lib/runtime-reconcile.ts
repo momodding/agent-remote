@@ -38,6 +38,7 @@ export async function reconcileDaemon(connection: Connection, update: (runtime: 
   const api = new AgenticRemoteAPI(connection);
   let snapshot = await api.runtimeSnapshot();
   let active = true;
+  update({ snapshot, status: 'ready' });
   const channel = createRuntimeChannel(connection);
   const { channelId } = await channel.openRuntimeChannel(snapshot.cursor, (event) => {
     if (!active) return;

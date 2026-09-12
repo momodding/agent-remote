@@ -28,10 +28,8 @@ func TestBackendGetPaneID(t *testing.T) {
 }
 
 func TestLiteralSendKeysCommand(t *testing.T) {
-	data := []byte(`Enter Space 'quoted' "double" $HOME; []{}!`)
-	data = append(data, '\n')
-	got := literalSendKeysCommand("%12", data)
-	want := `send-keys -l -t %12 "Enter Space 'quoted' \"double\" $HOME; []{}!\n"`
+	got := literalSendKeysCommand("%12", []byte{'A', '$', 0x1b, '\n'})
+	want := `send-keys -l -t %12 \101 \044 \033 \012`
 	if got != want {
 		t.Fatalf("literalSendKeysCommand() = %q, want %q", got, want)
 	}
