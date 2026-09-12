@@ -995,6 +995,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 					pending := liveEvents
 					liveEvents = nil
 					if len(pending) == 0 {
+						_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 						replaying = false
 						liveMu.Unlock()
 						break
@@ -1006,7 +1007,6 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 			} else if env.Kind == "runtime" && s.runtime != nil {
 				channelID := env.ChannelID
 				toEnvelope := func(event runtimestore.Event) protocol.RuntimeEventEnvelope {
@@ -1075,6 +1075,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 					pending := liveEvents
 					liveEvents = nil
 					if len(pending) == 0 {
+						_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 						replaying = false
 						liveMu.Unlock()
 						break
@@ -1086,7 +1087,6 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 			} else {
 				_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: env.RequestID, OK: false, Error: "unsupported channel kind"})
 			}

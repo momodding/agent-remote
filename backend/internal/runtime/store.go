@@ -16,11 +16,16 @@ var ErrCursorExpired = errors.New("runtime cursor expired")
 const maxRuntimeEvents = 5_000
 
 type Store struct {
-	db          *sql.DB
-	lock        sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
-	watchMu     sync.Mutex
-	watchers    map[uint64]func(Event)
-	nextWatcher uint64
+	db            *sql.DB
+	lock          sync.Mutex // ponytail: SQLite is daemon-local; serialize store mutations.
+	watchMu       sync.Mutex
+	watchers      map[uint64]func(Event)
+	nextWatcher   uint64
+	publishMu     sync.Mutex
+	publishWake   *sync.Cond
+	publishQueue  []Event
+	publishClosed bool
+	publishDone   chan struct{}
 }
 
 type TerminalSummary struct {
@@ -85,11 +90,13 @@ func Open(stateDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db, watchers: make(map[uint64]func(Event))}
+	store := &Store{db: db, watchers: make(map[uint64]func(Event)), publishDone: make(chan struct{})}
+	store.publishWake = sync.NewCond(&store.publishMu)
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	go store.dispatchPublished()
 	return store, nil
 }
 
@@ -165,7 +172,12 @@ func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 		return err
 	}
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.lock.Unlock()
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -183,8 +195,10 @@ func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	}
 	cursor, err := result.LastInsertId()
 	if err == nil {
-		s.publish(Event{Cursor: cursor, SurfaceID: term.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
+		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: term.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
 	}
+	s.lock.Unlock()
+	locked = false
 	return err
 }
 
@@ -194,7 +208,12 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 		return err
 	}
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.lock.Unlock()
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -212,8 +231,10 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 	}
 	cursor, err := result.LastInsertId()
 	if err == nil {
-		s.publish(Event{Cursor: cursor, SurfaceID: agent.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
+		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: agent.ID, Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()})
 	}
+	s.lock.Unlock()
+	locked = false
 	return err
 }
 
@@ -239,7 +260,12 @@ func (s *Store) MigrateAgentID(oldID, newID string) error {
 // RemoveTerminal removes a materialized terminal after a later create-stage failure.
 func (s *Store) RemoveTerminal(id string) error {
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.lock.Unlock()
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -263,8 +289,10 @@ func (s *Store) RemoveTerminal(id string) error {
 	}
 	cursor, err := result.LastInsertId()
 	if err == nil {
-		s.publish(Event{Cursor: cursor, SurfaceID: id, Kind: "terminal.removed", Payload: payload, CreatedAt: time.Now().UTC()})
+		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: id, Kind: "terminal.removed", Payload: payload, CreatedAt: time.Now().UTC()})
 	}
+	s.lock.Unlock()
+	locked = false
 	return err
 }
 
@@ -275,7 +303,12 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 		return 0, err
 	}
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.lock.Unlock()
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -290,8 +323,10 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 	}
 	cursor, err := result.LastInsertId()
 	if err == nil {
-		s.publish(Event{Cursor: cursor, SurfaceID: surfaceID, Kind: kind, Payload: data, CreatedAt: time.Now().UTC()})
+		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: surfaceID, Kind: kind, Payload: data, CreatedAt: time.Now().UTC()})
 	}
+	s.lock.Unlock()
+	locked = false
 	return cursor, err
 }
 
@@ -310,7 +345,12 @@ func (s *Store) RecordTopology(panes []TopologyPane) error {
 		return err
 	}
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.lock.Unlock()
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -333,8 +373,10 @@ func (s *Store) RecordTopology(panes []TopologyPane) error {
 	}
 	cursor, err := result.LastInsertId()
 	if err == nil {
-		s.publish(Event{Cursor: cursor, SurfaceID: "topology", Kind: "tmux.topology", Payload: payload, CreatedAt: time.Now().UTC()})
+		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: "topology", Kind: "tmux.topology", Payload: payload, CreatedAt: time.Now().UTC()})
 	}
+	s.lock.Unlock()
+	locked = false
 	return err
 }
 
@@ -436,7 +478,14 @@ func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {
 	return events, next, rows.Err()
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.publishMu.Lock()
+	s.publishClosed = true
+	s.publishWake.Signal()
+	s.publishMu.Unlock()
+	<-s.publishDone
+	return s.db.Close()
+}
 
 func boolToInt(value bool) int {
 	if value {
@@ -456,6 +505,31 @@ func (s *Store) Subscribe(fn func(Event)) func() {
 		s.watchMu.Lock()
 		delete(s.watchers, id)
 		s.watchMu.Unlock()
+	}
+}
+
+func (s *Store) enqueuePublished(event Event) {
+	s.publishMu.Lock()
+	s.publishQueue = append(s.publishQueue, event)
+	s.publishWake.Signal()
+	s.publishMu.Unlock()
+}
+
+func (s *Store) dispatchPublished() {
+	defer close(s.publishDone)
+	for {
+		s.publishMu.Lock()
+		for len(s.publishQueue) == 0 && !s.publishClosed {
+			s.publishWake.Wait()
+		}
+		if len(s.publishQueue) == 0 {
+			s.publishMu.Unlock()
+			return
+		}
+		event := s.publishQueue[0]
+		s.publishQueue = s.publishQueue[1:]
+		s.publishMu.Unlock()
+		s.publish(event)
 	}
 }
 

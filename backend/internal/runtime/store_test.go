@@ -11,6 +11,7 @@ func makeTestDB(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -59,6 +60,75 @@ func TestSubscribeReceivesCommittedRuntimeEvent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("did not receive committed event")
 	}
+}
+
+func TestSubscriberCanRecordEvent(t *testing.T) {
+	s := makeTestDB(t)
+	result := make(chan error, 1)
+	var unsubscribe func()
+	unsubscribe = s.Subscribe(func(Event) {
+		unsubscribe()
+		_, err := s.RecordEvent("nested", "agent.updated", "nested")
+		result <- err
+	})
+	defer unsubscribe()
+
+	go func() {
+		_, err := s.RecordEvent("outer", "agent.updated", "outer")
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber mutation deadlocked")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("outer mutation did not finish")
+	}
+}
+
+func TestSlowSubscriberDoesNotBlockWriters(t *testing.T) {
+	s := makeTestDB(t)
+	release := make(chan struct{})
+	unsubscribe := s.Subscribe(func(Event) { <-release })
+	defer unsubscribe()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := s.RecordEvent("first", "agent.updated", "first")
+		first <- err
+	}()
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first writer blocked on subscriber")
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := s.RecordEvent("second", "agent.updated", "second")
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow subscriber blocked a later writer")
+	}
+	close(release)
 }
 
 func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
