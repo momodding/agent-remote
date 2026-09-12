@@ -145,3 +145,46 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 		t.Fatal("timed out waiting for agent event from transcript")
 	}
 }
+
+func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{ID: "agent_restored", Adapter: "omp", TerminalSessionID: "term-123", CWD: "/workspace", Capabilities: []byte("[]"), State: "idle", CreatedAt: now, UpdatedAt: now}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+	dir := ComputeDefaultSessionDir(stateDir, "/workspace")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "restored.jsonl")
+	if err := os.WriteFile(file, []byte(`{"type":"message","id":"old","message":{"role":"assistant","content":"restored"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	received := make(chan protocol.AgentEvent, 1)
+	unsub, err := svc.Subscribe("agent_restored", func(event protocol.AgentEvent) { received <- event })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	select {
+	case event := <-received:
+		if event.AgentID != "agent_restored" || event.Text != "restored" {
+			t.Fatalf("unexpected restored event: %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restored agent did not resume transcript polling")
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(termMgr.subscribers) != 0 {
+		t.Fatal("agent service retained terminal subscription after close")
+	}
+}

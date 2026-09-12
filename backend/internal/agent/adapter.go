@@ -40,7 +40,7 @@ type terminalTTYProvider interface {
 }
 
 type AgentSubscriber struct {
-	fn func(event protocol.AgentEvent)
+	fn func(protocol.AgentEvent)
 }
 
 type agentInstance struct {
@@ -53,6 +53,7 @@ type agentInstance struct {
 	subscribers  map[int]*AgentSubscriber
 	nextSubID    int
 	stopPoll     chan struct{}
+	stopTerminal func()
 	pollInterval time.Duration
 }
 
@@ -116,6 +117,9 @@ func (s *Service) restorePersisted() {
 			a.ID = newID
 			inst.meta.ID = newID
 		}
+		s.watchTerminal(inst)
+		go s.pollTranscript(inst)
+
 		s.agents[a.ID] = inst
 		s.byTerminal[a.TerminalSessionID] = a.ID
 	}
@@ -164,36 +168,33 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-
-	inst := &agentInstance{
-		meta:         agentSession,
-		agentDir:     s.agentDir,
-		subscribers:  make(map[int]*AgentSubscriber),
-		stopPoll:     make(chan struct{}),
-		pollInterval: 200 * time.Millisecond,
-	}
-
+	inst := &agentInstance{meta: agentSession, agentDir: s.agentDir, subscribers: make(map[int]*AgentSubscriber), stopPoll: make(chan struct{}), pollInterval: 200 * time.Millisecond}
 	s.mu.Lock()
 	s.agents[agentSession.ID] = inst
 	s.byTerminal[termSummary.ID] = agentSession.ID
 	s.mu.Unlock()
-
 	s.recordAgentSummary(inst, "agent.created")
-
-	// Hook terminal lifecycle for exit/wait-state sync
-	_, _ = s.termMgr.Subscribe(termSummary.ID, func(out protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
-		if st.State == "exited" {
-			inst.mu.Lock()
-			inst.meta.State = "exited"
-			inst.meta.UpdatedAt = time.Now().UTC()
-			inst.mu.Unlock()
-			s.recordAgentSummary(inst, "agent.updated")
-		}
-	})
-
+	s.watchTerminal(inst)
 	go s.pollTranscript(inst)
-
 	return &agentSession, nil
+}
+
+func (s *Service) watchTerminal(inst *agentInstance) {
+	stop, err := s.termMgr.Subscribe(inst.meta.TerminalSessionID, func(_ protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
+		if st.State != "exited" {
+			return
+		}
+		inst.mu.Lock()
+		inst.meta.State = "exited"
+		inst.meta.UpdatedAt = time.Now().UTC()
+		inst.mu.Unlock()
+		s.recordAgentSummary(inst, "agent.updated")
+	})
+	if err == nil {
+		inst.mu.Lock()
+		inst.stopTerminal = stop
+		inst.mu.Unlock()
+	}
 }
 
 func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
@@ -387,6 +388,13 @@ func (s *Service) Close() error {
 
 	for _, inst := range s.agents {
 		close(inst.stopPoll)
+		inst.mu.Lock()
+		stop := inst.stopTerminal
+		inst.stopTerminal = nil
+		inst.mu.Unlock()
+		if stop != nil {
+			stop()
+		}
 	}
 	return nil
 }
