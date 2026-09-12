@@ -170,12 +170,17 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 	}
 	inst := &agentInstance{meta: agentSession, agentDir: s.agentDir, subscribers: make(map[int]*AgentSubscriber), stopPoll: make(chan struct{}), pollInterval: 200 * time.Millisecond}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		_ = s.termMgr.Close(termSummary.ID)
+		return nil, errors.New("service closing")
+	}
 	s.agents[agentSession.ID] = inst
 	s.byTerminal[termSummary.ID] = agentSession.ID
-	s.mu.Unlock()
 	s.recordAgentSummary(inst, "agent.created")
 	s.watchTerminal(inst)
 	go s.pollTranscript(inst)
+	s.mu.Unlock()
 	return &agentSession, nil
 }
 
@@ -384,9 +389,15 @@ func (s *Service) Close() error {
 		return nil
 	}
 	s.closing = true
+	instances := make([]*agentInstance, 0, len(s.agents))
+	for _, inst := range s.agents {
+		instances = append(instances, inst)
+	}
+	s.agents = make(map[string]*agentInstance)
+	s.byTerminal = make(map[string]string)
 	s.mu.Unlock()
 
-	for _, inst := range s.agents {
+	for _, inst := range instances {
 		close(inst.stopPoll)
 		inst.mu.Lock()
 		stop := inst.stopTerminal

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 
@@ -95,21 +96,22 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	switch message.Role {
 	case "user":
 		if text != "" {
-			return []protocol.AgentEvent{{Type: "message.user", AgentID: agentID, MessageID: e.ID, Text: text}}
+			return []protocol.AgentEvent{{Type: "message.user", EventID: e.ID + ":user", AgentID: agentID, MessageID: e.ID, Text: text}}
 		}
 	case "assistant":
 		events := make([]protocol.AgentEvent, 0, len(blocks)+1)
 		if text != "" {
-			events = append(events, protocol.AgentEvent{Type: "message.assistant", AgentID: agentID, MessageID: e.ID, Text: text})
+			events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":assistant", AgentID: agentID, MessageID: e.ID, Text: text})
 		}
-		for _, block := range blocks {
+		for index, block := range blocks {
 			if block.Type == "toolCall" {
-				events = append(events, protocol.AgentEvent{Type: "tool.call", AgentID: agentID, MessageID: e.ID, ToolName: block.Name, ToolInput: json.RawMessage(block.Arguments)})
+				toolCallID := fmt.Sprintf("%s:tool:%d", e.ID, index)
+				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: toolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: toolCallID, ToolName: block.Name, ToolInput: json.RawMessage(block.Arguments)})
 			}
 		}
 		return events
 	case "toolResult":
-		return []protocol.AgentEvent{{Type: "tool.result", AgentID: agentID, MessageID: e.ID, Text: text, ToolName: message.ToolName}}
+		return []protocol.AgentEvent{{Type: "tool.result", EventID: e.ID + ":result", AgentID: agentID, MessageID: e.ID, Text: text, ToolName: message.ToolName}}
 	}
 	return nil
 }

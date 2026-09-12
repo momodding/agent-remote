@@ -43,8 +43,10 @@ export type AgentSession = {
 export type AgentEvent = {
   type: string;
   cursor?: number;
+  eventId?: string;
   agentId: string;
   messageId?: string;
+  toolCallId?: string;
   text?: string;
   toolName?: string;
   toolInput?: unknown;

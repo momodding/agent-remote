@@ -29,7 +29,7 @@ func TestTranscriptTailerReadsCompleteAppendsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Type != "message.user" || events[0].Text != "hello" {
+	if len(events) != 1 || events[0].Type != "message.user" || events[0].Text != "hello" || events[0].EventID != "u1:user" {
 		t.Fatalf("events = %+v", events)
 	}
 	if events, err := tailer.Read(); err != nil || len(events) != 0 {

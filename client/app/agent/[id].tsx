@@ -100,8 +100,10 @@ export default function AgentScreen() {
 			dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
 		}
 		setMessages((prev) => {
+			const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
+			if (prev.some((item) => item.id === id)) return prev;
 			const item: MessageItem = {
-				id: event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`,
+				id,
 				type: event.type,
 				text: event.text,
 				toolName: event.toolName,

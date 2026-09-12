@@ -55,6 +55,22 @@ func (m *mockTermMgr) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, p
 	return func() { delete(m.subscribers, id) }, nil
 }
 
+type blockingTermMgr struct {
+	*mockTermMgr
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingTermMgr) Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
+	close(m.started)
+	select {
+	case <-m.release:
+		return m.mockTermMgr.Create(ctx, req)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	stateDir := t.TempDir()
 	store, err := runtimestore.Open(stateDir)
@@ -90,6 +106,31 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateAgentClosesTerminalWhenShutdownWins(t *testing.T) {
+	store, err := runtimestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := &blockingTermMgr{mockTermMgr: newMockTermMgr(), started: make(chan struct{}), release: make(chan struct{})}
+	svc := NewService(termMgr, store, t.TempDir())
+	result := make(chan error, 1)
+	go func() { _, err := svc.CreateAgent(context.Background(), "/workspace", "Agent"); result <- err }()
+	<-termMgr.started
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(termMgr.release)
+	if err := <-result; err == nil || err.Error() != "service closing" {
+		t.Fatalf("CreateAgent error = %v", err)
+	}
+	if !termMgr.closed["term-123"] {
+		t.Fatal("terminal was not closed after shutdown won")
+	}
+	if agents := svc.ListAgents(); len(agents) != 0 {
+		t.Fatalf("agents = %+v, want none", agents)
+	}
+}
 func TestAgentServiceTranscriptIngestion(t *testing.T) {
 	stateDir := t.TempDir()
 	store, err := runtimestore.Open(stateDir)
