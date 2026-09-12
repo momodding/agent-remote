@@ -82,3 +82,50 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     expect(runtimeChannelRegistry.has('host-x')).toBe(false);
   });
 });
+
+describe('RuntimeChannel multi-daemon isolation', () => {
+  const originalWebSocket = globalThis.WebSocket;
+  const hostA: Connection = { ...connection, hostId: 'daemon-a' };
+  const hostB: Connection = { ...connection, hostId: 'daemon-b' };
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    disposeRuntimeChannel('daemon-a');
+    disposeRuntimeChannel('daemon-b');
+  });
+
+  it('gives each daemon its own channel, socket, and subscriptions', async () => {
+    const channelA = createRuntimeChannel(hostA);
+    const channelB = createRuntimeChannel(hostB);
+    expect(channelA).not.toBe(channelB);
+
+    const receivedA: unknown[] = [];
+    const receivedB: unknown[] = [];
+    const openingA = channelA.openRuntimeChannel(0, (event) => receivedA.push(event));
+    const openingB = channelB.openRuntimeChannel(0, (event) => receivedB.push(event));
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const [socketA, socketB] = FakeWebSocket.instances;
+    socketA.open();
+    socketB.open();
+    const openA = JSON.parse(socketA.sent[1]);
+    const openB = JSON.parse(socketB.sent[1]);
+    socketA.receive({ type: 'channel.opened', requestId: openA.requestId, channelId: openA.channelId, cursor: 0 });
+    socketB.receive({ type: 'channel.opened', requestId: openB.requestId, channelId: openB.channelId, cursor: 0 });
+    await Promise.all([openingA, openingB]);
+
+    socketA.receive({ type: 'event', channelId: openA.channelId, cursor: 1, event: { surfaceId: 'a-only', type: 'terminal.created', payload: {} } });
+    expect(receivedA).toHaveLength(1);
+    expect(receivedB).toHaveLength(0);
+
+    disposeRuntimeChannel('daemon-a');
+    expect(runtimeChannelRegistry.has('daemon-a')).toBe(false);
+    expect(runtimeChannelRegistry.get('daemon-b')).toBe(channelB);
+    socketB.receive({ type: 'event', channelId: openB.channelId, cursor: 1, event: { surfaceId: 'b-only', type: 'terminal.created', payload: {} } });
+    expect(receivedB).toHaveLength(1);
+  });
+});
