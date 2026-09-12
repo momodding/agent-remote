@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTranscriptTailerReadsCompleteAppendsOnce(t *testing.T) {
@@ -54,6 +55,13 @@ func TestTranscriptTailerResetsAfterTruncateAndReplacement(t *testing.T) {
 	write("new", "new")
 	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "new:assistant" {
 		t.Fatalf("truncated events = %+v, %v", events, err)
+	}
+	write("two", "two")
+	if err := os.Chtimes(path, time.Now(), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "two:assistant" {
+		t.Fatalf("equal-size rewrite events = %+v, %v", events, err)
 	}
 	replacement := path + ".replacement"
 	if err := os.WriteFile(replacement, []byte(`{"type":"message","id":"replacement","message":{"role":"assistant","content":"replacement"}}`+"\n"), 0o644); err != nil {

@@ -921,11 +921,16 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 				channelID := env.ChannelID
 				var liveMu sync.Mutex
 				replaying := true
-				liveEvents := []protocol.AgentEvent{}
+				liveEvents := make([]protocol.AgentEvent, 0, maxReplayLiveEvents)
+				overflowed := false
 				unsub, err := s.agents.Subscribe(env.TargetID, func(ev protocol.AgentEvent) {
 					liveMu.Lock()
 					if replaying {
-						liveEvents = append(liveEvents, ev)
+						if len(liveEvents) == cap(liveEvents) {
+							overflowed = true
+						} else {
+							liveEvents = append(liveEvents, ev)
+						}
 						liveMu.Unlock()
 						return
 					}
@@ -991,11 +996,34 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
+				liveMu.Lock()
+				if overflowed {
+					replaying = false
+					liveMu.Unlock()
+					unsub()
+					channelsMu.Lock()
+					delete(channels, env.ChannelID)
+					channelsMu.Unlock()
+					_ = write(protocol.ChannelClosedEnvelope{Type: "channel.closed", ChannelID: channelID, Reason: "resync_required"})
+					continue
+				}
+				liveMu.Unlock()
+
 				// Events arriving after high-water were buffered while replay ran.
 				for {
 					liveMu.Lock()
 					pending := liveEvents
-					liveEvents = nil
+					liveEvents = make([]protocol.AgentEvent, 0, maxReplayLiveEvents)
+					if overflowed {
+						replaying = false
+						liveMu.Unlock()
+						unsub()
+						channelsMu.Lock()
+						delete(channels, env.ChannelID)
+						channelsMu.Unlock()
+						_ = write(protocol.ChannelClosedEnvelope{Type: "channel.closed", ChannelID: channelID, Reason: "resync_required"})
+						break
+					}
 					if len(pending) == 0 {
 						_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 						replaying = false
@@ -1093,7 +1121,17 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 				for {
 					liveMu.Lock()
 					pending := liveEvents
-					liveEvents = nil
+					liveEvents = make([]runtimestore.Event, 0, maxReplayLiveEvents)
+					if overflowed {
+						replaying = false
+						liveMu.Unlock()
+						unsub()
+						channelsMu.Lock()
+						delete(channels, channelID)
+						channelsMu.Unlock()
+						_ = write(protocol.ChannelClosedEnvelope{Type: "channel.closed", ChannelID: channelID, Reason: "resync_required"})
+						break
+					}
 					if len(pending) == 0 {
 						_ = write(protocol.ChannelOpenedEnvelope{Type: "channel.opened", RequestID: env.RequestID, ChannelID: channelID, Cursor: cursor})
 						replaying = false

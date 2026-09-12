@@ -417,8 +417,19 @@ func TestRecordOutputDoesNotPersistEveryChunk(t *testing.T) {
 	manager.mu.Lock()
 	manager.sessions[runtime.meta.ID] = runtime
 	manager.mu.Unlock()
+	before, cursor, err := manager.RuntimeEvents(0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for range 100 {
 		manager.recordOutput(runtime, []byte("output\n"))
+	}
+	after, next, err := manager.RuntimeEvents(0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || next != cursor {
+		t.Fatalf("output created runtime events: before=%d/%d after=%d/%d", len(before), cursor, len(after), next)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sessions.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("output chunks persisted metadata: %v", err)

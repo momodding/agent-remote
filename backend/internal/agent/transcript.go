@@ -70,8 +70,8 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 	// Detect rotation: inode changed, size decreased, or mtime went backward
 	stat := info.Sys().(*syscall.Stat_t)
 	size := info.Size()
-	mtime := info.ModTime().Unix()
-	if t.lastInode != 0 && (stat.Ino != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime < t.lastMtime)) {
+	mtime := info.ModTime().UnixNano()
+	if t.lastInode != 0 && (stat.Ino != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime != t.lastMtime && size == t.lastSize)) {
 		t.offset, t.pending, t.seen = 0, nil, map[string]struct{}{}
 	}
 	t.lastInode = stat.Ino

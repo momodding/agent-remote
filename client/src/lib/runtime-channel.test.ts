@@ -115,6 +115,7 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     await Promise.resolve();
     const retry = JSON.parse(socket.sent[2]);
     expect(retry.after).toBe(20);
+    expect(retry).toMatchObject({ kind: 'agent', targetId: 'agent-1' });
     socket.receive({ type: 'channel.opened', requestId: retry.requestId, channelId: firstOpen.channelId, cursor: 20 });
     await expect(opening).resolves.toMatchObject({ cursor: 20 });
     socket.receive({ type: 'event', channelId: firstOpen.channelId, cursor: 21, event: { agentId: 'agent-1', cursor: 21, type: 'state', state: 'working' } });

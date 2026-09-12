@@ -33,7 +33,7 @@ Required tests: overflow signal, snapshot/replay recovery, and later live delive
 
 ## RAR-005 — Agent state vocabulary mismatch
 Severity: P1
-Status: TODO
+Status: DONE
 Source: external-code-review
 Plan requirement: backend and client share `working | idle | needsYou | exited` state semantics.
 Required tests: protocol/state projection agreement.

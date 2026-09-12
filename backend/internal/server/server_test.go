@@ -31,6 +31,22 @@ type noopNotify struct{}
 
 func (noopNotify) RegisterToken(context.Context, protocol.NotifyRegisterRequest) error { return nil }
 
+type replayOverflowAgents struct{}
+
+func (replayOverflowAgents) CreateAgent(context.Context, string, string, ...string) (*protocol.AgentSession, error) {
+	return nil, nil
+}
+func (replayOverflowAgents) GetAgent(string) (*protocol.AgentSession, error) { return nil, nil }
+func (replayOverflowAgents) ListAgents() []protocol.AgentSession             { return nil }
+func (replayOverflowAgents) SubmitPrompt(string, string) error               { return nil }
+func (replayOverflowAgents) Abort(string) error                              { return nil }
+func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (func(), error) {
+	for i := range maxReplayLiveEvents + 1 {
+		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
+	}
+	return func() {}, nil
+}
+
 func TestSessionsRequiresBearer(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -222,6 +238,40 @@ func TestRuntimeWSReplayHandoffAndReconnect(t *testing.T) {
 	}
 }
 
+func TestAgentWSClosesOverflowedReplayForResync(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	srv.agents = replayOverflowAgents{}
+	if _, err := srv.runtime.(*session.Manager).RuntimeStore().RecordEvent("agent-1", "state", protocol.AgentEvent{Type: "state", AgentID: "agent-1", State: "working"}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/runtime", &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, protocol.ChannelOpenEnvelope{Type: "channel.open", RequestID: "request", ChannelID: "agent-1", Kind: "agent", TargetID: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var frame protocol.ChannelClosedEnvelope
+		if err := wsReadJSON(ctx, conn, &frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.Type == "channel.closed" {
+			if frame.Reason != "resync_required" {
+				t.Fatalf("close reason = %q", frame.Reason)
+			}
+			return
+		}
+	}
+}
 func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/daemon/identity", nil)
