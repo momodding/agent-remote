@@ -1,10 +1,10 @@
 # Recover Agent Architecture — Remediation TODO
 
-Baseline: `plans/recover-agent-architecture.md`; main at `2d3e839`; 2026-09-12.
+Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a30210a9a2e7ba2d5f86`; 2026-09-13.
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: DONE — OMP exposes no supported semantic command bridge; transcript-only chat with needs_terminal prompt/abort fallback is the supported integration.
+Status: IN_PROGRESS — installed OMP 18.1.15 supports explicit same-process extensions and semantic actions; bridge implementation and real-runtime proof remain required.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
@@ -26,7 +26,7 @@ Required tests: high-volume output does not consume runtime cursors.
 
 ## RAR-004 — Subscriber overflow can silently desynchronize
 Severity: P1
-Status: TODO
+Status: DONE — `backend/internal/runtime/store_test.go` proves watcher overflow callback; `backend/internal/server/server_test.go` proves resync channel closure and recovery. Focused verification passed on 2026-09-13.
 Source: external-code-review
 Plan requirement: overflow explicitly forces channel resynchronization, never a stale connected channel.
 Required tests: overflow signal, snapshot/replay recovery, and later live delivery.
@@ -47,7 +47,7 @@ Required tests: persisted state event appears on agent replay.
 
 ## RAR-007 — Backend selection is daemon-wide
 Severity: P1
-Status: TODO
+Status: IN_PROGRESS — manager support exists; Agent REST/control/client propagation remains missing.
 Source: external-code-review
 Plan requirement: each session chooses `auto | pty | tmux`; explicit tmux fails clearly when unavailable.
 Required tests: request selection and unavailable tmux behavior.
@@ -75,15 +75,79 @@ Required tests: restart continuation and replacement/truncation behavior.
 
 ## RAR-011 — tmux terminal-input parity lacks coverage
 Severity: P2
-Status: TODO
+Status: DONE — real byte-level tmux parity coverage exists in `backend/internal/tmux/integration_test.go`; focused verification passed on 2026-09-13.
 Source: external-code-review
 Plan requirement: PTY and tmux preserve terminal bytes for Unicode, paste, controls, escape, and meta input.
 Required tests: real tmux byte-level input cases.
 
 ## RAR-012 — Runtime replay buffer must resynchronize on overflow
 Severity: P1
-Status: TODO
+Status: DONE — `backend/internal/server/server_test.go` covers replay/live buffer overflow and explicit resync; focused verification passed on 2026-09-13.
 Source: lifecycle-replay-advisory
 Plan requirement: replay/live handoff is bounded; overflow cannot silently leave a registered WebSocket stale.
 Required change: bound `liveEvents` during replay, close/resync the channel or socket on overflow, and test recovery.
 Required tests: intentionally overflow replay buffering and observe explicit recovery.
+
+## RAR-013 — Agent history cannot survive cursor expiry
+Severity: P0
+Status: IN_PROGRESS
+Source: recovery review
+Plan requirement: durable semantic history bootstraps every Agent remount and cursor resync.
+Required change: persist stable Agent events separately from bounded runtime replay; provide authenticated history/high-water API and idempotent client merge.
+Required tests: pruned cursor remount retains history exactly once and receives one later event.
+
+## RAR-014 — Transcript projection drops current OMP v3 semantics
+Severity: P0/P1
+Status: IN_PROGRESS
+Source: installed OMP schema review
+Plan requirement: project current OMP messages, thinking, calls/results, executions, mentions, custom messages, and aborted turns.
+Required change: deterministic event IDs from exact OMP entry/block IDs; ignore unsupported/hidden entries.
+Required tests: sanitized v3 fixtures and repeat decoding are stable.
+
+## RAR-015 — Transcript event/checkpoint commit is non-atomic
+Severity: P0
+Status: IN_PROGRESS
+Source: runtime durability review
+Plan requirement: semantic events and checkpoint advance commit exactly once together.
+Required change: transactional batch store with stable uniqueness, rotation fingerprint, and failure-safe tail candidates.
+Required tests: partial lines, rewrite/rotation, retry, and injected transaction failures.
+
+## RAR-016 — Direct PTY identity is Linux-only
+Severity: P1
+Status: IN_PROGRESS
+Source: PTY dependency review
+Plan requirement: direct OMP association uses exact portable slave TTY identity.
+Required change: retain `pty.Open` slave `Name()` at launch; no `/proc` primary path.
+Required tests: Linux runtime and Darwin builds plus same-CWD isolation.
+
+## RAR-017 — Raw terminal reconnect duplicates or loses baseline
+Severity: P1
+Status: IN_PROGRESS
+Source: client socket review
+Plan requirement: reconnect replaces bounded viewport baseline then accepts only later bytes.
+Required change: explicit sequenced baseline frame and bounded reconnect with no input replay.
+Required tests: real socket disconnect, noisy output, exact convergence, and disposal.
+
+## RAR-018 — Agent backend choice is discarded
+Severity: P1
+Status: IN_PROGRESS
+Source: server/client call-path review
+Plan requirement: every Agent creation route preserves auto/pty/tmux selection.
+Required change: request-object API through REST, control, service, manager, and client.
+Required tests: explicit backend selection and unavailable tmux error.
+
+## RAR-019 — Capabilities do not reflect available runtime operations
+Severity: P1
+Status: IN_PROGRESS
+Source: capability review
+Plan requirement: daemon and Agent UI expose only executable/connected operations while retaining Chat and Terminal.
+Required change: startup availability snapshot and bridge-driven Agent capability transitions.
+Required tests: unavailable executables, bridge loss, read-only and interactive UI.
+
+## RAR-020 — tmux socket path is not a server generation
+Severity: P1
+Status: IN_PROGRESS
+Source: tmux topology review
+Plan requirement: old topology cannot reattach to a new tmux server at the same socket.
+Required change: private-server global generation token in persisted server identity.
+Required tests: daemon restart preserves token; same-socket server recreation rejects stale panes.
