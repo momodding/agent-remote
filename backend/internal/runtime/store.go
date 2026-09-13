@@ -77,8 +77,9 @@ type Event struct {
 }
 
 type watcher struct {
-	events chan Event
-	fn     func(Event)
+	events   chan Event
+	fn       func(Event)
+	overflow func()
 }
 
 type Snapshot struct {
@@ -525,8 +526,16 @@ func boolToInt(value bool) int {
 
 // Subscribe receives events only after their transaction commits. A stalled
 // subscriber is detached rather than retaining an unbounded event backlog.
-func (s *Store) Subscribe(fn func(Event)) func() {
-	watcher := &watcher{events: make(chan Event, maxSubscriberEvents), fn: fn}
+func (s *Store) Subscribe(fn func(Event), onOverflow ...func()) func() {
+	var overflow func()
+	if len(onOverflow) > 0 {
+		overflow = onOverflow[0]
+	}
+	return s.SubscribeWithOverflow(fn, overflow)
+}
+
+func (s *Store) SubscribeWithOverflow(fn func(Event), onOverflow func()) func() {
+	watcher := &watcher{events: make(chan Event, maxSubscriberEvents), fn: fn, overflow: onOverflow}
 	s.watchMu.Lock()
 	id := s.nextWatcher
 	s.nextWatcher++
@@ -579,6 +588,7 @@ func (s *Store) dispatchPublished() {
 }
 
 func (s *Store) publish(event Event) {
+	var overflowed []func()
 	s.watchMu.Lock()
 	for id, watcher := range s.watchers {
 		select {
@@ -586,9 +596,15 @@ func (s *Store) publish(event Event) {
 		default:
 			delete(s.watchers, id)
 			close(watcher.events)
+			if watcher.overflow != nil {
+				overflowed = append(overflowed, watcher.overflow)
+			}
 		}
 	}
 	s.watchMu.Unlock()
+	for _, fn := range overflowed {
+		go fn()
+	}
 }
 
 type TranscriptState struct {

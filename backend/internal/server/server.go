@@ -48,6 +48,14 @@ type RuntimeAPI interface {
 	RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error)
 	SubscribeRuntime(func(runtimestore.Event)) func()
 }
+
+type runtimeStoreProvider interface {
+	RuntimeStore() *runtimestore.Store
+}
+
+type runtimeOverflowSubscriber interface {
+	SubscribeRuntimeWithOverflow(func(runtimestore.Event), func()) func()
+}
 type AgentAPI interface {
 	CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error)
 	GetAgent(agentID string) (*protocol.AgentSession, error)
@@ -1046,7 +1054,33 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 				replaying := true
 				liveEvents := make([]runtimestore.Event, 0, maxReplayLiveEvents)
 				overflowed := false
-				unsub := s.runtime.SubscribeRuntime(func(event runtimestore.Event) {
+				var unsub func()
+				handleOverflow := func() {
+					liveMu.Lock()
+					if replaying {
+						overflowed = true
+						liveMu.Unlock()
+						return
+					}
+					liveMu.Unlock()
+					channelsMu.Lock()
+					_, ok := channels[channelID]
+					if ok {
+						delete(channels, channelID)
+					}
+					channelsMu.Unlock()
+					if ok {
+						if unsub != nil {
+							unsub()
+						}
+						_ = write(protocol.ChannelClosedEnvelope{
+							Type:      "channel.closed",
+							ChannelID: channelID,
+							Reason:    "resync_required",
+						})
+					}
+				}
+				onEvent := func(event runtimestore.Event) {
 					liveMu.Lock()
 					if replaying {
 						if len(liveEvents) == cap(liveEvents) {
@@ -1059,7 +1093,14 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 					}
 					liveMu.Unlock()
 					_ = write(toEnvelope(event))
-				})
+				}
+				if provider, ok := s.runtime.(runtimeStoreProvider); ok && provider.RuntimeStore() != nil {
+					unsub = provider.RuntimeStore().Subscribe(onEvent, handleOverflow)
+				} else if overflowSub, ok := s.runtime.(runtimeOverflowSubscriber); ok {
+					unsub = overflowSub.SubscribeRuntimeWithOverflow(onEvent, handleOverflow)
+				} else {
+					unsub = s.runtime.SubscribeRuntime(onEvent)
+				}
 				channelsMu.Lock()
 				if prev, ok := channels[channelID]; ok {
 					prev()

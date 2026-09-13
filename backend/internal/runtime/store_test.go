@@ -135,9 +135,15 @@ func TestStalledSubscriberIsDetached(t *testing.T) {
 	s := makeTestDB(t)
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
+	overflowed := make(chan struct{}, 1)
 	s.Subscribe(func(Event) {
 		started <- struct{}{}
 		<-release
+	}, func() {
+		select {
+		case overflowed <- struct{}{}:
+		default:
+		}
 	})
 	if _, err := s.RecordEvent("first", "agent.updated", 0); err != nil {
 		t.Fatal(err)
@@ -164,6 +170,11 @@ func TestStalledSubscriberIsDetached(t *testing.T) {
 			t.Fatal("stalled subscriber was not detached")
 		}
 		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-overflowed:
+	case <-time.After(time.Second):
+		t.Fatal("overflow callback was not invoked")
 	}
 	close(release)
 }

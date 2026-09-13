@@ -76,6 +76,29 @@ func (r *replayOverflowRuntime) SubscribeRuntime(fn func(runtimestore.Event)) fu
 	return func() {}
 }
 
+type watcherOverflowRuntime struct {
+	ready    chan struct{}
+	overflow func()
+}
+
+func (w *watcherOverflowRuntime) RuntimeSnapshot() (*runtimestore.Snapshot, error) {
+	return &runtimestore.Snapshot{Cursor: 0}, nil
+}
+
+func (w *watcherOverflowRuntime) RuntimeEvents(after int64, _ int) ([]runtimestore.Event, int64, error) {
+	return nil, after, nil
+}
+
+func (w *watcherOverflowRuntime) SubscribeRuntime(fn func(runtimestore.Event)) func() {
+	return func() {}
+}
+
+func (w *watcherOverflowRuntime) SubscribeRuntimeWithOverflow(fn func(runtimestore.Event), onOverflow func()) func() {
+	w.overflow = onOverflow
+	close(w.ready)
+	return func() {}
+}
+
 func TestSessionsRequiresBearer(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -303,6 +326,37 @@ func TestRuntimeWSClosesOverflowedReplayForResync(t *testing.T) {
 		runtime.subscriber(runtimestore.Event{Cursor: int64(501 + i)})
 	}
 	close(runtime.release)
+	assertChannelResync(t, ctx, conn)
+}
+
+func TestRuntimeWSClosesOverflowedWatcherForResync(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	runtime := &watcherOverflowRuntime{ready: make(chan struct{})}
+	srv.runtime = runtime
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/runtime", &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsWriteJSON(ctx, conn, protocol.ChannelOpenEnvelope{Type: "channel.open", RequestID: "request", ChannelID: "runtime", Kind: "runtime", TargetID: "runtime"}); err != nil {
+		t.Fatal(err)
+	}
+	<-runtime.ready
+	var opened protocol.ChannelOpenedEnvelope
+	if err := wsReadJSON(ctx, conn, &opened); err != nil {
+		t.Fatal(err)
+	}
+	if opened.Type != "channel.opened" {
+		t.Fatalf("unexpected envelope: %+v", opened)
+	}
+	runtime.overflow()
 	assertChannelResync(t, ctx, conn)
 }
 
