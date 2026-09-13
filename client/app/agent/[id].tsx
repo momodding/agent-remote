@@ -90,8 +90,9 @@ export default function AgentScreen() {
 
   // Subscribe to Agent Runtime Events
   useEffect(() => {
-    if (!tab?.agentSessionId || !runtime) return;
-    const active = true;
+    const runtime = runtimeChannelRef.current;
+    if (!tab?.agentSessionId || !runtime || !api) return;
+    let active = true;
     const currentAgentChannelIdRef = { current: null as string | null };
 
     const handleCursorExpired = async () => {
@@ -133,11 +134,12 @@ export default function AgentScreen() {
     });
 
     return () => {
+      active = false;
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
       }
     };
-  }, [tab?.agentSessionId, connection, runtime, api, dispatch, tab?.tabId]);
+  }, [tab?.agentSessionId, connection, api, dispatch, tab?.tabId]);
 
   // Subscribe to underlying Terminal PTY stream
   useEffect(() => {
