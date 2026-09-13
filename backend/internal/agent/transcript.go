@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strconv"
 	"syscall"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
@@ -135,34 +136,62 @@ type transcriptEntry struct {
 }
 
 type transcriptMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	IsError    bool            `json:"isError"`
+	Aborted    bool            `json:"aborted"`
 }
 
 type transcriptContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type       string          `json:"type"`
+	Text       string          `json:"text"`
+	ToolCallID string          `json:"toolCallId"`
+	Name       string          `json:"name"`
+	Arguments  json.RawMessage `json:"arguments"`
 }
 
 func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if e.Type != "message" || e.Message == nil || e.ID == "" {
 		return nil
 	}
-	text, _ := transcriptText(e.Message.Content)
-	if text == "" {
-		return nil
+	message := e.Message
+	text, contents := transcriptText(message.Content)
+	if message.Role == "toolResult" {
+		if message.ToolCallID == "" {
+			return nil
+		}
+		return []protocol.AgentEvent{{Type: "tool.result", EventID: e.ID + ":tool-result:" + message.ToolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: message.ToolCallID, Text: text, ToolOutput: text}}
 	}
-	role := e.Message.Role
+	role := message.Role
 	if role == "" {
 		role = "user"
 	}
-	return []protocol.AgentEvent{{
-		Type:      "message." + role,
-		EventID:   e.ID + ":" + role,
-		AgentID:   agentID,
-		MessageID: e.ID,
-		Text:      text,
-	}}
+	if role != "assistant" || len(contents) == 0 {
+		if text == "" && !(role == "assistant" && message.Aborted) {
+			return nil
+		}
+		return []protocol.AgentEvent{{Type: "message." + role, EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, Text: text}}
+	}
+	events := make([]protocol.AgentEvent, 0, len(contents))
+	for index, content := range contents {
+		switch content.Type {
+		case "text":
+			if content.Text != "" || message.Aborted {
+				events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":message:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text})
+			}
+		case "thinking":
+			if content.Text != "" {
+				events = append(events, protocol.AgentEvent{Type: "message.thinking", EventID: e.ID + ":thinking:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text})
+			}
+		case "toolCall":
+			if content.ToolCallID != "" {
+				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: e.ID + ":tool-call:" + content.ToolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: content.ToolCallID, ToolName: content.Name, ToolInput: json.RawMessage(content.Arguments)})
+			}
+		}
+	}
+	return events
 }
 
 func transcriptText(content json.RawMessage) (string, []transcriptContent) {

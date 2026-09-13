@@ -15,12 +15,13 @@ export const flushImmediate = (fn: () => void): (() => void) => {
 
 // ============================================================================
 // Per-kind frame payloads. `channelId` + `kind` are added by ChannelEnvelope;
-// these mirror the wire shapes session-socket.ts and desktop.tsx use today,
-// minus the sessionId (channelId is the multiplexing key now).
+// these mirror the wire shapes desktop.tsx uses today, minus the sessionId
+// (channelId is the multiplexing key now).
 // ============================================================================
 
 export type PTYChannelFrame =
   | { type: 'pty.output'; data: string; seq: number } // base64, server -> client
+  | { type: 'pty.baseline'; data: string; seq: number } // base64, server -> client; replaces the viewport, never appends
   | { type: 'pty.input'; data: string } // base64, client -> server
   | { type: 'pty.resize'; cols: number; rows: number } // client -> server
   | { type: 'session.state'; state: SessionSummary['state']; waitState?: WaitState }; // server -> client
@@ -64,6 +65,7 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   private subscribers = new Map<string, Set<(msg: ChannelEnvelope) => void>>();
   private sockets = new Map<string, WebSocket>();
   private pendingSends = new Map<string, Array<string | ArrayBuffer | ArrayBufferView | object>>();
+  private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly connection: Connection) {
     this.daemonId = connection.hostId;
@@ -201,6 +203,8 @@ export class WebSocketDaemonChannel implements DaemonChannel {
           const frame = JSON.parse(String(event.data));
           if (frame.type === 'pty.output') {
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.output', data: frame.data, seq: frame.seq });
+          } else if (frame.type === 'pty.baseline') {
+            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.baseline', data: frame.data, seq: frame.seq });
           } else if (frame.type === 'session.state') {
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'session.state', state: frame.state, waitState: frame.waitState });
           } else if (frame.type === 'error') {
@@ -215,9 +219,22 @@ export class WebSocketDaemonChannel implements DaemonChannel {
     };
 
     socket.onclose = () => {
+      if (this.sockets.get(channelId) !== socket) return;
       this.sockets.delete(channelId);
+      if (!isDesktop && this.status !== 'closed' && this.subscribers.has(channelId)) {
+        this.scheduleReconnect(channelId);
+      }
     };
 
+  }
+
+  private scheduleReconnect(channelId: string): void {
+    if (this.reconnectTimers.has(channelId)) return;
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(channelId);
+      if (this.subscribers.has(channelId)) this.ensureSocket(channelId);
+    }, 250);
+    this.reconnectTimers.set(channelId, timer);
   }
 
   private queuePending(channelId: string, item: string | ArrayBuffer | ArrayBufferView | object): void {
@@ -242,6 +259,11 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   }
 
   private closeSocket(channelId: string): void {
+    const timer = this.reconnectTimers.get(channelId);
+    if (timer) {
+      clearTimeout(timer);
+      this.reconnectTimers.delete(channelId);
+    }
     const socket = this.sockets.get(channelId);
     if (socket) {
       try {

@@ -145,13 +145,14 @@ type ChannelClosedEnvelope struct {
 }
 
 type CreateSessionRequest struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	CWD     string   `json:"cwd"`
-	Cols    int      `json:"cols"`
-	Rows    int      `json:"rows"`
-	Backend string   `json:"backend,omitempty"`
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	CWD     string            `json:"cwd"`
+	Cols    int               `json:"cols"`
+	Rows    int               `json:"rows"`
+	Backend string            `json:"backend,omitempty"`
+	Env     map[string]string `json:"-"`
 }
 
 type ResizeSessionRequest struct {

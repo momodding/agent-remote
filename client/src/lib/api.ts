@@ -56,7 +56,7 @@ export class AgenticRemoteAPI {
     return this.request(`/v1/agents/${encodeURIComponent(id)}`);
   }
 
-  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd'>): Promise<AgentSession> {
+  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd' | 'backend'>): Promise<AgentSession> {
     return this.request('/v1/agents', { method: 'POST', body: JSON.stringify(request) });
   }
 

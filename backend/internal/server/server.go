@@ -57,7 +57,7 @@ type runtimeOverflowSubscriber interface {
 	SubscribeRuntimeWithOverflow(func(runtimestore.Event), func()) func()
 }
 type AgentAPI interface {
-	CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error)
+	CreateAgentRequest(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error)
 	GetAgent(agentID string) (*protocol.AgentSession, error)
 	ListAgents() []protocol.AgentSession
 	SubmitPrompt(agentID, prompt string) error
@@ -379,7 +379,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
 			return
 		}
-		summary, err := s.agents.CreateAgent(r.Context(), req.CWD, req.Name, req.Args...)
+		summary, err := s.agents.CreateAgentRequest(r.Context(), req)
 		if err != nil {
 			s.limits.EndSession()
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
@@ -1220,7 +1220,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-	case "message.user", "message.assistant", "tool.call", "tool.result", "state":
+	case "message.user", "message.assistant", "message.thinking", "tool.call", "tool.result", "state":
 		return true
 	default:
 		return false
@@ -1235,16 +1235,17 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 			return
 		}
 		var args struct {
-			CWD  string   `json:"cwd"`
-			Name string   `json:"name"`
-			Args []string `json:"args"`
+			CWD     string   `json:"cwd"`
+			Name    string   `json:"name"`
+			Args    []string `json:"args"`
+			Backend string   `json:"backend"`
 		}
 		if cmd.Args != nil {
 			if m, ok := cmd.Args.(map[string]any); ok {
 				_ = mapToStruct(m, &args)
 			}
 		}
-		summary, err := s.agents.CreateAgent(ctx, args.CWD, args.Name, args.Args...)
+		summary, err := s.agents.CreateAgentRequest(ctx, protocol.CreateSessionRequest{CWD: args.CWD, Name: args.Name, Args: args.Args, Backend: args.Backend})
 		if err != nil {
 			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
 			return

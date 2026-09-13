@@ -33,7 +33,7 @@ func (noopNotify) RegisterToken(context.Context, protocol.NotifyRegisterRequest)
 
 type replayOverflowAgents struct{}
 
-func (replayOverflowAgents) CreateAgent(context.Context, string, string, ...string) (*protocol.AgentSession, error) {
+func (replayOverflowAgents) CreateAgentRequest(context.Context, protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
 	return nil, nil
 }
 func (replayOverflowAgents) GetAgent(string) (*protocol.AgentSession, error) { return nil, nil }
@@ -45,6 +45,16 @@ func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (f
 		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
 	}
 	return func() {}, nil
+}
+
+type recordingAgents struct {
+	replayOverflowAgents
+	req protocol.CreateSessionRequest
+}
+
+func (a *recordingAgents) CreateAgentRequest(_ context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
+	a.req = req
+	return &protocol.AgentSession{}, nil
 }
 
 type silentAgents struct{ replayOverflowAgents }
@@ -1191,6 +1201,33 @@ func TestLogRequestRedactsTokens(t *testing.T) {
 	}
 	if !strings.Contains(logOut, "token=REDACTED") {
 		t.Fatalf("expected REDACTED marker in logs: %s", logOut)
+	}
+}
+
+func TestAgentReplayAllowsThinkingEvents(t *testing.T) {
+	if !isAgentEventKind("message.thinking") {
+		t.Fatal("message.thinking must survive Agent replay")
+	}
+}
+
+func TestRuntimeAgentCreateForwardsBackend(t *testing.T) {
+	agents := &recordingAgents{}
+	server := &Server{agents: agents}
+	server.executeCommand(context.Background(), protocol.CommandEnvelope{Command: "agent.create", Args: map[string]any{"cwd": "/workspace", "name": "Agent", "backend": "tmux"}}, func(any) error { return nil })
+	if agents.req.Backend != "tmux" {
+		t.Fatalf("backend = %q, want tmux", agents.req.Backend)
+	}
+}
+
+func TestCreateAgentRESTForwardsBackend(t *testing.T) {
+	srv := newTestServer(t)
+	agents := &recordingAgents{}
+	srv.agents = agents
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents", strings.NewReader(`{"cwd":"/workspace","name":"Agent","backend":"tmux"}`))
+	resp := httptest.NewRecorder()
+	srv.handleAgents(resp, req)
+	if resp.Code != http.StatusCreated || agents.req.Backend != "tmux" {
+		t.Fatalf("status=%d backend=%q", resp.Code, agents.req.Backend)
 	}
 }
 

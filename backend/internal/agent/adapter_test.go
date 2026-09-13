@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,6 +117,59 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	}
 	if len(termMgr.inputs["term-123"]) != 0 {
 		t.Fatal("transcript-only service must not write terminal bytes")
+	}
+}
+
+func TestAgentCreateRequestForwardsBackend(t *testing.T) {
+	store, err := runtimestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, t.TempDir())
+	defer svc.Close()
+	if _, err := svc.CreateAgentRequest(context.Background(), protocol.CreateSessionRequest{CWD: "/workspace", Name: "Agent", Backend: "tmux"}); err != nil {
+		t.Fatal(err)
+	}
+	if termMgr.createdReq.Backend != "tmux" {
+		t.Fatalf("backend = %q, want tmux", termMgr.createdReq.Backend)
+	}
+}
+
+func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	first := NewService(newMockTermMgr(), store, stateDir)
+	agent, err := first.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := loadBridgeSecret(stateDir, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+	second := NewService(newMockTermMgr(), store, stateDir)
+	defer second.Close()
+	conn, err := net.Dial("unix", second.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	frame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret})
+	if _, err := conn.Write(append(frame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); !second.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if !second.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("restored Agent rejected its persisted bridge credential")
 	}
 }
 

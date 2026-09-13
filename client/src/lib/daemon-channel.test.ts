@@ -1,6 +1,22 @@
 import { createDaemonChannel, channelRegistry, disposeDaemonChannel, WebSocketDaemonChannel } from './daemon-channel';
 import type { Connection } from './connection';
 
+class FakeSocket {
+  static instances: FakeSocket[] = [];
+  static OPEN = 1;
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: string[] = [];
+  constructor(public url: string) { FakeSocket.instances.push(this); }
+  send(value: string) { this.sent.push(value); }
+  open() { this.readyState = 1; this.onopen?.(); }
+  receive(frame: object) { this.onmessage?.({ data: JSON.stringify(frame) }); }
+  close() { this.readyState = 3; this.onclose?.(); }
+}
+
 const conn: Connection = {
   name: 'test', endpoint: 'https://127.0.0.1:8443', hostId: 'host-123',
   fingerprint: 'ff', skipFingerprintVerification: true, token: 'tok', clientName: 'test-client',
@@ -42,5 +58,50 @@ describe('daemon-channel', () => {
     expect(channelRegistry.has('daemon-a')).toBe(false);
     expect(channelRegistry.get('daemon-b')).toBe(channelB);
     disposeDaemonChannel('daemon-b');
+  });
+});
+
+describe('WebSocketDaemonChannel raw terminal reconnect', () => {
+  const originalWebSocket = globalThis.WebSocket;
+
+  beforeEach(() => {
+    FakeSocket.instances = [];
+    jest.useFakeTimers();
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    jest.useRealTimers();
+    disposeDaemonChannel('reconnect-host');
+  });
+
+  it('reconnects an active subscription after an unexpected close, without reconnecting a closed channel', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'reconnect-host' }) as WebSocketDaemonChannel;
+    const received: unknown[] = [];
+    const unsubscribe = channel.subscribe('term-1', (msg) => received.push(msg));
+    const first = FakeSocket.instances[0];
+    first.open();
+    first.close();
+    expect(FakeSocket.instances.length).toBe(1);
+    jest.advanceTimersByTime(250);
+    expect(FakeSocket.instances.length).toBe(2);
+
+    unsubscribe();
+    const second = FakeSocket.instances[1];
+    second.open();
+    second.close();
+    jest.advanceTimersByTime(250);
+    expect(FakeSocket.instances.length).toBe(2);
+  });
+
+  it('dispatches pty.baseline distinctly from pty.output for viewport replacement', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'reconnect-host' }) as WebSocketDaemonChannel;
+    const received: unknown[] = [];
+    channel.subscribe('term-1', (msg) => received.push(msg));
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'pty.baseline', sessionId: 'term-1', data: 'YQ==', seq: 5 });
+    expect(received).toEqual([{ channelId: 'term-1', kind: 'terminal', type: 'pty.baseline', data: 'YQ==', seq: 5 }]);
   });
 });

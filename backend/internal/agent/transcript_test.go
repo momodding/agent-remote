@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,7 +33,7 @@ func TestTranscriptTailerReadsCompleteAppendsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Type != "message.user" || events[0].Text != "hello" || events[0].EventID != "u1:user" {
+	if len(events) != 1 || events[0].Type != "message.user" || events[0].Text != "hello" || events[0].EventID != "u1:message" {
 		t.Fatalf("events = %+v", events)
 	}
 	if events, err := tailer.Read(); err != nil || len(events) != 0 {
@@ -51,18 +52,18 @@ func TestTranscriptTailerResetsAfterTruncateAndReplacement(t *testing.T) {
 	}
 	write("old", "this entry is deliberately longer than its replacement")
 	tailer := NewTranscriptTailer("a1", path, nil)
-	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "old:assistant" {
+	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "old:message" {
 		t.Fatalf("initial events = %+v, %v", events, err)
 	}
 	write("new", "new")
-	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "new:assistant" {
+	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "new:message" {
 		t.Fatalf("truncated events = %+v, %v", events, err)
 	}
 	write("two", "two")
 	if err := os.Chtimes(path, time.Now(), time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "two:assistant" {
+	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "two:message" {
 		t.Fatalf("equal-size rewrite events = %+v, %v", events, err)
 	}
 	replacement := path + ".replacement"
@@ -72,7 +73,7 @@ func TestTranscriptTailerResetsAfterTruncateAndReplacement(t *testing.T) {
 	if err := os.Rename(replacement, path); err != nil {
 		t.Fatal(err)
 	}
-	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "replacement:assistant" {
+	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "replacement:message" {
 		t.Fatalf("replacement events = %+v, %v", events, err)
 	}
 }
@@ -115,5 +116,26 @@ func TestTranscriptStateNotAdvancedUntilEventsRecorded(t *testing.T) {
 	events2, err := tailer2.Read()
 	if err != nil || len(events2) != 0 {
 		t.Fatalf("second read after restore: events=%d (expected 0), err=%v", len(events2), err)
+	}
+}
+
+func TestTranscriptProjectsAssistantToolAndResult(t *testing.T) {
+	entry := transcriptEntry{Type: "message", ID: "a1", Message: &transcriptMessage{Role: "assistant", Content: json.RawMessage(`[{"type":"thinking","text":"plan"},{"type":"toolCall","toolCallId":"call_1","name":"bash","arguments":{"command":"pwd"}},{"type":"text","text":"done"}]`)}}
+	events := entry.events("agent")
+	if len(events) != 3 || events[0].EventID != "a1:thinking:0" || events[1].EventID != "a1:tool-call:call_1" || events[1].ToolCallID != "call_1" || events[2].EventID != "a1:message:2" {
+		t.Fatalf("assistant events = %+v", events)
+	}
+	result := transcriptEntry{Type: "message", ID: "r1", Message: &transcriptMessage{Role: "toolResult", ToolCallID: "call_1", Content: json.RawMessage(`"/workspace"`)}}
+	events = result.events("agent")
+	if len(events) != 1 || events[0].Type != "tool.result" || events[0].EventID != "r1:tool-result:call_1" || events[0].Text != "/workspace" {
+		t.Fatalf("result events = %+v", events)
+	}
+}
+
+func TestTranscriptAssistantTextBlocksHaveDistinctIDs(t *testing.T) {
+	entry := transcriptEntry{Type: "message", ID: "a1", Message: &transcriptMessage{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"first"},{"type":"text","text":"second"}]`)}}
+	events := entry.events("agent")
+	if len(events) != 2 || events[0].EventID != "a1:message:0" || events[1].EventID != "a1:message:1" {
+		t.Fatalf("text events = %+v", events)
 	}
 }
