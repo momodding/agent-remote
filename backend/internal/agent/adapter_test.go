@@ -16,6 +16,7 @@ type mockTermMgr struct {
 	inputs      map[string][][]byte
 	closed      map[string]bool
 	subscribers map[string]func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)
+	sessions    map[string]*protocol.SessionSummary
 }
 
 func newMockTermMgr() *mockTermMgr {
@@ -23,13 +24,14 @@ func newMockTermMgr() *mockTermMgr {
 		inputs:      make(map[string][][]byte),
 		closed:      make(map[string]bool),
 		subscribers: make(map[string]func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)),
+		sessions:    make(map[string]*protocol.SessionSummary),
 	}
 }
 
 func (m *mockTermMgr) Create(_ context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
 	m.createdReq = req
 	now := time.Now().UTC()
-	return &protocol.SessionSummary{
+	summary := &protocol.SessionSummary{
 		ID:        "term-123",
 		Name:      req.Name,
 		Command:   req.Command,
@@ -37,7 +39,17 @@ func (m *mockTermMgr) Create(_ context.Context, req protocol.CreateSessionReques
 		State:     "running",
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, nil
+	}
+	m.sessions[summary.ID] = summary
+	return summary, nil
+}
+
+func (m *mockTermMgr) List(_ context.Context) []protocol.SessionSummary {
+	var list []protocol.SessionSummary
+	for _, s := range m.sessions {
+		list = append(list, *s)
+	}
+	return list
 }
 
 func (m *mockTermMgr) Input(id string, b []byte) error {
@@ -227,6 +239,7 @@ func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
 		t.Fatal(err)
 	}
 	termMgr := newMockTermMgr()
+	termMgr.sessions["term-123"] = &protocol.SessionSummary{ID: "term-123", State: "running"}
 	svc := NewService(termMgr, store, stateDir)
 	received := make(chan protocol.AgentEvent, 1)
 	unsub, err := svc.Subscribe("agent_restored", func(event protocol.AgentEvent) { received <- event })
@@ -247,5 +260,176 @@ func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
 	}
 	if len(termMgr.subscribers) != 0 {
 		t.Fatal("agent service retained terminal subscription after close")
+	}
+}
+
+func TestRestoredAgentWithExitedDirectPTYBecomesExited(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Agent was persisted in working state
+	if err := store.RecordAgent(runtimestore.AgentSummary{
+		ID:                "agent_working",
+		Adapter:           "omp",
+		TerminalSessionID: "term-pty-1",
+		CWD:               "/workspace",
+		Capabilities:      []byte("[]"),
+		State:             "working",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Terminal session cannot be reattached (e.g. direct PTY marked exited on restore)
+	termMgr := newMockTermMgr()
+	termMgr.sessions["term-pty-1"] = &protocol.SessionSummary{
+		ID:        "term-pty-1",
+		Name:      "OMP Terminal",
+		Command:   "omp",
+		CWD:       "/workspace",
+		State:     "exited",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	// In-memory state must be exited
+	agent, err := svc.GetAgent("agent_working")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+	if agent.State != "exited" {
+		t.Fatalf("agent.State = %q, want %q", agent.State, "exited")
+	}
+
+	// Persisted SQLite state must be durably exited
+	snap, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	var found *runtimestore.AgentSummary
+	for _, a := range snap.Agents {
+		if a.ID == "agent_working" {
+			found = &a
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("agent_working not found in SQLite snapshot")
+	}
+	if found.State != "exited" {
+		t.Fatalf("persisted agent state = %q, want %q", found.State, "exited")
+	}
+
+	// Verify semantic events recorded
+	events, _, err := store.Events(0, 100)
+	if err != nil {
+		t.Fatalf("Events failed: %v", err)
+	}
+	var hasAgentUpdated, hasStateEvent bool
+	for _, ev := range events {
+		if ev.SurfaceID == "agent_working" {
+			if ev.Kind == "agent.updated" {
+				hasAgentUpdated = true
+			}
+			if ev.Kind == "state" {
+				hasStateEvent = true
+			}
+		}
+	}
+	if !hasAgentUpdated {
+		t.Fatal("expected agent.updated event for restored exited agent")
+	}
+	if !hasStateEvent {
+		t.Fatal("expected state event for restored exited agent")
+	}
+}
+
+func TestRestoredAgentWithReattachedTmuxRetainsState(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.RecordAgent(runtimestore.AgentSummary{
+		ID:                "agent_tmux",
+		Adapter:           "omp",
+		TerminalSessionID: "term-tmux-1",
+		CWD:               "/workspace",
+		Capabilities:      []byte("[]"),
+		State:             "working",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Terminal session successfully reattached and is running
+	termMgr := newMockTermMgr()
+	termMgr.sessions["term-tmux-1"] = &protocol.SessionSummary{
+		ID:        "term-tmux-1",
+		Name:      "tmux Terminal",
+		Command:   "omp",
+		CWD:       "/workspace",
+		State:     "running",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.GetAgent("agent_tmux")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+	if agent.State != "working" {
+		t.Fatalf("agent.State = %q, want %q", agent.State, "working")
+	}
+}
+
+func TestRestoredAgentWithMissingTerminalBecomesExited(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.RecordAgent(runtimestore.AgentSummary{
+		ID:                "agent_orphaned",
+		Adapter:           "omp",
+		TerminalSessionID: "term-missing",
+		CWD:               "/workspace",
+		Capabilities:      []byte("[]"),
+		State:             "idle",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+
+	termMgr := newMockTermMgr() // term-missing is not present
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.GetAgent("agent_orphaned")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+	if agent.State != "exited" {
+		t.Fatalf("agent.State = %q, want %q", agent.State, "exited")
 	}
 }

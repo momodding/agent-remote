@@ -39,6 +39,10 @@ type terminalTTYProvider interface {
 	TerminalTTY(id string) string
 }
 
+type terminalLister interface {
+	List(ctx context.Context) []protocol.SessionSummary
+}
+
 type AgentSubscriber struct {
 	fn func(protocol.AgentEvent)
 }
@@ -117,12 +121,40 @@ func (s *Service) restorePersisted() {
 			a.ID = newID
 			inst.meta.ID = newID
 		}
-		s.watchTerminal(inst)
+		if !s.isTerminalRunning(a.TerminalSessionID, snap) {
+			if inst.meta.State != "exited" {
+				inst.meta.State = "exited"
+				inst.meta.UpdatedAt = time.Now().UTC()
+				s.recordAgentSummary(inst, "agent.updated")
+				s.emitState(inst)
+			}
+		} else {
+			s.watchTerminal(inst)
+		}
 		go s.pollTranscript(inst)
-
 		s.agents[a.ID] = inst
 		s.byTerminal[a.TerminalSessionID] = a.ID
 	}
+}
+
+func (s *Service) isTerminalRunning(terminalID string, snap *runtimestore.Snapshot) bool {
+	// ponytail: lister checked first, fallback to store snapshot
+	if lister, ok := s.termMgr.(terminalLister); ok {
+		for _, term := range lister.List(context.Background()) {
+			if term.ID == terminalID {
+				return term.State == "running"
+			}
+		}
+		return false
+	}
+	if snap != nil {
+		for _, term := range snap.Terminals {
+			if term.ID == terminalID {
+				return !term.Exited
+			}
+		}
+	}
+	return true
 }
 
 // CreateAgent starts an OMP-backed terminal runtime and returns an AgentSession.
