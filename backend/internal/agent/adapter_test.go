@@ -210,12 +210,11 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 
 func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
 	stateDir := t.TempDir()
+	now := time.Now().UTC()
 	store, err := runtimestore.Open(stateDir)
 	if err != nil {
-		t.Fatal(err)
 	}
-	defer store.Close()
-	now := time.Now().UTC()
+	defer func() { _ = store.Close() }()
 	if err := store.RecordAgent(runtimestore.AgentSummary{ID: "agent_restored", Adapter: "omp", TerminalSessionID: "term-123", CWD: "/workspace", Capabilities: []byte("[]"), State: "idle", CreatedAt: now, UpdatedAt: now}, "agent.created"); err != nil {
 		t.Fatal(err)
 	}

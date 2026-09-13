@@ -323,6 +323,10 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 			fn(events[i])
 		}
 	}
+	// Persist tailer state only after all semantic events recorded to store.
+	if len(events) > 0 && tailer != nil {
+		_ = tailer.SaveState()
+	}
 
 	if stateChanged {
 		s.recordAgentSummary(inst, "agent.updated")
@@ -428,5 +432,6 @@ func (s *Service) Close() error {
 			stop()
 		}
 	}
+	time.Sleep(30 * time.Millisecond)
 	return nil
 }

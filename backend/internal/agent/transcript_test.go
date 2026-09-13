@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
 
 func TestTranscriptTailerReadsCompleteAppendsOnce(t *testing.T) {
@@ -72,5 +74,46 @@ func TestTranscriptTailerResetsAfterTruncateAndReplacement(t *testing.T) {
 	}
 	if events, err := tailer.Read(); err != nil || len(events) != 1 || events[0].EventID != "replacement:assistant" {
 		t.Fatalf("replacement events = %+v, %v", events, err)
+	}
+}
+
+func TestTranscriptStateNotAdvancedUntilEventsRecorded(t *testing.T) {
+	// Regression: offset saved BEFORE events persisted to store = events lost on restart
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	stateDir := t.TempDir()
+	if err := os.WriteFile(path, []byte(`{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	agentID := "agent_test_1"
+	tailer := NewTranscriptTailer(agentID, path, store)
+
+	// First read parses event and advances offset in-memory
+	events, err := tailer.Read()
+	if err != nil || len(events) != 1 {
+		t.Fatalf("first read: events=%d, err=%v", len(events), err)
+	}
+
+	// Simulate: events would be recorded to store here
+	// Then SaveState is called AFTER all events recorded
+	if err := tailer.SaveState(); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	// Load state back: verify offset persisted
+	tailer2 := NewTranscriptTailer(agentID, path, store)
+	if err := tailer2.RestoreState(); err != nil {
+		t.Fatalf("restore state: %v", err)
+	}
+
+	// Second read should return 0 events (offset was advanced)
+	events2, err := tailer2.Read()
+	if err != nil || len(events2) != 0 {
+		t.Fatalf("second read after restore: events=%d (expected 0), err=%v", len(events2), err)
 	}
 }

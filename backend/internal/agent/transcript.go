@@ -89,6 +89,7 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		return nil, err
 	}
 
+	oldPendingLen := int64(len(t.pending))
 	data = append(t.pending, data...)
 	lastNewline := bytes.LastIndexByte(data, '\n')
 	if lastNewline < 0 {
@@ -96,8 +97,8 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		return nil, nil
 	}
 	lines := bytes.Split(data[:lastNewline], []byte("\n"))
+	t.offset += int64(len(data)) - oldPendingLen
 	t.pending = append(t.pending[:0], data[lastNewline+1:]...)
-
 	events := make([]protocol.AgentEvent, 0, len(lines))
 	for _, line := range lines {
 		entry := transcriptEntry{}
@@ -114,15 +115,17 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		events = append(events, entry.events(t.agentID)...)
 	}
 
-	pos, _ := file.Seek(0, io.SeekCurrent)
-	t.offset = pos
-
-	// Persist state after successful read
-	if t.store != nil {
-		_ = t.store.SaveTranscriptState(t.agentID, t.path, t.offset, t.lastInode, t.lastSize, t.lastMtime)
-	}
-
+	// ponytail: offset persisted by caller after all semantic events recorded.
 	return events, nil
+}
+
+// SaveState persists current offset and file state to durable storage.
+// Called after all semantic events from this read have been recorded to the store.
+func (t *TranscriptTailer) SaveState() error {
+	if t.store == nil {
+		return nil
+	}
+	return t.store.SaveTranscriptState(t.agentID, t.path, t.offset, t.lastInode, t.lastSize, t.lastMtime)
 }
 
 type transcriptEntry struct {

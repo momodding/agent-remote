@@ -90,50 +90,54 @@ export default function AgentScreen() {
 
   // Subscribe to Agent Runtime Events
   useEffect(() => {
-    if (!tab || !connection || !runtimeChannelRef.current) return;
-    const runtime = runtimeChannelRef.current;
-    let active = true;
+    if (!tab?.agentSessionId || !runtime) return;
+    const active = true;
+    const currentAgentChannelIdRef = { current: null as string | null };
 
-	void runtime.openAgentChannel(tab.agentSessionId, 0, (event: AgentEvent) => {
-		if (!active) return;
-		if (event.state) {
-			dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
-		}
-		setMessages((prev) => {
-			const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
-			if (prev.some((item) => item.id === id)) return prev;
-			const item: MessageItem = {
-				id,
-				type: event.type,
-				text: event.text,
-				toolName: event.toolName,
-				toolInput: event.toolInput,
-				toolOutput: event.toolOutput,
-				state: event.state,
-				cursor: event.cursor,
-			};
-			return [...prev, item];
-		});
-	}).then(({ channelId }) => {
-		if (!active) {
-			runtime.closeChannel(channelId);
-			return;
-		}
-		currentAgentChannelIdRef.current = channelId;
-	}).catch((err) => {
+    const handleCursorExpired = async () => {
+      // Fetch fresh snapshot; use its global cursor to resume from fresh point
+      const snapshot = await api!.runtimeSnapshot();
+      return snapshot.cursor;
+    };
+
+    void runtime.openAgentChannel(tab.agentSessionId, 0, (event: AgentEvent) => {
+      if (!active) return;
+      if (event.state) {
+        dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
+      }
+      setMessages((prev) => {
+        const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
+
+        const item: MessageItem = {
+          id,
+          type: event.type,
+          text: event.text,
+          toolName: event.toolName,
+          toolInput: event.toolInput,
+          toolOutput: event.toolOutput,
+          state: event.state,
+          cursor: event.cursor,
+        };
+        return [...prev, item];
+      });
+    }, handleCursorExpired).then(({ channelId }) => {
+      if (!active) {
+        runtime.closeChannel(channelId);
+        return;
+      }
+      currentAgentChannelIdRef.current = channelId;
+    }).catch((err) => {
       if (active) {
         console.error('Failed to open agent channel:', err);
       }
     });
 
     return () => {
-      active = false;
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
-        currentAgentChannelIdRef.current = null;
       }
     };
-  }, [tab?.agentSessionId, connection]);
+  }, [tab?.agentSessionId, connection, runtime, api, dispatch, tab?.tabId]);
 
   // Subscribe to underlying Terminal PTY stream
   useEffect(() => {
