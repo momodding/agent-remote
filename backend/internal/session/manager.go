@@ -50,6 +50,7 @@ type CreateRequest struct {
 	CWD     string
 	Cols    int
 	Rows    int
+	Backend string
 }
 
 type subscriber struct {
@@ -181,15 +182,26 @@ func (m *Manager) ReconcileTmux(ctx context.Context) error {
 		if err != nil {
 			continue // pane no longer present; terminal stays exited
 		}
+		var baseline []byte
+		if tb, ok := any(backend).(interface{ TakeBaseline() []byte }); ok {
+			baseline = tb.TakeBaseline()
+		}
 		m.mu.Lock()
 		runtime.backend = backend
 		runtime.meta.State = StateRunning
 		runtime.meta.UpdatedAt = time.Now().UTC()
+		runtime.seq++
+		trimmed := truncateFront(baseline, m.maxScrollbackBytes)
+		_ = os.WriteFile(runtime.scrollback, trimmed, 0o644)
+		runtime.plain = trimPreview(detect.StripANSI(string(trimmed)))
+		runtime.meta.Preview = previewLines(runtime.plain)
 		runtime.outbound = make(chan outboundMessage, m.channelBufferSize)
 		runtime.exitOnce = sync.Once{}
 		m.forwardWorkers.Add(1)
 		m.outputWorkers.Add(1)
 		m.mu.Unlock()
+		m.emitState(runtime)
+		_ = m.recordRuntime(runtime, "terminal.updated")
 		go func(r *TerminalRuntime) { defer m.forwardWorkers.Done(); m.forward(r) }(runtime)
 		go func(r *TerminalRuntime) {
 			defer m.outputWorkers.Done()
@@ -221,16 +233,34 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 		rows = 24
 	}
 	var backend TerminalBackend
-	if m.useTmux && m.tmuxClient != nil {
-		backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
-	} else {
+	switch req.Backend {
+	case "", "auto":
+		if m.useTmux && m.tmuxClient != nil {
+			backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
+		} else {
+			cmd := exec.Command(command, req.Args...)
+			cmd.Dir = cwd
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			backend, err = newPtyBackend(cmd, cols, rows)
+		}
+	case "pty", "direct":
 		cmd := exec.Command(command, req.Args...)
 		cmd.Dir = cwd
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		backend, err = newPtyBackend(cmd, cols, rows)
+	case "tmux":
+		if m.tmuxClient == nil {
+			return nil, errors.New("tmux backend requested but unavailable")
+		}
+		backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
+	default:
+		return nil, fmt.Errorf("invalid terminal backend %q (must be auto, pty, or tmux)", req.Backend)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if tb, ok := any(backend).(interface{ TakeBaseline() []byte }); ok {
+		_ = tb.TakeBaseline()
 	}
 	now := time.Now().UTC()
 	runtime := &TerminalRuntime{

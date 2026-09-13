@@ -393,3 +393,31 @@ func TestBackendReadEmptyBufferReturnsImmediately(t *testing.T) {
 		t.Fatal("zero-length Read blocked")
 	}
 }
+
+func TestBackendTakeBaselineDrainsBaseline(t *testing.T) {
+	client := NewControlClient("/tmp/test", "tmux")
+	backend := NewTmuxBackend(client, "%0", "$0", "@0")
+	ch := make(chan paneOutput, 1)
+	err := backend.Subscribe(ch, []byte("baseline-data"), []byte("pending-data"))
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	if got := string(backend.Baseline()); got != "baseline-data" {
+		t.Fatalf("Baseline() = %q, want %q", got, "baseline-data")
+	}
+	taken := backend.TakeBaseline()
+	if string(taken) != "baseline-data" {
+		t.Fatalf("TakeBaseline() = %q, want %q", string(taken), "baseline-data")
+	}
+	if got := backend.Baseline(); len(got) != 0 {
+		t.Fatalf("after TakeBaseline, Baseline() = %q, want empty", string(got))
+	}
+	buf := make([]byte, 64)
+	n, err := backend.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if string(buf[:n]) != "pending-data" {
+		t.Fatalf("Read() = %q, want %q", string(buf[:n]), "pending-data")
+	}
+}

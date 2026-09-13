@@ -435,3 +435,222 @@ func TestRecordOutputDoesNotPersistEveryChunk(t *testing.T) {
 		t.Fatalf("output chunks persisted metadata: %v", err)
 	}
 }
+
+func TestManagerCreateBackendPreference(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	manager, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	// Invalid backend returns an error
+	_, err = manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "invalid",
+		Command: "sh",
+		Args:    []string{"-c", "true"},
+		Backend: "unknown-backend",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid backend, got nil")
+	}
+
+	// Explicit tmux backend when tmux is unavailable returns an error
+	_, err = manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "tmux-unavail",
+		Command: "sh",
+		Args:    []string{"-c", "true"},
+		Backend: "tmux",
+	})
+	if err == nil {
+		t.Fatal("expected error for tmux backend when unavailable, got nil")
+	}
+
+	// Explicit pty backend creates direct PTY
+	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "pty-session",
+		Command: "sh",
+		Args:    []string{"-c", "sleep 10"},
+		Backend: "pty",
+	})
+	if err != nil {
+		t.Fatalf("Create with Backend=pty failed: %v", err)
+	}
+	defer manager.Close(summary.ID)
+
+	manager.mu.Lock()
+	rt := manager.sessions[summary.ID]
+	manager.mu.Unlock()
+	if _, ok := rt.backend.(*PtyBackend); !ok {
+		t.Fatalf("expected *PtyBackend, got %T", rt.backend)
+	}
+}
+
+func TestManagerCreatePtyPreferenceWithTmuxEnabled(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found in PATH")
+	}
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	tmuxStateDir := filepath.Join(stateDir, "tmux")
+	manager, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	client := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	manager.SetTmux(client)
+
+	// Requesting pty explicitly must create PtyBackend even though tmux is active
+	ptySummary, err := manager.Create(ctx, protocol.CreateSessionRequest{
+		Name:    "explicit-pty",
+		Command: "sh",
+		Args:    []string{"-c", "sleep 10"},
+		Backend: "pty",
+	})
+	if err != nil {
+		t.Fatalf("create explicit pty failed: %v", err)
+	}
+	defer manager.Close(ptySummary.ID)
+
+	manager.mu.Lock()
+	ptyRt := manager.sessions[ptySummary.ID]
+	manager.mu.Unlock()
+	if _, ok := ptyRt.backend.(*PtyBackend); !ok {
+		t.Fatalf("expected *PtyBackend for explicit pty request, got %T", ptyRt.backend)
+	}
+
+	// Requesting default or auto uses tmux
+	tmuxSummary, err := manager.Create(ctx, protocol.CreateSessionRequest{
+		Name:    "default-tmux",
+		Command: "sh",
+		Args:    []string{"-c", "sleep 10"},
+		Backend: "auto",
+	})
+	if err != nil {
+		t.Fatalf("create default tmux failed: %v", err)
+	}
+	defer manager.Close(tmuxSummary.ID)
+
+	manager.mu.Lock()
+	tmuxRt := manager.sessions[tmuxSummary.ID]
+	manager.mu.Unlock()
+	if _, ok := tmuxRt.backend.(*tmux.TmuxBackend); !ok {
+		t.Fatalf("expected *TmuxBackend for auto request, got %T", tmuxRt.backend)
+	}
+}
+
+func TestManagerReconcileTmuxPersistsAndEmitsRunningStateAndReplacesScrollback(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found in PATH")
+	}
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	tmuxStateDir := filepath.Join(stateDir, "tmux")
+	manager1, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client1 := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client1.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager1.SetTmux(client1)
+	summary, err := manager1.Create(ctx, protocol.CreateSessionRequest{
+		Name:    "reconcile-state-test",
+		Command: "sh",
+		Args:    []string{"-c", "printf 'fresh-pane-output'; sleep 100"},
+	})
+	if err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+
+	// Write fake stale data to the scrollback file on disk to simulate old scrollback before restart
+	scrollbackPath := filepath.Join(stateDir, "sessions", summary.ID+".scrollback")
+	if err := os.WriteFile(scrollbackPath, []byte("stale-old-scrollback-content-that-should-be-replaced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Close control client without killing tmux server
+	if err := client1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	manager2, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager2.Shutdown()
+
+	// Before ReconcileTmux, the session in manager2 is StateExited (from restore)
+	manager2.mu.Lock()
+	restoredBefore := manager2.sessions[summary.ID]
+	manager2.mu.Unlock()
+	if restoredBefore.meta.State != StateExited {
+		t.Fatalf("expected StateExited before reconcile, got %s", restoredBefore.meta.State)
+	}
+
+	client2 := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	if err := client2.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager2.SetTmux(client2)
+
+	if err := manager2.ReconcileTmux(ctx); err != nil {
+		t.Fatalf("ReconcileTmux failed: %v", err)
+	}
+
+	// Verify in-memory state is running
+	manager2.mu.Lock()
+	restoredAfter := manager2.sessions[summary.ID]
+	seqAfter := restoredAfter.seq
+	manager2.mu.Unlock()
+	if restoredAfter.meta.State != StateRunning {
+		t.Fatalf("expected StateRunning after reconcile, got %s", restoredAfter.meta.State)
+	}
+	if seqAfter == 0 {
+		t.Fatal("expected seq > 0 after reattach")
+	}
+
+	// Verify runtime store snapshot shows terminal is NOT exited
+	snapshot, err := manager2.RuntimeSnapshot()
+	if err != nil {
+		t.Fatalf("RuntimeSnapshot failed: %v", err)
+	}
+	foundRunningInSnapshot := false
+	for _, term := range snapshot.Terminals {
+		if term.ID == summary.ID {
+			if term.Exited {
+				t.Fatal("terminal marked exited in SQLite snapshot after reattach")
+			}
+			foundRunningInSnapshot = true
+		}
+	}
+	if !foundRunningInSnapshot {
+		t.Fatalf("session %s not found in SQLite snapshot", summary.ID)
+	}
+
+	// Verify scrollback file was REPLACED with capture baseline, not appended to stale old content
+	scrollbackData, err := os.ReadFile(scrollbackPath)
+	if err != nil {
+		t.Fatalf("read scrollback failed: %v", err)
+	}
+	if strings.Contains(string(scrollbackData), "stale-old-scrollback-content-that-should-be-replaced") {
+		t.Fatalf("scrollback still contains stale data; capture baseline did not replace old scrollback: %q", string(scrollbackData))
+	}
+	if !strings.Contains(string(scrollbackData), "fresh-pane-output") {
+		t.Fatalf("scrollback does not contain fresh-pane-output: %q", string(scrollbackData))
+	}
+}

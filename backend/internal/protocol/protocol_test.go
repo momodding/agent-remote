@@ -22,3 +22,26 @@ func TestAgentControlEnvelopesUseWireFieldNames(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateSessionRequestBackendField(t *testing.T) {
+	req := CreateSessionRequest{
+		Name:    "test",
+		Command: "sh",
+		Args:    []string{"-c", "echo hi"},
+		CWD:     "/home",
+		Cols:    80,
+		Rows:    24,
+		Backend: "pty",
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded CreateSessionRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Backend != "pty" {
+		t.Fatalf("expected backend %q, got %q", "pty", decoded.Backend)
+	}
+}

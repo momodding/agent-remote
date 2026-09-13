@@ -17,7 +17,8 @@ type TmuxBackend struct {
 	closed     bool
 	outputCh   <-chan paneOutput // subscribed before baseline capture
 	done       chan struct{}
-	copyBuffer []byte // baseline + live output buffered for Read caller
+	baseline   []byte
+	copyBuffer []byte // pending + live output buffered for Read caller
 }
 
 // NewTmuxBackend creates backend for a pane without subscribing.
@@ -47,9 +48,26 @@ func (b *TmuxBackend) Subscribe(ch <-chan paneOutput, baseline, pending []byte) 
 	if b.outputCh != nil {
 		return fmt.Errorf("backend already subscribed")
 	}
-	b.copyBuffer = append(baseline, pending...)
+	b.baseline = append([]byte(nil), baseline...)
+	b.copyBuffer = append([]byte(nil), pending...)
 	b.outputCh = ch
 	return nil
+}
+
+// Baseline returns the captured baseline output from the pane capture.
+func (b *TmuxBackend) Baseline() []byte {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return append([]byte(nil), b.baseline...)
+}
+
+// TakeBaseline returns and clears the captured baseline output.
+func (b *TmuxBackend) TakeBaseline() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	base := b.baseline
+	b.baseline = nil
+	return base
 }
 
 // Read implements io.Reader and preserves chunks larger than the caller buffer.
@@ -61,6 +79,12 @@ func (b *TmuxBackend) Read(p []byte) (int, error) {
 	if b.closed {
 		b.mu.Unlock()
 		return 0, fmt.Errorf("backend closed")
+	}
+	if len(b.baseline) > 0 {
+		n := copy(p, b.baseline)
+		b.baseline = b.baseline[n:]
+		b.mu.Unlock()
+		return n, nil
 	}
 	if len(b.copyBuffer) > 0 {
 		n := copy(p, b.copyBuffer)

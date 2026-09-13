@@ -151,6 +151,7 @@ type CreateSessionRequest struct {
 	CWD     string   `json:"cwd"`
 	Cols    int      `json:"cols"`
 	Rows    int      `json:"rows"`
+	Backend string   `json:"backend,omitempty"`
 }
 
 type ResizeSessionRequest struct {

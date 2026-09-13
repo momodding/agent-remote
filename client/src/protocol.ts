@@ -115,6 +115,7 @@ export type CreateSessionRequest = {
   cwd: string;
   cols: number;
   rows: number;
+  backend?: string;
 };
 
 export type FileEntry = {
