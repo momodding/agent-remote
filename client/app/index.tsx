@@ -241,18 +241,24 @@ export default function TabDeckScreen() {
                 <Text style={styles.daemonSectionSub}>{new URL(connection.endpoint).host}</Text>
                 
                 <View style={styles.daemonToolbar}>
-                  <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
-                    <Feather name="terminal" size={16} color="#F0F0F0" />
-                  </Pressable>
-                  <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
-                    <Feather name="cpu" size={16} color="#F0F0F0" />
-                  </Pressable>
+                  {(runtime?.capabilities?.some((c) => (c.name === 'terminal.pty' || c.name === 'terminal.tmux') && c.enabled) ?? true) && (
+                    <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
+                      <Feather name="terminal" size={16} color="#F0F0F0" />
+                    </Pressable>
+                  )}
+                  {(runtime?.capabilities?.some((c) => c.name === 'agent.omp' && c.enabled) ?? true) && (
+                    <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
+                      <Feather name="cpu" size={16} color="#F0F0F0" />
+                    </Pressable>
+                  )}
                   <Pressable accessibilityLabel={`New Files ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
                     <Feather name="folder" size={16} color="#F0F0F0" />
                   </Pressable>
-                  <Pressable accessibilityLabel={`New Desktop ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
-                    <Feather name="monitor" size={16} color="#F0F0F0" />
-                  </Pressable>
+                  {(runtime?.capabilities?.some((c) => c.name === 'vnc' && c.enabled) ?? true) && (
+                    <Pressable accessibilityLabel={`New Desktop ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
+                      <Feather name="monitor" size={16} color="#F0F0F0" />
+                    </Pressable>
+                  )}
                 </View>
               </View>
 

@@ -27,6 +27,7 @@ const mockSaveConnection = jest.fn();
 const mockUpdateConnection = jest.fn();
 const mockDeleteConnection = jest.fn();
 const mockAuthenticatePairing = jest.fn();
+const mockReconcileDaemon = jest.fn();
 
 type MockPairingSheetProps = {
   visible: boolean;
@@ -73,6 +74,9 @@ jest.mock('./lib/daemon-channel', () => ({
 jest.mock('./lib/runtime-channel', () => ({
   disposeRuntimeChannel: jest.fn(),
 }));
+jest.mock('./lib/runtime-reconcile', () => ({
+  reconcileDaemon: (...args: unknown[]) => mockReconcileDaemon(...args),
+}));
 
 jest.mock('./lib/connection', () => ({
   loadConnections: (...args: unknown[]) => mockLoadConnections(...args),
@@ -91,7 +95,7 @@ jest.mock('./lib/api', () => {
     }
   }
   return {
-    AgenticRemoteAPI: function AgenticRemoteAPI(connection: Connection) { return {}; },
+    AgenticRemoteAPI: jest.fn(function AgenticRemoteAPI(_connection: Connection) { return {}; }),
     APIError,
     authenticatePairing: (...args: unknown[]) => mockAuthenticatePairing(...args),
   };
@@ -141,6 +145,7 @@ beforeEach(() => {
     token: 'renewed-token',
     clientName: 'renewed-client',
   } satisfies PairedConnection);
+  mockReconcileDaemon.mockResolvedValue(() => {});
 });
 
 afterEach(() => {
@@ -259,6 +264,35 @@ describe('dashboard tab deck actions', () => {
     
     expect(mockActivateTab).toHaveBeenCalledWith('tab-2');
     expect(router.push).toHaveBeenCalledWith({ pathname: '/desktop', params: { tabId: 'tab-2' } });
+
+    act(() => tree.unmount());
+  });
+});
+
+describe('dashboard capability gating', () => {
+  it('hides New Agent and New Desktop when the daemon reports those capabilities disabled', async () => {
+    mockReconcileDaemon.mockImplementationOnce((_connection: Connection, update: (runtime: { snapshot: { cursor: number; terminals: never[]; agents: never[]; topology: never[]; desktops: never[] }; capabilities: Array<{ name: string; enabled: boolean }>; status: 'ready' }) => void) => {
+      update({
+        snapshot: { cursor: 0, terminals: [], agents: [], topology: [], desktops: [] },
+        capabilities: [
+          { name: 'sessions', enabled: true },
+          { name: 'files', enabled: true },
+          { name: 'terminal.pty', enabled: true },
+          { name: 'terminal.tmux', enabled: false },
+          { name: 'agent.omp', enabled: false },
+          { name: 'vnc', enabled: false },
+        ],
+        status: 'ready',
+      });
+      return Promise.resolve(() => {});
+    });
+
+    const tree = await renderDashboard();
+    await act(async () => { await flush(); });
+
+    expect(() => tree.root.findByProps({ accessibilityLabel: `New Agent ${first.endpoint}` })).toThrow();
+    expect(() => tree.root.findByProps({ accessibilityLabel: `New Desktop ${first.endpoint}` })).toThrow();
+    expect(tree.root.findByProps({ accessibilityLabel: `New Terminal ${first.endpoint}` })).toBeTruthy();
 
     act(() => tree.unmount());
   });

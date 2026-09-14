@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -476,8 +477,25 @@ func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
 	if result.Identity.HostID != srv.tls.Fingerprint || result.Identity.ConnectionID != srv.tls.Fingerprint {
 		t.Fatalf("unexpected identity: %#v", result.Identity)
 	}
-	if len(result.Capabilities) != 3 || result.Capabilities[0].Name != "sessions" || !result.Capabilities[0].Enabled || result.Capabilities[1].Name != "files" || !result.Capabilities[1].Enabled || result.Capabilities[2].Name != "vnc" {
-		t.Fatalf("unexpected capabilities: %#v", result.Capabilities)
+	byName := make(map[string]bool, len(result.Capabilities))
+	for _, cap := range result.Capabilities {
+		byName[cap.Name] = cap.Enabled
+	}
+	if len(result.Capabilities) != 6 {
+		t.Fatalf("unexpected capability count: %#v", result.Capabilities)
+	}
+	if !byName["sessions"] || !byName["files"] || !byName["terminal.pty"] {
+		t.Fatalf("expected sessions/files/terminal.pty enabled: %#v", result.Capabilities)
+	}
+	if enabled, ok := byName["terminal.tmux"]; !ok || enabled {
+		t.Fatalf("expected terminal.tmux disabled without a wired tmux client: %#v", result.Capabilities)
+	}
+	_, wantOMPErr := exec.LookPath("omp")
+	if enabled, ok := byName["agent.omp"]; !ok || enabled != (wantOMPErr == nil) {
+		t.Fatalf("expected agent.omp to reflect exec.LookPath: %#v", result.Capabilities)
+	}
+	if _, ok := byName["vnc"]; !ok {
+		t.Fatalf("expected vnc capability present: %#v", result.Capabilities)
 	}
 }
 

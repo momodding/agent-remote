@@ -54,7 +54,7 @@ Required tests: request selection and unavailable tmux behavior.
 
 ## RAR-008 — Daemon capability discovery incomplete
 Severity: P1
-Status: TODO
+Status: DONE — `/v1/daemon/identity` now returns `sessions`, `files`, `terminal.pty`, `terminal.tmux`, `agent.omp`, and `vnc`. `agent.omp` is cached from daemon-start `exec.LookPath`; `terminal.tmux` derives from the live private control client; direct PTY is always available. `TestDaemonIdentityRequiresBearerAndReturnsCapabilities` verifies auth and exact capability truth; `TestManagerTmuxAvailable` verifies false before wiring tmux and true only after a live control client starts. Client reconciliation retains daemon capabilities and the dashboard hides unavailable Terminal, Agent, and Desktop creation actions; `dashboard-route.test.tsx` verifies disabled Agent/Desktop actions are absent.
 Source: external-code-review
 Plan requirement: advertise actual sessions/files/PTY/tmux/OMP/VNC availability; client hides unavailable actions.
 Required tests: command availability and client behavior coverage.

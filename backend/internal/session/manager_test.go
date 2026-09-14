@@ -654,3 +654,33 @@ func TestManagerReconcileTmuxPersistsAndEmitsRunningStateAndReplacesScrollback(t
 		t.Fatalf("scrollback does not contain fresh-pane-output: %q", string(scrollbackData))
 	}
 }
+
+func TestManagerTmuxAvailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewManager(tmpDir, filepath.Join(tmpDir, "state"), tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	if manager.TmuxAvailable() {
+		t.Fatal("expected TmuxAvailable false before SetTmux")
+	}
+
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found in PATH")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := tmux.NewControlClient(filepath.Join(tmpDir, "state", "tmux"), tmuxPath)
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	manager.SetTmux(client)
+
+	if !manager.TmuxAvailable() {
+		t.Fatal("expected TmuxAvailable true after SetTmux with a live control client")
+	}
+}

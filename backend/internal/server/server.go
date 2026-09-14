@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -70,6 +71,10 @@ type NotifyAPI interface {
 	RegisterToken(context.Context, protocol.NotifyRegisterRequest) error
 }
 
+type tmuxAvailabilityProvider interface {
+	TmuxAvailable() bool
+}
+
 type Server struct {
 	cfg             config.Config
 	fs              *fsservice.Service
@@ -81,6 +86,7 @@ type Server struct {
 	limits          *Limits
 	tls             *security.TLSMaterial
 	pairingSnapshot *security.PairingSnapshot
+	ompAvailable    bool
 }
 
 func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, notify NotifyAPI, pairingSnapshot *security.PairingSnapshot) (*Server, error) {
@@ -92,7 +98,8 @@ func NewWithAgents(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *s
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
+	_, ompErr := exec.LookPath("omp")
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot, ompAvailable: ompErr == nil}, nil
 }
 
 func runtimeAPI(sessions SessionAPI) RuntimeAPI {
@@ -236,12 +243,19 @@ func (s *Server) handleDaemonIdentity(w http.ResponseWriter, _ *http.Request) {
 	if err == nil {
 		_ = conn.Close()
 	}
+	tmuxAvailable := false
+	if provider, ok := s.sessions.(tmuxAvailabilityProvider); ok {
+		tmuxAvailable = provider.TmuxAvailable()
+	}
 	identity := protocol.HostIdentity{HostID: s.tls.Fingerprint, ConnectionID: s.tls.Fingerprint}
 	writeJSON(w, http.StatusOK, protocol.DaemonCapabilities{
 		Identity: identity,
 		Capabilities: []protocol.Capability{
 			{Name: "sessions", Enabled: true},
 			{Name: "files", Enabled: true},
+			{Name: "terminal.pty", Enabled: true},
+			{Name: "terminal.tmux", Enabled: tmuxAvailable},
+			{Name: "agent.omp", Enabled: s.ompAvailable},
 			{Name: "vnc", Enabled: err == nil},
 		},
 	})

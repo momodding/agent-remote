@@ -1,10 +1,11 @@
-import type { AgentEvent, RuntimeLifecycleEvent, RuntimeSnapshot } from '../protocol';
+import type { AgentEvent, Capability, RuntimeLifecycleEvent, RuntimeSnapshot } from '../protocol';
 import { AgenticRemoteAPI } from './api';
 import type { Connection } from './connection';
 import { createRuntimeChannel } from './runtime-channel';
 
 export type DaemonRuntime = {
 	snapshot?: RuntimeSnapshot;
+	capabilities?: Capability[];
 	status: 'ready' | 'error';
 	error?: string;
 }
@@ -38,15 +39,16 @@ export async function reconcileDaemon(connection: Connection, update: (runtime: 
   const api = new AgenticRemoteAPI(connection);
   let snapshot = await api.runtimeSnapshot();
   let active = true;
-  update({ snapshot, status: 'ready' });
+  const capabilities = await api.capabilities().then((info) => info.capabilities).catch(() => undefined);
+  if (active) update({ snapshot, capabilities, status: 'ready' });
   const channel = createRuntimeChannel(connection);
   const { channelId } = await channel.openRuntimeChannel(snapshot.cursor, (event) => {
     if (!active) return;
     snapshot = applyRuntimeEvent(snapshot, event, event.cursor ?? snapshot.cursor);
-    update({ snapshot, status: 'ready' });
+    update({ snapshot, capabilities, status: 'ready' });
   }, async () => {
     snapshot = await api.runtimeSnapshot();
-    if (active) update({ snapshot, status: 'ready' });
+    if (active) update({ snapshot, capabilities, status: 'ready' });
     return snapshot.cursor;
   });
 

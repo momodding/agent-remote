@@ -104,6 +104,14 @@ func (m *Manager) RuntimeStore() *runtimestore.Store {
 	return m.runtime
 }
 
+// TmuxAvailable reports whether this manager currently routes "auto"
+// terminal/Agent creation through a live private tmux control client.
+func (m *Manager) TmuxAvailable() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tmuxClient != nil
+}
+
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err
