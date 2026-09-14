@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a3
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: IN_PROGRESS — installed OMP 18.1.15 supports explicit same-process extensions and semantic actions; bridge implementation and real-runtime proof remain required.
+Status: IN_PROGRESS — isolated installed OMP 18.1.15 noninteractive process loaded the explicit extension and authenticated a real Unix-socket hello with exact session ID/file on 2026-09-14; daemon-mediated command, disconnect/reconnect, and macOS proofs remain required.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
