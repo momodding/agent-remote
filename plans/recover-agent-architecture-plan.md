@@ -1,111 +1,119 @@
-# SUPERSEDED
+# Agent Chat and Multi-Agent Runtime Recovery Plan
+<!-- omp-source-branch: main -->
+<!-- omp-work-branch: omp/recover-agent-architecture-plan -->
 
-> Superseded by [the approved recovery architecture](recover-agent-architecture.md). Do not use this historical plan for implementation decisions.
-
-# Agent Architecture Recovery Plan
 
 ## Context
-The recent full-gap remediation work removed the "unimplemented" Agent Chat functionality, removing `agent` from `TabKind` and deleting associated dashboard routes and components. This violated a core product invariant: Agent Chat MUST exist as a first-class session type. The old implementation was mock-driven and decoupled from the Go daemon's PTY.
+Unblock the implemented Phase 1–4 recovery on current `main` before any Phase 5 work. Starting HEAD is `b3d1abeffc84f89f3983a30210a9a2e7ba2d5f86`; the working tree was clean when inspected. Reopen the semantic bridge conclusion, repair verified history/transcript/platform/reconnect/capability gaps, prove real OMP and tmux behavior, then repeat executor → verification → slow Oracle review until Oracle reports no current-scope P0/P1 gap.
 
-Our goal is to restore the Agent Chat as a real, backend-backed product feature while aligning the architecture to safely represent multiple remote session forms. We will implement AgentAdapter semantics using genuine daemon integration, map Chat and raw Terminal views to the exactly same underlying AgentSession/process to avoid duplication, integrate persistent tmux sessions without losing PTY functionality, ensure robust reconnect capability, and restore the UI elements (Tab deck integration, Agent Chat layout, Multi-Agent Dashboards) into the React Native mobile-first frontend.
-
-The primary initial slice will integrate natively with `omp` ("oh-my-pi").
-
-## Target Architecture
-
-1.  **Frontend**:
-    -   `TerminalWorkspaceTab` remains. `AgentWorkspaceTab` is restored logic, storing an `agentId` (e.g., `"omp"`), and `terminalSessionId` representing the shared execution context.
-    -   Agent Chat view processes semantic UI (turn history, tools, approvals) streamed from the backend while mapping standard input safely.
-    -   Raw terminal view displays the same process output natively.
-2.  **Backend Runtime Model (Go)**:
-    -   `TerminalRuntime`: Abstraction encompassing process lifecycle and output buffering. Backed either by direct PTY (existing) or tmux Control Mode (`tmux -C`).
-    -   `AgentRuntime`: Higher-level orchestration. Spawns/attaches to a `TerminalRuntime`, inspects output through a configured `AgentAdapter`, and drives dual channels: raw PTY output (for the terminal view) and semantic event stream (for the agent chat view).
-3.  **Daemon Discovery**: Capabilities endpoint `GET /v1/daemon/identity` widened to report supported agents (e.g., `agent.omp`, `agent.claude`, `terminal.tmux`, `terminal.pty`).
-
-## Setup & E2E Validation Guidelines
--   Never delete features merely to placate mock tests.
--   All new views and capabilities assume mobile-first responsiveness.
--   Mocks acceptable for Jest, but actual execution must utilize `run-client-web`, `make run-daemon`, and direct tests without simulated daemons.
+## Grounded findings
+- `plans/recover-agent-architecture.md` is authoritative; `plans/recover-agent-architecture-plan.md` is explicitly superseded. The remediation ledger is stale: RAR-004, RAR-007, RAR-011, and RAR-012 remain `TODO` despite current implementations/tests, while RAR-001 is incorrectly `DONE` because installed OMP 18.1.15 and current upstream expose same-process extension actions.
+- Installed tools are available: `omp/18.1.15`, tmux 3.4, Go 1.26.4, Bun 1.3.14, and npm 10.9.7. Current upstream and installed `@oh-my-pi/pi-coding-agent` expose `pi.sendUserMessage`, `pi.setModel`, `pi.setThinkingLevel`, handler-context `abort`, session/message/turn/tool lifecycle events, and exact `ctx.sessionManager.getSessionId()`/`getSessionFile()` access. CLI `--no-extensions` still loads explicit `-e/--extension` paths.
+- `backend/internal/agent/adapter.go:CreateAgent` currently launches plain `omp`, advertises transcript-only `chat=true`, and hard-disables prompt/abort with `needs_terminal`; no managed extension or IPC exists. Chat and Terminal already share `TerminalSessionID`, so retain that ownership and add the bridge inside the one existing TUI process.
+- `backend/internal/agent/transcript.go` only emits flat text from `type:"message"`; it drops assistant thinking/toolCall blocks, `toolResult`, bash/python execution, file mentions, displayed custom messages, and aborted empty assistant turns. OMP's installed v3 schema stores tool calls as assistant content blocks of type `toolCall` and results as separate `message.role:"toolResult"` entries; standalone `tool_use`/`tool_result` rows are not the current source of truth.
+- Transcript persistence is not atomic: `adapter.go:checkTranscript` calls `Store.RecordEvent` once per event, then independently calls `SaveTranscriptState`. A failure can replay already committed events under new runtime cursors. `runtime_events` has no stable-event uniqueness constraint. `MigrateAgentID` migrates `agent.*`, `message.*`, `tool.*`, and the obsolete exact kind `agent.state`, but canonical state is `state`; it also omits `transcript_state`.
+- `client/app/agent/[id].tsx` opens an Agent channel from zero and, on expiry, fetches only `runtimeSnapshot().cursor`; it does not replace Chat with durable history. Its reducer blindly appends and its fallback ID contains time/list length, so remount or resync can lose or duplicate semantic history.
+- `PtyBackend.TTY()` reads `/proc/<pid>/fd/0`, which is Linux-only. `github.com/creack/pty` v1.1.24 internally calls `pty.Open()` and has the slave `*os.File` before process start; capture `tty.Name()` there for Linux and Darwin rather than rediscovering it. `FindOnlySessionFile` already refuses ambiguous same-CWD fallback.
+- Session manager selection supports `auto|pty|tmux`, but both REST and runtime `agent.create` discard `CreateSessionRequest.Backend`; client `createAgent` excludes it. Daemon identity advertises only `sessions`, `files`, and a live VNC probe; Agent UI always renders composer and Abort regardless of Agent capabilities.
+- Raw session WebSockets have no reconnect loop. Initial `Manager.Subscribe` sends full bounded scrollback as an ordinary `pty.output`, indistinguishable from live output, so blind reconnect append duplicates the viewport. Use an explicit replacement baseline rather than inventing per-byte sequence retention.
+- tmux topology persists `ServerID()` as only the private socket path. A new tmux server at the same socket can reuse pane IDs and be mistaken for the old server. Real tmux recovery tests exist, but they do not prove generation replacement isolation.
 
 ## Approach
-### Phase 0: Baseline & Current Regression Audit
-We maintain the exact footprint from the recent regression sweep, validating that there are no broken imports or uncompilable paths currently, establishing zero-regression assumptions before moving into abstraction.
 
-### Phase 1: Terminal Runtime Foundation & PTY Backing
-Extract `Session.Manager` behavior directly into a dedicated orchestration system.
-1.  **TerminalBackend Interface**: Add generic terminal interface (`Start`, `Write`, `Resize`, `Close`) mapping byte output to channels.
-2.  **TerminalRuntime Orchestration**: Create `TerminalRuntime` above backends implementing standard lifecycle loops.
-3.  **Adapt Existing Manager**: Convert `manager.go` `pty.StartWithSize` invocations to utilize a newly abstracted `PtyBackend` conforming to the interface without breaking behavior.
-4.  **Verification**: Confirm existing tests for REST and WebSocket PTY shells still pass exactly as before. (No real agent restoration yet).
+### 1. Reconcile the durable ledger before code
+- Update `plans/recover-agent-architecture-remediation-todo.md` baseline to starting HEAD `b3d1abeffc84f89f3983a30210a9a2e7ba2d5f86`.
+- Reopen RAR-001 as `IN_PROGRESS`. Mark RAR-004, RAR-007, RAR-011, and RAR-012 `DONE` only after naming their existing focused tests and rerunning them during verification; leave RAR-008 open.
+- Add RAR-013 history bootstrap (P0), RAR-014 current OMP transcript projection (P0/P1), RAR-015 atomic/idempotent transcript ingestion (P0), RAR-016 portable exact PTY identity (P1), RAR-017 raw terminal reconnect (P1), RAR-018 Agent backend propagation (P1), RAR-019 capability truth/UI gating (P1), and RAR-020 tmux generation identity (P1). Each entry must use the requested source/invariant/root-cause/fix/test fields and only `TODO|IN_PROGRESS|BLOCKED|DONE` status.
+- After each implementation/Oracle iteration, update the ledger immediately; evidence, not compilation, controls `DONE`.
 
-### Phase 2: AgentSession/AgentAdapter Domain + Daemon Contracts
-Reintroduce Agent concepts to daemon and JS typings transparently.
-1.  **TabStore Definitions**: Restore `AgentWorkspaceTab` (`client/src/lib/tabs/types.ts`). A tab has an `agentType` (e.g. `omp`), `state`, and a `terminalSessionId` (backend reference).
-2.  **Daemon Discovery**: Update `/v1/daemon/identity` to return capabilities incorporating agent types (`agent.omp`, `terminal.tmux`, etc).
-3.  **AgentEventEnvelope**: Add semantic wiring into `backend/internal/protocol/protocol.go` specifying `AgentEventEnvelope` covering `message`, `tool_call`, and `turn_end` states.
-4.  **Verification**: Validate that capabilities fetch correctly populates an `omp` flag and that unit tests for Tab validation pass without triggering mock routes.
+### 2. Build the managed same-process OMP extension bridge
+- Add `backend/internal/agent/bridge.ts` as the explicit OMP extension and embed/materialize it from a small Go bridge transport in `backend/internal/agent`. Materialize under the daemon state directory with owner-only directory/file permissions; listen on one daemon-local Unix socket in an owner-only directory. This Phase 1–4 target supports Linux/macOS, so do not add TCP or a second OMP/RPC process.
+- Define newline-delimited JSON frames with exact fields: extension hello `{type:"hello",agentId,secret,sessionId,sessionFile,capabilities}`, daemon command `{type:"command",requestId,command,args}`, command result `{type:"command.result",requestId,ok,error?}`, and semantic/lifecycle `{type:"event",event}`. Generate a random per-Agent secret before terminal creation, pass socket/agent/secret through internal-only environment fields, reject unknown IDs/secrets, cap frame size, serialize writes, correlate results by `requestId`, and cancel pending requests on disconnect.
+- Change Agent creation to accept one request object carrying `name`, `args`, `cwd`, and `backend`. Generate `AgentSession.ID` before terminal creation; launch exactly `omp --no-extensions -e <managed-extension>` through the existing `TerminalRuntime`, with internal environment values passed by a `json:"-"` field on the Go create request. Preserve all user OMP args after the managed flags and reject user flags that would negate/replace the managed extension.
+- In the extension, connect from the TUI process to the daemon socket; on `session_start` send exact session ID/file and capabilities. Retain the latest valid event context for commands. Implement `prompt` with `pi.sendUserMessage`, `abort` with `ctx.abort()`, `model` by resolving the requested selector with `ctx.models.resolve()` then awaiting `pi.setModel`, and `thinking` with validated installed `ThinkingLevel` values and `pi.setThinkingLevel`. Report success only after the action call succeeds. Do not add approval responses: current upstream approval events are observational.
+- Emit state and tool lifecycle using current extension events; use OMP-provided `toolCallId` for tool events. Durable final messages remain sourced from the exact transcript entry IDs so bridge and transcript cannot assign competing identities; live message lifecycle may be transient UI updates but must not be inserted as a second durable final event.
+- On hello, bind the exact OMP `sessionId` and `sessionFile` to the existing Agent, enable only operations actually advertised by that connected extension, and persist an `agent.updated` event. On socket loss, fail pending commands once, disable prompt/abort/model/thinking, retain Chat history/transcript polling and Raw Terminal, and expose the read-only state. Reconnect re-authenticates the same Agent/session association without spawning anything.
 
-### Phase 3: REAL OMP TUI-backed Vertical Slice on PTY (MILESTONE)
-Restore OMP Agent Chat leveraging real transcript reading + exact single process TUI backing.
-1.  **TUI Process Wrapping**: `AgentRuntime` starts the `omp` process via `PtyBackend` to guarantee terminal fidelity. `AgentRuntime` acts merely as an orchestrator, returning dual streams: the terminal stream natively pumped by `TerminalRuntime`, and an agent channel stream via transcript analysis.
-2.  **Transcript Polling (`OmpAdapter`)**: The `AgentAdapter` resolves `~/.omp/agent/sessions/<encoded-cwd>` exactly on startup, locates the fresh `.jsonl` transcript corresponding to the session, and sets up a standard file `tail`/watcher. New lines in the JSONL file are decoded via `OmpTranscriptAdapter` mapping (like Stably's Orca) into canonical `AgentEventEnvelope` websocket frames.
-3.  **Agent Chat View (`client/app/agent/[id].tsx`)**:
-    - Rebuild the dashboard route leveraging the TabStore matching `agentType='omp'`.
-    - Hook up `agent.event` frames to reduce conversation states matching transcript updates.
-    - Supply a manual switcher: Chat View / Raw Terminal. Switching view surfaces exactly the same underlying process stream (websocket `terminal.pty` vs `agent.event`).
-4.  **Agent Prompt Submission**: Prompt inputs mapped into text sent to the `pty.input` pipeline (with trailing newlines) since the TUI process natively parses terminal stdin as prompts.
-5.  **Graceful Fallbacks**: Since true asynchronous approval bypassing natively inside a single OMP TUI mode is not currently clean without building deep extension plugins, approval forms render a standard interaction warning natively in the Chat telling users to click **Terminal** to finalize interaction.
-6.  **Verification**: (Milestone)
-    - `mock_omp.sh`: Fake bash script writing generic `text` JSONL events inside `.omp/agent` while echoing to standard output. Run Go backend tests against it to confirm semantic extraction perfectly tracks standard byte strings.
-    - **End-to-End**: Run actual installed OMP. Ensure one single process is spawned. Switch to Chat, observe model text updating. Switch to Terminal and confirm exactly the same ANSI run execution.
+### 3. Normalize transcript projection and stable identities
+- Replace the flat decoder in `backend/internal/agent/transcript.go` with a decoder for installed OMP session v3 `SessionEntry` shapes: `message` roles `user`, `assistant`, `toolResult`, `bashExecution`, `pythonExecution`, `fileMention`, legacy displayed `custom|hookMessage`, plus top-level `custom_message` only when `display:true`. Ignore bookkeeping/config rows unless they affect an advertised capability.
+- Project assistant `text` blocks into `message.assistant`, `thinking` blocks into `message.thinking`, and `toolCall` blocks into `tool.call`; project `toolResult` to `tool.result`; represent bash/python execution as paired tool call/result events; file mentions and displayed custom messages as `message.system`; preserve `isError` and an `aborted` assistant marker. Extend the Go/TypeScript `AgentEvent` contract and Chat renderer only for these observable fields/types.
+- Deterministic IDs: message text `${entry.id}:message`; thinking `${entry.id}:thinking:${blockIndex}`; assistant tool call `${entry.id}:tool-call:${toolCallId}`; tool result `${entry.id}:tool-result:${toolCallId}`; standalone execution call/result `${entry.id}:execution:call|result`; displayed custom/file mention `${entry.id}:message`. Preserve OMP `toolCallId` verbatim. Never use wall-clock/list position as a durable fallback; rows without enough stable identity are skipped with diagnostics.
+- Build fixture tests from installed OMP 18.1.15 schemas and captured sanitized real rows, covering strings and content arrays, thinking, tool calls/results, errors, bash/python, file mentions, displayed/hidden custom messages, aborted empty assistant messages, unknown blocks, and deterministic repeat decoding. Orca remains comparison material, not copied source.
 
-### Phase 4: TmuxBackend + Dedicated Control-Mode Server
-Add persistent sessions via `tmux -C` without corrupting local user processes.
-1.  **Implementation**: Build `TmuxBackend` that calls `exec.Command("tmux", "-L", "agenticremote", "-C", "new-session", ...)` setting up a partitioned multiplexing server.
-2.  **Mappings**: Parse `%output` to route terminal events sequentially into the websocket, translating window boundaries internally. Treat `%pause`/`%continue` properly.
-3.  **Safety Rule**: Terminating agents inside the AgentRemote CLI leaves the multiplexer intact *if* multiplexing was requested; disconnecting WebSockets won't kill the underlying process.
-4.  **Verification**: Spawning a shell on `tmux`, running `sleep 20`, killing the websocket connection, reconnecting, and confirming `sleep` is still executing.
+### 4. Make ingestion atomic, durable, and idempotent
+- Add the next numbered SQLite migration; do not alter released migrations. Create `agent_history(history_seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id, event_id, kind, payload, created_at, UNIQUE(agent_id,event_id))` and add indexes needed for ordered Agent reads. History is the durable semantic source independent of the pruned `runtime_events` replay window.
+- Add one store operation that accepts a decoded transcript batch plus `{path,offset,file identity,size,mtime}` and, under one SQLite transaction, inserts unseen stable events into `agent_history`, appends corresponding `runtime_events`, and advances `transcript_state`. Commit once; only after commit publish newly inserted runtime events with their assigned cursors. A duplicate `(agent_id,event_id)` advances the checkpoint without creating a new runtime cursor.
+- Refactor `TranscriptTailer.Read` to return a candidate batch/checkpoint without mutating the committed checkpoint. Apply its checkpoint only after the store transaction succeeds; retain pending partial bytes across reads. Empty complete bookkeeping lines may advance through the same transaction. Remove the per-event `RecordEvent` plus later `SaveState` sequence from `Service.checkTranscript`.
+- Detect rewrite/rotation using persisted inode plus a fingerprint of the consumed prefix/checkpoint boundary, not mtime/size alone; reset offset, pending bytes, and volatile seen state on inode change, truncation, same-size rewrite, or a larger in-place replacement whose consumed prefix changed. Normal append retains offset. Extend `transcript_state` in a new migration for the fingerprint.
+- Add deterministic store failpoints scoped to tests to crash/fail before event insert, between history/runtime/checkpoint operations, and before commit. Reopen SQLite and assert zero loss/duplicates. Specifically prove half-first-line then remainder+newline emits exactly once, append, shorter truncate, same-size rewrite, larger same-inode rewrite, inode replacement, and restart after failed/committed batches.
 
-### Phase 5: TerminalWorkspace, Tab, Pane Model
-Adapt the UI properly to represent splits over Tmux (or generic groups).
-1.  **Concepts**: Add `TerminalWorkspace`/`TerminalPane` distinction mapped to TMux Panes.
-2.  **UI Updates**: Build mobile-first split pane viewers utilizing `TerminalWorkspaceTab`. Do not force heavy grid toggling on phones. Restrict splitting to horizontal slices if vertically constrained.
-3.  **Verification**: Write integration tests where one workspace holds two panes running mock outputs simultaneously.
+### 5. Add durable Agent-history bootstrap and cursor handoff
+- Add authenticated `GET /v1/agents/:id/history` returning `{cursor,events}`. In one SQLite read transaction, read ordered `agent_history` for that Agent and the current daemon runtime high-water cursor, so events committed after that point are delivered by the subsequent Agent channel. Return 404 for unknown Agent; do not expose another Agent's history.
+- Add `AgenticRemoteAPI.agentHistory(id)`. On initial Agent screen mount and every `cursor_expired|resync_required`, fetch history, replace the visible semantic list, rebuild the stable `eventId` set, update Agent state from the Agent snapshot/event stream, then open/reopen the Agent channel with the returned high-water cursor. Buffer channel events that arrive while replacing history and merge them by stable `eventId`; cursor remains the transport ordering/dedupe key, eventId is the history/live identity key.
+- Remove timestamp/list-length fallback IDs. Repeated history bootstrap must be idempotent, a complete remount must show existing conversation exactly once, and later live events must append once without an expiry retry loop.
 
-### Phase 6: Snapshotting, Discovery & Cold-Start Reconnect
-Decouple frontend lifecycle from backend existence.
-1.  **Daemon Discovery `GET /v1/snapshots`**: Endpoint resolving live AgentSessions, Terminal Workspaces, and Desktop endpoints. Includes current Sequence/Revision IDs so reconnects avoid stale outputs.
-2.  **React Store Hydration**: `TabDeckScreen` queries the daemon snapshot upon paired connection success. The UI merges new daemon references against any locally cached UI positions.
-3.  **Transcript Context Recovery**: When viewing an agent, `GET /v1/sessions/:id/agent-history` fetches the pre-encoded JSONL sequence to rapidly hydrate the visual tree.
-4.  **Verification**: Run the application, trigger a long session update. Close the actual client app process natively on mobile. Open it. The snapshot should immediately rebuild the list, re-connecting to the precise prior socket offsets.
+### 6. Preserve exact OMP association on Linux and macOS
+- Rework `newPtyBackend` using the already-installed `pty.Open`, the same size setup and `syscall.SysProcAttr{Setsid:true,Setctty:true}` behavior as `pty.StartWithSize`, and capture `tty.Name()` before closing the parent slave handle. Store that immutable path on `PtyBackend`; `TTY()` returns it without `/proc`.
+- Persist exact terminal TTY/OMP `sessionId`/session file association with the Agent summary/history binding. Continue resolving tmux identity from `pane_tty`. Use breadcrumb lookup first and exact bridge hello as authoritative; same-CWD `FindOnlySessionFile` remains last resort and must return the existing ambiguity error when more than one JSONL exists.
+- Add Linux runtime coverage and Darwin cross-build coverage for the PTY code. Add a real installed-OMP integration that starts two Agents in one CWD, asserts distinct captured terminal IDs and transcript paths, restarts the daemon where tmux persistence applies, and proves neither Agent consumes the other's rows.
 
-### Phase 7: Multi-Agent Dashboard & Termius-Style Session Switcher
-Build robust application navigation.
-1.  **Global Switcher (`client/app/index.tsx`)**: Replicate Termius hierarchy: Daemons -> Sessions. Mix `Agent`, `Terminal`, `Desktop`, and `Files` cleanly across multiple instances.
-2.  **Agent Overview List**: Display `Needs You` / `Working` / `Idle` aggregations across active Agent Workspaces globally.
+### 7. Complete backend selection through every create path
+- Replace `AgentAPI.CreateAgent(ctx,cwd,name,args...)` with the Agent create request carrying `Backend`. Pass it unchanged through REST `/v1/agents`, runtime `agent.create`, `agent.Service`, and `session.Manager`. Update all mocks/callers in server and Agent tests; remove the variadic signature rather than retain an alias.
+- Change client `createAgent` to include `backend?: 'auto'|'pty'|'tmux'`; add the backend selector to the existing terminal and Agent creation sheets only when more than one backend capability is enabled. Default omitted/`auto` follows the daemon policy; explicit `pty` always creates `PtyBackend`; explicit unavailable `tmux` returns `tmux backend requested but unavailable` without fallback.
+- Cover REST, runtime command, client serialization, service forwarding, and manager concrete backend selection. Agent tests assert the exact requested value reaches `TerminalManager.Create`.
 
-### Phase 8: Daemon Channel Refinement (Multiplexing Validation)
-Explicitly clean up the single-socket multiplexer.
-1.  Ensure `DaemonChannel` allocates a distinct explicit `ControlSocket` and handles standalone binary WebSockets specifically for `TerminalStream` and `VNC`. Avoid dropping RFB onto JSON channels.
+### 8. Make capabilities truthful and drive the Agent UI
+- Introduce a daemon availability snapshot populated at startup from actual configured services and `exec.LookPath`: `sessions`, `files`, `terminal.pty`, `terminal.tmux`, `agent.omp`, and live `vnc`. Wire tmux availability from successful private control-client startup, not merely binary presence; OMP is true only when executable lookup succeeds. Keep VNC as the existing bounded loopback probe.
+- Return these exact names from `/v1/daemon/identity`; cache executable/control availability and avoid spawning probes per request. Client connection state retains capabilities per daemon and gates Add Terminal/Agent/backend choices without hiding the normal zero-daemon Vault shell.
+- Agent capabilities start with read-only `chat` when an exact transcript is available; prompt/abort/model/thinking become true only after authenticated bridge hello proves each path. On bridge loss they become false and are persisted/emitted. In `client/app/agent/[id].tsx`, always retain Chat and Terminal tabs, but render composer and Abort only when enabled; otherwise show the explicit `Open Terminal to interact` action. Model/thinking controls appear only for their enabled capabilities.
+- Test unavailable OMP/tmux identity responses, bridge connect/disconnect capability transitions, and UI snapshots/interactions for read-only versus interactive Agent capabilities.
 
-### Phase 9: Capability-driven Adapters (Claude / OpenCode)
-Extend the `AgentAdapter` parsing strategies for Claude and OpenCode outputs without changing `AgentRuntime`.
+### 9. Add replacement-baseline raw terminal reconnect
+- Add server frame `{type:"pty.baseline",sessionId,data,seq}`. `Manager.Subscribe` must atomically capture bounded scrollback plus its current sequence while holding the runtime enqueue/replay boundary, send exactly one baseline first, then live `pty.output` frames with greater sequences. A baseline replaces the terminal viewport; it is never appended.
+- Make `SessionSocket` and the daemon-channel terminal socket reconnect with bounded exponential backoff after unintentional close, reauthenticate, and resubscribe. Track disposal so explicit unsubscribe/close never reconnects. Queue only the latest resize while disconnected; do not replay uncertain terminal input after a disconnect.
+- Extend terminal callbacks with a baseline/reset operation. Terminal and Agent Raw Terminal clear/reset xterm/string state on baseline, append only live frames with `seq` greater than the applied baseline/last sequence, and reset the streaming `TextDecoder` at each baseline.
+- Integration test a noisy real shell: receive output, sever only the raw WebSocket, produce output while disconnected, reconnect, receive a replacement baseline followed by live output, and compare the converged viewport/scrollback bytes exactly once. Separately keep the runtime control channel alive to prove independence; add disposal/leak assertions.
 
-### Phase 10: Desktop/noVNC Transport Revamp
-Eliminate JavaScript string-bridge tunneling.
-1.  **Architecture**: Mount `noVNC` inside WebView pointing exactly to `ws://<daemon_ip>/v1/ws/vnc?token=...` with Native ArrayBuffer settings, entirely bypassing the React Native `postMessage` layer for binary packets.
-2.  **Go Server Proxy**: Construct a raw socket reader terminating TCP to the VNC target and raw-wrapping bytes onto WebSockets safely holding standard Bearer credentials upon upgrade.
+### 10. Bind topology to a real tmux server generation
+- On private tmux startup, query global option `@agenticremote-generation`; if absent, generate a cryptographically random token and set it with `set-option -g`. The option lives in the tmux server, survives daemon/control-client restart, and disappears when that server is recreated.
+- Make `ControlClient.ServerID()` return a structured stable identity derived from private socket path plus generation token; persist it in topology as today. Reconciliation must require exact generation equality before reattaching a pane. Legacy socket-only rows do not reattach automatically; mark them exited/lost and replace them on newly observed topology.
+- Extend real tmux integration: same server across daemon restart keeps generation and reattaches; kill the private tmux server, recreate it at the same socket, force pane-ID reuse where possible, and assert old terminals never attach while new topology carries a different generation.
 
-### Phase 11: System Hardening & Files Integration
-1.  Fix Sandbox Escape (`fs.go` Resolve rule inversion). Clamp traversal safely to `WorkspaceRoot`.
-2.  Expand integration so `Agent Chat` provides a fast-path button directly into the `Files` REST viewer for the agent's current working directory.
+### 11. Execute the Oracle gap loop and stop before Phase 5
+- After all targeted and full verification below, invoke the strongest slow/deep reviewer read-only against authoritative plan, current code, ledger, tests, and captured real-runtime evidence—not only the diff. Require explicit findings for same-process ownership/PID count, bridge failure, transcript format/partial writes/crash consistency, history expiry, same-CWD binding, Linux/macOS, backend propagation, capability truth/UI, raw reconnect, tmux generation, multi-daemon isolation, overflow, leaks, auth/sandbox, and tests that do not prove behavior.
+- For every valid Phase 1–4 P0/P1 finding: add a ledger item, fix root cause in a coherent commit, run targeted then relevant full verification, and invoke a fresh slow reviewer again. Continue until no current-scope P0/P1 remains and final Oracle verdict is `PASS`. Oracle may defer P2 only with concrete proof it cannot threaten continuation.
+- Do not modify `/v1/ws/vnc`, desktop/noVNC transport, or any Phase 5/later behavior during this execution.
 
-## Validation & Acceptance
-- New Agent visible in product UI hierarchically.
-- OMP discovered and selectable.
-- Single process per Agent session proved via `ps aux`.
-- Streaming responses, Tool Calls, and Approval overlays function from real protocol data.
-- State persists gracefully across hard disconnects.
-- `tmux` isolated via socket path.
-- Existing Pairing, Files, and Desktop (VNC) operations unharmed.
-- Android tests verified (where env setup allows or clearly smoke-tested over web-expo preview).
+## Critical files and anchors
+- `backend/internal/agent/adapter.go` — `Service.CreateAgent`, `checkTranscript`, command methods, restore path, capabilities, and exact session binding.
+- `backend/internal/agent/transcript.go` and `backend/internal/runtime/store.go` — current lossy decoder and non-atomic event/checkpoint persistence; implement stable history and transactional ingestion here.
+- `backend/internal/server/server.go` — Agent REST/control creation, Agent replay/history endpoint, runtime overflow handoff, raw PTY WebSocket, and daemon identity.
+- `backend/internal/session/backend.go` and `backend/internal/session/manager.go` — portable slave TTY capture, backend selection, baseline snapshot/live boundary, and tmux reconciliation.
+- `client/app/agent/[id].tsx`, `client/src/lib/runtime-channel.ts`, and `client/src/lib/session-socket.ts` — history replace/merge, capability gates, and independent raw terminal reconnect.
+
+## Verification
+- Before changing behavior, run focused existing evidence for ledger reconciliation from repository root: `cd backend && go test ./internal/runtime ./internal/server ./internal/session ./internal/tmux`; do not mark stale TODOs done if their named overflow/backend/tmux tests fail.
+- Transcript/store: `cd backend && go test ./internal/agent ./internal/runtime`. Required observable cases: realistic OMP v3 fixture yields user/assistant/thinking/tool/error/execution/file/custom/aborted semantics with repeat-stable IDs; half-line emits nothing then exactly one event; every injected transaction failure followed by reopen yields either the whole batch+checkpoint or neither; committed retry creates no duplicate history/runtime cursor.
+- Bridge real integration, with installed `omp/18.1.15`: start one Agent against an isolated temporary `PI_CODING_AGENT_DIR`; record process tree using exact PID/PPID/executable inspection; assert exactly one `omp` PID. Submit Unicode, multiline, large, and special-character prompts through Chat; observe the same TUI terminal and semantic assistant response; trigger a harmless built-in tool and match tool call/result IDs; switch Chat/Terminal repeatedly; assert one user transcript row; abort an active response; disconnect bridge and assert controls disable while transcript/Terminal continue; reconnect without another OMP PID.
+- History expiry integration: generate multiple user/assistant/tool events, force `runtime_events` pruning past the saved cursor using a test-configurable retention limit, fully remount the Agent screen, and assert durable history exactly once plus one later live event, no retry loop, omissions, or duplicates.
+- PTY association: on Linux start two real OMP Agents in the same CWD and assert distinct slave TTY IDs, OMP session IDs, and transcript files before/after applicable daemon restart. Run `GOOS=darwin GOARCH=amd64 go test ./internal/session ./internal/agent` and `GOOS=darwin GOARCH=arm64 go test ./internal/session ./internal/agent`; if execution-only tests need skipping, cross-compile their test binaries and retain platform-independent mapping tests. A real macOS runtime result is required for final PASS; absent macOS access is reported as `BLOCKED`, never faked.
+- Backend/capabilities/UI: backend tests prove REST and runtime Agent/Terminal create paths preserve `auto|pty|tmux`, explicit unavailable tmux errors, and daemon capability truth. Run both the requested `cd client && npm test -- --runInBand` and the repository-native `cd client && bun run test -- --runInBand`; tests prove request serialization and read-only/interactable Agent UI gates.
+- Raw terminal integration: run an actual noisy shell through the daemon, cut only its raw socket, write during outage, reconnect, and byte-compare replacement baseline plus later live stream with no duplicate/missing content; assert explicit disposal prevents reconnect and the runtime control socket remains subscribed.
+- tmux real integration, with tmux 3.4: run existing byte parity, pane output, daemon-restart, capture-baseline, and server-loss tests plus the same-socket/new-generation case. Capture daemon PID, tmux server PID, and OMP PID before/after daemon-only restart to prove tmux/OMP survive and reattach without duplicate terminal or semantic events.
+- Multi-daemon/security regressions: run existing independent-daemon cursor/token/channel tests and `cd backend && go test ./internal/fs ./internal/security ./internal/server`; retain absolute/traversal/symlink/destination escape rejection.
+- Full release proof from repository root after every Oracle-driven correction set: `make backend-test`, `make backend-build`, `make client-test`, `make client-build-web`, and `make lint`. The prior `make test && make lint` did not cover production builds, so both build targets are mandatory.
+- Final evidence records exact command, exit status, pass/fail/skip totals, environment/tool versions, OMP/tmux/daemon PID observations, daemon restart/reconnect observations, and each Oracle iteration. Ending report uses verdict `BLOCKED` if any required real integration—including macOS runtime proof—or final Oracle PASS is unavailable.
+
+## Assumptions and contingencies
+- Work starts from clean `main` at `b3d1abeffc84f89f3983a30210a9a2e7ba2d5f86`; the user already pushed this SHA. If HEAD or working tree differs at execution start, record the new state in the ledger and preserve user changes; never reset or force.
+- Installed OMP is 18.1.15 and current API/source proves the same-process extension route. If its runtime behavior contradicts the installed type/source signatures, mark only the failing operation capability false with captured source/runtime evidence; keep bridge-supported operations and read-only Chat rather than abandoning the bridge.
+- Unix-domain sockets are the chosen local bridge for Linux/macOS. If the target OS lacks them, mark that platform unsupported for this Phase 1–4 bridge rather than adding insecure TCP fallback.
+- Real macOS execution is an exit criterion. If no macOS runner/host is available after Linux implementation and Darwin builds, finish every reachable change and report final `BLOCKED` with the exact missing runtime proof.
+- tmux generation hardening is current-scope P1 because socket-path reuse can cross-attach a different process; do not defer it as P2 unless a slow Oracle proves from tmux/runtime behavior that pane identity cannot collide and records that proof in the ledger.
+
+## Evidence sources
+- Authoritative architecture: `plans/recover-agent-architecture.md`; durable status: `plans/recover-agent-architecture-remediation-todo.md`.
+- Installed OMP: `/home/momodding/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/extensibility/extensions/types.ts`, `loader.ts`, `session/session-entries.ts`, and `@oh-my-pi/pi-tui/src/ttyid.ts`.
+- Current upstream OMP: `docs/extensions.md` and `docs/extension-loading.md`; both confirm explicit extensions load with `--no-extensions` and expose semantic actions/events in the normal TUI process.
+- Transcript comparison only: `stablyai/orca/src/main/native-chat/transcript-line-decoders-omp.ts`; validate every adopted shape against installed OMP before implementation.
+- PTY launch behavior: `github.com/creack/pty` v1.1.24 `run.go`/`start.go`; it obtains the slave handle via `pty.Open()` before `cmd.Start`, enabling portable `tty.Name()` capture.

@@ -166,23 +166,17 @@ describe('RuntimeChannel reconnects subscriptions', () => {
     
     socket.receive({ type: 'command.result', requestId: firstOpen.requestId, ok: false, error: 'cursor expired' });
 
-    // Advance timers multiple times to let async promise chain complete
+    // Advance timers to let the async retry chain complete.
     jest.advanceTimersByTime(10);
+    await Promise.resolve();
 
-    // Verify callback was called
     expect(cursorExpiryCallCount).toBe(1);
-
-    // The retry open should have been sent with fresh cursor from onCursorExpired
-    if (socket.sent.length > 2) {
-      const retryOpen = JSON.parse(socket.sent[2]);
-      expect(retryOpen.after).toBe(42);
-      socket.receive({ type: 'channel.opened', requestId: retryOpen.requestId, channelId: firstOpen.channelId, cursor: 42 });
-      await expect(opening).resolves.toMatchObject({ cursor: 42 });
-    } else {
-      // Fallback: just verify the callback was invoked correctly
-      // The mechanism is tested by the existing 'refreshes an expired Agent replay cursor' test
-      expect(true).toBe(true);
-    }
+    // Retry frame must have been sent with the fresh cursor from onCursorExpired.
+    expect(socket.sent.length).toBeGreaterThan(2);
+    const retryOpen = JSON.parse(socket.sent[2]);
+    expect(retryOpen.after).toBe(42);
+    socket.receive({ type: 'channel.opened', requestId: retryOpen.requestId, channelId: firstOpen.channelId, cursor: 42 });
+    await expect(opening).resolves.toMatchObject({ cursor: 42 });
   });
   const hostA: Connection = { ...connection, hostId: 'daemon-a' };
   const hostB: Connection = { ...connection, hostId: 'daemon-b' };

@@ -3,6 +3,8 @@ package tmux
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +23,7 @@ type ControlClient struct {
 	socketPath       string
 	stateDir         string
 	tmuxPath         string
+	serverID         string
 	cmd              *exec.Cmd
 	parser           *Parser
 	stdin            io.WriteCloser
@@ -87,6 +90,19 @@ func (c *ControlClient) Start(ctx context.Context) error {
 			return fmt.Errorf("start private tmux server: %w: %s", createErr, strings.TrimSpace(string(output)))
 		}
 	}
+	generation, err := c.tmuxOption(ctx, "@agenticremote-generation")
+	if err != nil || generation == "" {
+		bytes := make([]byte, 16)
+		if _, err := rand.Read(bytes); err != nil {
+			return fmt.Errorf("generate tmux server generation: %w", err)
+		}
+		generation = hex.EncodeToString(bytes)
+		set := exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "set-option", "-g", "@agenticremote-generation", generation)
+		if output, err := set.CombinedOutput(); err != nil {
+			return fmt.Errorf("set tmux server generation: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	c.serverID = c.socketPath + ":" + generation
 
 	c.cmd = exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "-C")
 
@@ -524,8 +540,17 @@ func (c *ControlClient) ReattachPane(ctx context.Context, paneID, sessionID, win
 // must not recreate commands in response, only mark affected state lost.
 func (c *ControlClient) Lost() <-chan struct{} { return c.lost }
 
-// ServerID identifies this private tmux server in persisted topology.
-func (c *ControlClient) ServerID() string { return c.socketPath }
+// ServerID identifies this private tmux server generation in persisted topology.
+func (c *ControlClient) ServerID() string { return c.serverID }
+
+func (c *ControlClient) tmuxOption(ctx context.Context, name string) (string, error) {
+	cmd := exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "show-options", "-gv", name)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
 
 // SendKey writes literal bytes through the correlated control command queue.
 func (c *ControlClient) SendKey(ctx context.Context, paneID string, data []byte) (int, error) {

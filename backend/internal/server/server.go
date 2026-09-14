@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -57,16 +58,21 @@ type runtimeOverflowSubscriber interface {
 	SubscribeRuntimeWithOverflow(func(runtimestore.Event), func()) func()
 }
 type AgentAPI interface {
-	CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error)
+	CreateAgentRequest(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error)
 	GetAgent(agentID string) (*protocol.AgentSession, error)
 	ListAgents() []protocol.AgentSession
 	SubmitPrompt(agentID, prompt string) error
 	Abort(agentID string) error
 	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
+	History(agentID string) (*protocol.AgentHistoryResponse, error)
 }
 
 type NotifyAPI interface {
 	RegisterToken(context.Context, protocol.NotifyRegisterRequest) error
+}
+
+type tmuxAvailabilityProvider interface {
+	TmuxAvailable() bool
 }
 
 type Server struct {
@@ -80,6 +86,7 @@ type Server struct {
 	limits          *Limits
 	tls             *security.TLSMaterial
 	pairingSnapshot *security.PairingSnapshot
+	ompAvailable    bool
 }
 
 func New(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *security.AuthService, sessions SessionAPI, notify NotifyAPI, pairingSnapshot *security.PairingSnapshot) (*Server, error) {
@@ -91,7 +98,8 @@ func NewWithAgents(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *s
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot}, nil
+	_, ompErr := exec.LookPath("omp")
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot, ompAvailable: ompErr == nil}, nil
 }
 
 func runtimeAPI(sessions SessionAPI) RuntimeAPI {
@@ -235,12 +243,19 @@ func (s *Server) handleDaemonIdentity(w http.ResponseWriter, _ *http.Request) {
 	if err == nil {
 		_ = conn.Close()
 	}
+	tmuxAvailable := false
+	if provider, ok := s.sessions.(tmuxAvailabilityProvider); ok {
+		tmuxAvailable = provider.TmuxAvailable()
+	}
 	identity := protocol.HostIdentity{HostID: s.tls.Fingerprint, ConnectionID: s.tls.Fingerprint}
 	writeJSON(w, http.StatusOK, protocol.DaemonCapabilities{
 		Identity: identity,
 		Capabilities: []protocol.Capability{
 			{Name: "sessions", Enabled: true},
 			{Name: "files", Enabled: true},
+			{Name: "terminal.pty", Enabled: true},
+			{Name: "terminal.tmux", Enabled: tmuxAvailable},
+			{Name: "agent.omp", Enabled: s.ompAvailable},
 			{Name: "vnc", Enabled: err == nil},
 		},
 	})
@@ -379,7 +394,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
 			return
 		}
-		summary, err := s.agents.CreateAgent(r.Context(), req.CWD, req.Name, req.Args...)
+		summary, err := s.agents.CreateAgentRequest(r.Context(), req)
 		if err != nil {
 			s.limits.EndSession()
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
@@ -410,6 +425,15 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "history" && r.Method == http.MethodGet {
+		history, err := s.agents.History(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "agent_not_found", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, history)
 		return
 	}
 	if len(parts) == 2 && r.Method == http.MethodPost {
@@ -1220,7 +1244,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-	case "message.user", "message.assistant", "tool.call", "tool.result", "state":
+	case "message.user", "message.assistant", "message.system", "message.thinking", "tool.call", "tool.result", "state":
 		return true
 	default:
 		return false
@@ -1235,16 +1259,17 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 			return
 		}
 		var args struct {
-			CWD  string   `json:"cwd"`
-			Name string   `json:"name"`
-			Args []string `json:"args"`
+			CWD     string   `json:"cwd"`
+			Name    string   `json:"name"`
+			Args    []string `json:"args"`
+			Backend string   `json:"backend"`
 		}
 		if cmd.Args != nil {
 			if m, ok := cmd.Args.(map[string]any); ok {
 				_ = mapToStruct(m, &args)
 			}
 		}
-		summary, err := s.agents.CreateAgent(ctx, args.CWD, args.Name, args.Args...)
+		summary, err := s.agents.CreateAgentRequest(ctx, protocol.CreateSessionRequest{CWD: args.CWD, Name: args.Name, Args: args.Args, Backend: args.Backend})
 		if err != nil {
 			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
 			return

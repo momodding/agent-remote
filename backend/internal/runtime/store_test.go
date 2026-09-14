@@ -203,22 +203,28 @@ func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
 func TestRecordAgentSnapshotAndEvents(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()
-	agent := AgentSummary{ID: "a1", Adapter: "omp", TerminalSessionID: "t1", CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat","enabled":true}]`), CreatedAt: now, UpdatedAt: now}
+	agent := AgentSummary{ID: "a1", Adapter: "omp", TerminalSessionID: "t1", OMPSessionID: "omp-1", OMPSessionFile: "/sessions/omp-1.jsonl", CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat","enabled":true}]`), CreatedAt: now, UpdatedAt: now}
 	if err := s.RecordAgent(agent, "agent.created"); err != nil {
 		t.Fatalf("record: %v", err)
+	}
+	updated := agent
+	updated.OMPSessionID = "other-omp"
+	updated.OMPSessionFile = ""
+	if err := s.RecordAgent(updated, "agent.updated"); err != nil {
+		t.Fatalf("update: %v", err)
 	}
 	snapshot, err := s.Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != agent.ID || snapshot.Agents[0].TerminalSessionID != agent.TerminalSessionID {
+	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != agent.ID || snapshot.Agents[0].TerminalSessionID != agent.TerminalSessionID || snapshot.Agents[0].OMPSessionID != agent.OMPSessionID || snapshot.Agents[0].OMPSessionFile != agent.OMPSessionFile {
 		t.Fatalf("unexpected snapshot: %+v", snapshot.Agents)
 	}
-	events, _, err := s.Events(snapshot.Cursor-1, 1)
+	events, _, err := s.Events(0, 10)
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	if len(events) != 1 || events[0].Kind != "agent.created" {
+	if len(events) != 2 || events[0].Kind != "agent.created" || events[1].Kind != "agent.updated" {
 		t.Fatalf("unexpected events: %+v", events)
 	}
 }
@@ -402,5 +408,73 @@ func TestMigrateAgentIDWithMixedHistory(t *testing.T) {
 	}
 	if oldIDEventCount != 1 {
 		t.Fatalf("old ID event count: got %d, want 1 (terminal.output)", oldIDEventCount)
+	}
+}
+
+func TestRecordAgentTranscriptPreservesSameKindCursors(t *testing.T) {
+	s := makeTestDB(t)
+	state := TranscriptState{AgentID: "agent", TranscriptPath: "/tmp/session.jsonl", FileOffset: 42}
+	commits, err := s.RecordAgentTranscript("agent", []AgentTranscriptEvent{
+		{EventID: "one", Kind: "message.assistant", Payload: []byte(`{"eventId":"one"}`)},
+		{EventID: "two", Kind: "message.assistant", Payload: []byte(`{"eventId":"two"}`)},
+	}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 2 || commits[0].EventID != "one" || commits[1].EventID != "two" || commits[0].Event.Cursor == 0 || commits[1].Event.Cursor <= commits[0].Event.Cursor {
+		t.Fatalf("unexpected commits: %+v", commits)
+	}
+	events, _, err := s.Events(0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Cursor != commits[0].Event.Cursor || events[1].Cursor != commits[1].Event.Cursor {
+		t.Fatalf("unexpected replay: %+v", events)
+	}
+}
+
+func TestAgentHistory(t *testing.T) {
+	s := makeTestDB(t)
+
+	// Record some transcript events
+	state := TranscriptState{AgentID: "agent-hist", TranscriptPath: "/tmp/session.jsonl", FileOffset: 100}
+	_, err := s.RecordAgentTranscript("agent-hist", []AgentTranscriptEvent{
+		{EventID: "evt-1", Kind: "message.user", Payload: []byte(`{"eventId":"evt-1","kind":"message.user"}`)},
+		{EventID: "evt-2", Kind: "message.assistant", Payload: []byte(`{"eventId":"evt-2","kind":"message.assistant"}`)},
+	}, state)
+	if err != nil {
+		t.Fatalf("RecordAgentTranscript error: %v", err)
+	}
+
+	// Also record an unrelated runtime event to advance global_seq
+	_, err = s.RecordEvent("other-stream", "other.kind", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("RecordEvent error: %v", err)
+	}
+
+	events, cursor, err := s.AgentHistory("agent-hist")
+	if err != nil {
+		t.Fatalf("AgentHistory error: %v", err)
+	}
+	if cursor == 0 {
+		t.Fatalf("expected positive cursor, got %d", cursor)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 history events, got %d", len(events))
+	}
+	if events[0].EventID != "evt-1" || events[1].EventID != "evt-2" {
+		t.Fatalf("unexpected events ordering: %+v", events)
+	}
+
+	// Non-existent agent returns empty events and high-water cursor
+	emptyEvents, emptyCursor, err := s.AgentHistory("non-existent")
+	if err != nil {
+		t.Fatalf("AgentHistory for non-existent agent error: %v", err)
+	}
+	if len(emptyEvents) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(emptyEvents))
+	}
+	if emptyCursor != cursor {
+		t.Fatalf("expected cursor %d, got %d", cursor, emptyCursor)
 	}
 }

@@ -227,6 +227,51 @@ output2
 	t.Log("both commands completed")
 }
 
+func TestParserControlLossFailsEveryQueuedCommand(t *testing.T) {
+	reader, writer := io.Pipe()
+	parser := NewParser(reader)
+	first, err := parser.SubmitCommand("first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := parser.SubmitCommand("second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() { started <- parser.Start() }()
+	_ = writer.Close()
+
+	for _, resultCh := range []chan *CommandResult{first, second} {
+		select {
+		case result := <-resultCh:
+			if result == nil || result.Error == nil || result.Error.Code != "EOF" {
+				t.Fatalf("result = %+v, want EOF error", result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("queued command did not fail after control loss")
+		}
+	}
+	if err := <-started; err != nil {
+		t.Fatalf("Start error = %v", err)
+	}
+}
+
+func TestParserProtocolErrorFailsQueuedCommand(t *testing.T) {
+	parser := NewParser(strings.NewReader("%end 1 1 0\n"))
+	resultCh, err := parser.SubmitCommand("queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.Start(); err == nil {
+		t.Fatal("expected parser protocol error")
+	}
+	result := <-resultCh
+	if result == nil || result.Error == nil || result.Error.Code != "parser_error" {
+		t.Fatalf("result = %+v, want parser_error", result)
+	}
+}
+
 func TestParserClose(t *testing.T) {
 	input := `%begin 1000 100 0
 ` // Incomplete

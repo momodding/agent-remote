@@ -19,6 +19,10 @@ import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
 const diagnosticsInitial = ['Resolving endpoint...', 'Initiating TLS Handshake...', 'Validating Certificate Fingerprint...', 'Executing Auth-v2 Challenge...', 'Session Established'];
 
+function hasCapability(runtime: DaemonRuntime | undefined, name: string): boolean {
+	return runtime?.capabilities?.some((capability) => capability.name === name && capability.enabled) ?? false;
+}
+
 
 export default function TabDeckScreen() {
   const { state, dispatch, closeTab, activateTab } = useTabStore();
@@ -48,12 +52,12 @@ export default function TabDeckScreen() {
 		const cleanups: Array<() => void> = [];
 		for (const connection of store.connections) {
 			void reconcileDaemon(connection, (runtime) => {
-				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: runtime }));
+				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: { ...runtime, capabilities: runtime.capabilities ?? current[connection.hostId]?.capabilities } }));
 			}).then((cleanup) => {
 				if (active) cleanups.push(cleanup);
 				else cleanup();
 			}).catch((error) => {
-				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: { status: 'error', error: error instanceof Error ? error.message : 'Could not reconcile daemon' } }));
+				if (active) setRuntimes((current) => ({ ...current, [connection.hostId]: { status: 'error', error: error instanceof Error ? error.message : 'Could not reconcile daemon', capabilities: current[connection.hostId]?.capabilities } }));
 			});
 		}
 		return () => {
@@ -241,18 +245,26 @@ export default function TabDeckScreen() {
                 <Text style={styles.daemonSectionSub}>{new URL(connection.endpoint).host}</Text>
                 
                 <View style={styles.daemonToolbar}>
-                  <Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
-                    <Feather name="terminal" size={16} color="#F0F0F0" />
-                  </Pressable>
-                  <Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
-                    <Feather name="cpu" size={16} color="#F0F0F0" />
-                  </Pressable>
-                  <Pressable accessibilityLabel={`New Files ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
-                    <Feather name="folder" size={16} color="#F0F0F0" />
-                  </Pressable>
-                  <Pressable accessibilityLabel={`New Desktop ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
-                    <Feather name="monitor" size={16} color="#F0F0F0" />
-                  </Pressable>
+				  {(hasCapability(runtime, 'terminal.pty') || hasCapability(runtime, 'terminal.tmux')) && (
+					<Pressable accessibilityLabel={`New Terminal ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'terminal')}>
+					  <Feather name="terminal" size={16} color="#F0F0F0" />
+					</Pressable>
+				  )}
+				  {hasCapability(runtime, 'agent.omp') && (
+					<Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
+					  <Feather name="cpu" size={16} color="#F0F0F0" />
+					</Pressable>
+				  )}
+				  {hasCapability(runtime, 'files') && (
+					<Pressable accessibilityLabel={`New Files ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'files')}>
+					  <Feather name="folder" size={16} color="#F0F0F0" />
+					</Pressable>
+				  )}
+				  {hasCapability(runtime, 'vnc') && (
+					<Pressable accessibilityLabel={`New Desktop ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'desktop')}>
+					  <Feather name="monitor" size={16} color="#F0F0F0" />
+					</Pressable>
+				  )}
                 </View>
               </View>
 

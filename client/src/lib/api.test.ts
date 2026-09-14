@@ -108,6 +108,34 @@ describe('AgenticRemoteAPI ping', () => {
   });
 });
 
+describe('AgenticRemoteAPI agentHistory', () => {
+  const connection = { endpoint: 'https://daemon.example', token: 'session-token' };
+  it('fetches agent history with authorization', async () => {
+    const mockResponse = {
+      cursor: 42,
+      events: [
+        { agentId: 'agent-1', eventId: 'e1:message', type: 'message.user', text: 'hello' },
+        { agentId: 'agent-1', eventId: 'e2:message', type: 'message.assistant', text: 'hi' },
+      ],
+    };
+    const fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => mockResponse,
+    } as Response);
+    Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
+    const { AgenticRemoteAPI } = loadModule();
+    const api = new AgenticRemoteAPI(connection);
+    const result = await api.agentHistory('agent-1');
+    expect(result).toEqual(mockResponse);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://daemon.example/v1/agents/agent-1/history',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+      }),
+    );
+  });
+});
+
 
 describe('authenticatePairing HTTPS transport', () => {
   const authOk = (socket: MockWebSocket) => {

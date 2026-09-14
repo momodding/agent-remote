@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -61,16 +62,17 @@ type subscriber struct {
 }
 
 type TerminalRuntime struct {
-	meta       Session
-	detector   detect.Detector
-	subs       []*subscriber
-	seq        int64
-	scrollback string
-	plain      string
-	outbound   chan outboundMessage
-	backend    TerminalBackend
-	exitOnce   sync.Once
-	enqueueMu  sync.Mutex
+	meta         Session
+	detector     detect.Detector
+	subs         []*subscriber
+	seq          int64
+	scrollback   string
+	scrollbackMu sync.Mutex
+	plain        string
+	outbound     chan outboundMessage
+	backend      TerminalBackend
+	exitOnce     sync.Once
+	enqueueMu    sync.Mutex
 }
 
 type outboundMessage struct {
@@ -102,6 +104,14 @@ func (m *Manager) RuntimeStore() *runtimestore.Store {
 	return m.runtime
 }
 
+// TmuxAvailable reports whether this manager currently routes "auto"
+// terminal/Agent creation through a live private tmux control client.
+func (m *Manager) TmuxAvailable() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.useTmux && m.tmuxClient != nil
+}
+
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		return nil, err
@@ -117,6 +127,23 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 		return nil, err
 	}
 	return m, nil
+}
+func commandWithEnv(command string, args []string, env map[string]string) (string, []string) {
+	if len(env) == 0 {
+		return command, args
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	prefixed := make([]string, 0, len(keys)+len(args)+1)
+	for _, key := range keys {
+		prefixed = append(prefixed, key+"="+env[key])
+	}
+	prefixed = append(prefixed, command)
+	prefixed = append(prefixed, args...)
+	return "env", prefixed
 }
 
 // SetTmux injects a tmux ControlClient, enables tmux backend for future
@@ -236,23 +263,31 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 	switch req.Backend {
 	case "", "auto":
 		if m.useTmux && m.tmuxClient != nil {
-			backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
+			command, args := commandWithEnv(command, req.Args, req.Env)
+			backend, err = m.tmuxClient.CreatePane(ctx, id, command, args, cwd, cols, rows)
 		} else {
 			cmd := exec.Command(command, req.Args...)
 			cmd.Dir = cwd
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+			for key, value := range req.Env {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+			}
 			backend, err = newPtyBackend(cmd, cols, rows)
 		}
 	case "pty", "direct":
 		cmd := exec.Command(command, req.Args...)
 		cmd.Dir = cwd
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+		for key, value := range req.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+		}
 		backend, err = newPtyBackend(cmd, cols, rows)
 	case "tmux":
 		if m.tmuxClient == nil {
 			return nil, errors.New("tmux backend requested but unavailable")
 		}
-		backend, err = m.tmuxClient.CreatePane(ctx, id, command, req.Args, cwd, cols, rows)
+		command, args := commandWithEnv(command, req.Args, req.Env)
+		backend, err = m.tmuxClient.CreatePane(ctx, id, command, args, cwd, cols, rows)
 	default:
 		return nil, fmt.Errorf("invalid terminal backend %q (must be auto, pty, or tmux)", req.Backend)
 	}
@@ -400,18 +435,23 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 		m.mu.Unlock()
 		return nil, errors.New("session not found")
 	}
+	scrollback := runtime.scrollback
+	m.mu.Unlock()
+	runtime.scrollbackMu.Lock()
+	m.mu.Lock()
 	sub := &subscriber{fn: fn, active: true, replaySeq: runtime.seq}
 	runtime.subs = append(runtime.subs, sub)
-	scrollback := runtime.scrollback
 	m.mu.Unlock()
 
 	// Holding the individual subscriber lock makes replay complete before a
 	// concurrent forward can deliver newer frames to this subscriber.
 	sub.mu.Lock()
-	if data, err := os.ReadFile(scrollback); err == nil && len(data) > 0 && sub.active {
-		sub.fn(protocol.PTYOutputEnvelope{Type: "pty.output", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: sub.replaySeq}, protocol.SessionStateEnvelope{})
+	data, _ := os.ReadFile(scrollback)
+	if sub.active {
+		sub.fn(protocol.PTYOutputEnvelope{Type: "pty.baseline", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: sub.replaySeq}, protocol.SessionStateEnvelope{})
 	}
 	sub.mu.Unlock()
+	runtime.scrollbackMu.Unlock()
 
 	var once sync.Once
 	return func() {
@@ -538,6 +578,8 @@ func (m *Manager) readOutput(runtime *TerminalRuntime) {
 }
 
 func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
+	runtime.scrollbackMu.Lock()
+	defer runtime.scrollbackMu.Unlock()
 	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
 	plain := detect.StripANSI(string(chunk))
 

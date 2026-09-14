@@ -46,6 +46,8 @@ type AgentSummary struct {
 	ID                string          `json:"id"`
 	Adapter           string          `json:"adapter"`
 	TerminalSessionID string          `json:"terminalSessionId"`
+	OMPSessionID      string          `json:"-"`
+	OMPSessionFile    string          `json:"-"`
 	CWD               string          `json:"cwd"`
 	State             string          `json:"state"`
 	Capabilities      json.RawMessage `json:"capabilities"`
@@ -114,7 +116,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}, {version: 5, apply: migrate0005}} {
+	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}, {version: 5, apply: migrate0005}, {version: 6, apply: migrate0006}, {version: 7, apply: migrate0007}, {version: 8, apply: migrate0008}} {
 		var applied bool
 		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)`, migration.version).Scan(&applied); err != nil {
 			return err
@@ -189,6 +191,35 @@ func migrate0005(tx *sql.Tx) error {
 	return err
 }
 
+func migrate0006(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE agent_history (history_seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(agent_id, event_id))`)
+	return err
+}
+
+func migrate0007(tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE INDEX agent_history_agent_seq ON agent_history(agent_id, history_seq)`,
+		`ALTER TABLE transcript_state ADD COLUMN boundary_fingerprint TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrate0008(tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE agent_sessions ADD COLUMN omp_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_sessions ADD COLUMN omp_session_file TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	payload, err := json.Marshal(term)
 	if err != nil {
@@ -242,7 +273,7 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
+	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, omp_session_id, omp_session_file, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, omp_session_id=CASE WHEN agent_sessions.omp_session_id = '' THEN excluded.omp_session_id ELSE agent_sessions.omp_session_id END, omp_session_file=CASE WHEN agent_sessions.omp_session_file = '' THEN excluded.omp_session_file ELSE agent_sessions.omp_session_file END, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.OMPSessionID, agent.OMPSessionFile, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
 		return err
 	}
 	result, err := appendRuntimeEvent(tx, agent.ID, kind, payload)
@@ -349,9 +380,74 @@ func (s *Store) RecordEvent(surfaceID, kind string, payload any) (int64, error) 
 	if err == nil {
 		s.enqueuePublished(Event{Cursor: cursor, SurfaceID: surfaceID, Kind: kind, Payload: data, CreatedAt: time.Now().UTC()})
 	}
+
 	s.lock.Unlock()
 	locked = false
 	return cursor, err
+}
+
+type AgentTranscriptEvent struct {
+	EventID string
+	Kind    string
+	Payload json.RawMessage
+}
+
+type AgentHistoryEntry struct {
+	HistorySeq int64           `json:"historySeq"`
+	AgentID    string          `json:"agentId"`
+	EventID    string          `json:"eventId"`
+	Kind       string          `json:"kind"`
+	Payload    json.RawMessage `json:"payload"`
+	CreatedAt  time.Time       `json:"createdAt"`
+}
+type AgentTranscriptCommit struct {
+	EventID string
+	Event   Event
+}
+
+// RecordAgentTranscript commits semantic history, replay events, and checkpoint together.
+func (s *Store) RecordAgentTranscript(agentID string, events []AgentTranscriptEvent, state TranscriptState) ([]AgentTranscriptCommit, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	committed := make([]AgentTranscriptCommit, 0, len(events))
+	for _, input := range events {
+		result, err := tx.Exec(`INSERT OR IGNORE INTO agent_history (agent_id,event_id,kind,payload,created_at) VALUES (?,?,?,?,?)`, agentID, input.EventID, input.Kind, input.Payload, time.Now().Unix())
+		if err != nil {
+			return nil, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if changed == 0 {
+			continue
+		}
+		runtimeResult, err := appendRuntimeEvent(tx, agentID, input.Kind, input.Payload)
+		if err != nil {
+			return nil, err
+		}
+		cursor, err := runtimeResult.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		committed = append(committed, AgentTranscriptCommit{EventID: input.EventID, Event: Event{Cursor: cursor, SurfaceID: agentID, Kind: input.Kind, Payload: input.Payload, CreatedAt: time.Now().UTC()}})
+	}
+	_, err = tx.Exec(`INSERT INTO transcript_state (agent_id,transcript_path,file_offset,file_inode,file_size,file_mtime,boundary_fingerprint,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET transcript_path=excluded.transcript_path,file_offset=excluded.file_offset,file_inode=excluded.file_inode,file_size=excluded.file_size,file_mtime=excluded.file_mtime,boundary_fingerprint=excluded.boundary_fingerprint,updated_at=excluded.updated_at`, state.AgentID, state.TranscriptPath, state.FileOffset, state.FileInode, state.FileSize, state.FileMtime, state.BoundaryFingerprint, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	for _, event := range committed {
+		s.enqueuePublished(event.Event)
+	}
+	return committed, nil
 }
 
 func appendRuntimeEvent(tx *sql.Tx, surfaceID, kind string, payload []byte) (sql.Result, error) {
@@ -430,7 +526,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	agents, err := s.db.Query(`SELECT id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at FROM agent_sessions ORDER BY created_at, id`)
+	agents, err := s.db.Query(`SELECT id, adapter, terminal_session_id, omp_session_id, omp_session_file, cwd, state, capabilities, created_at, updated_at FROM agent_sessions ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +534,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 	for agents.Next() {
 		var agent AgentSummary
 		var created, updated int64
-		if err := agents.Scan(&agent.ID, &agent.Adapter, &agent.TerminalSessionID, &agent.CWD, &agent.State, &agent.Capabilities, &created, &updated); err != nil {
+		if err := agents.Scan(&agent.ID, &agent.Adapter, &agent.TerminalSessionID, &agent.OMPSessionID, &agent.OMPSessionFile, &agent.CWD, &agent.State, &agent.Capabilities, &created, &updated); err != nil {
 			return nil, err
 		}
 		agent.CreatedAt, agent.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
@@ -500,6 +596,47 @@ func (s *Store) Events(after int64, limit int) ([]Event, int64, error) {
 		events = append(events, event)
 	}
 	return events, next, rows.Err()
+}
+
+// AgentHistory returns ordered durable semantic events for an agent and the current runtime high-water cursor.
+func (s *Store) AgentHistory(agentID string) ([]AgentHistoryEntry, int64, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback()
+
+	var cursor int64
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(global_seq), 0) FROM runtime_events`).Scan(&cursor); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := tx.Query(`SELECT history_seq, agent_id, event_id, kind, payload, created_at FROM agent_history WHERE agent_id = ? ORDER BY history_seq ASC`, agentID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	entries := make([]AgentHistoryEntry, 0)
+	for rows.Next() {
+		var entry AgentHistoryEntry
+		var created int64
+		if err := rows.Scan(&entry.HistorySeq, &entry.AgentID, &entry.EventID, &entry.Kind, &entry.Payload, &created); err != nil {
+			return nil, 0, err
+		}
+		entry.CreatedAt = time.Unix(created, 0).UTC()
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, err
+	}
+	return entries, cursor, nil
 }
 
 func (s *Store) Close() error {
@@ -608,28 +745,30 @@ func (s *Store) publish(event Event) {
 }
 
 type TranscriptState struct {
-	AgentID        string
-	TranscriptPath string
-	FileOffset     int64
-	FileInode      uint64
-	FileSize       int64
-	FileMtime      int64
+	AgentID             string
+	TranscriptPath      string
+	FileOffset          int64
+	FileInode           uint64
+	FileSize            int64
+	FileMtime           int64
+	BoundaryFingerprint string
 }
 
-func (s *Store) SaveTranscriptState(agentID string, transcriptPath string, offset int64, inode uint64, size int64, mtime int64) error {
+func (s *Store) SaveTranscriptState(agentID string, transcriptPath string, offset int64, inode uint64, size int64, mtime int64, fingerprint string) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`INSERT INTO transcript_state (agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO transcript_state (agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime, boundary_fingerprint, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id) DO UPDATE SET
 			transcript_path = excluded.transcript_path,
 			file_offset = excluded.file_offset,
 			file_inode = excluded.file_inode,
 			file_size = excluded.file_size,
 			file_mtime = excluded.file_mtime,
+			boundary_fingerprint = excluded.boundary_fingerprint,
 			updated_at = excluded.updated_at`,
-		agentID, transcriptPath, offset, inode, size, mtime, now)
+		agentID, transcriptPath, offset, inode, size, mtime, fingerprint, now)
 	return err
 }
 
@@ -637,8 +776,8 @@ func (s *Store) LoadTranscriptState(agentID string) (*TranscriptState, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	var ts TranscriptState
-	err := s.db.QueryRow(`SELECT agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime FROM transcript_state WHERE agent_id = ?`, agentID).
-		Scan(&ts.AgentID, &ts.TranscriptPath, &ts.FileOffset, &ts.FileInode, &ts.FileSize, &ts.FileMtime)
+	err := s.db.QueryRow(`SELECT agent_id, transcript_path, file_offset, file_inode, file_size, file_mtime, boundary_fingerprint FROM transcript_state WHERE agent_id = ?`, agentID).
+		Scan(&ts.AgentID, &ts.TranscriptPath, &ts.FileOffset, &ts.FileInode, &ts.FileSize, &ts.FileMtime, &ts.BoundaryFingerprint)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

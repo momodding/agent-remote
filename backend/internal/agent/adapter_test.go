@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,6 +120,127 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	}
 }
 
+func TestAgentCreateRequestForwardsBackend(t *testing.T) {
+	store, err := runtimestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, t.TempDir())
+	defer svc.Close()
+	if _, err := svc.CreateAgentRequest(context.Background(), protocol.CreateSessionRequest{CWD: "/workspace", Name: "Agent", Backend: "tmux"}); err != nil {
+		t.Fatal(err)
+	}
+	if termMgr.createdReq.Backend != "tmux" {
+		t.Fatalf("backend = %q, want tmux", termMgr.createdReq.Backend)
+	}
+}
+
+func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	first := NewService(newMockTermMgr(), store, stateDir)
+	agent, err := first.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := loadBridgeSecret(stateDir, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind, err := net.Dial("unix", first.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret, SessionID: "omp-session", SessionFile: "/sessions/omp.jsonl"})
+	if _, err := bind.Write(append(frame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); !first.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if !first.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("initial Agent bridge did not bind before restart")
+	}
+	_ = bind.Close()
+	_ = first.Close()
+
+	second := NewService(newMockTermMgr(), store, stateDir)
+	defer second.Close()
+	conn, err := net.Dial("unix", second.bridgeServer.SocketPath())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(append(frame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); !second.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if !second.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("restored Agent rejected its matching persisted bridge identity")
+	}
+	mismatch, err := net.Dial("unix", second.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mismatch.Close()
+	mismatchFrame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret, SessionID: "other-session", SessionFile: "/sessions/other.jsonl"})
+	if _, err := mismatch.Write(append(mismatchFrame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	_ = mismatch.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := mismatch.Read(make([]byte, 1)); err == nil {
+		t.Fatal("mismatched persisted OMP identity was accepted")
+	}
+	if !second.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("mismatched reconnect displaced the matching bridge")
+	}
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Agents) != 1 || snapshot.Agents[0].OMPSessionID != "omp-session" || snapshot.Agents[0].OMPSessionFile != "/sessions/omp.jsonl" {
+		t.Fatalf("persisted OMP association = %+v", snapshot.Agents)
+	}
+}
+func TestBridgeHelloReplacesFallbackTranscriptTailer(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.RLock()
+	inst := svc.agents[agent.ID]
+	svc.mu.RUnlock()
+	inst.mu.Lock()
+	inst.tailer = NewTranscriptTailer(agent.ID, "/sessions/fallback.jsonl", store)
+	inst.mu.Unlock()
+	if !svc.handleBridgeHello(agent.ID, BridgeHello{SessionID: "omp-session", SessionFile: "/sessions/authoritative.jsonl"}) {
+		t.Fatal("bridge hello rejected")
+	}
+	inst.mu.RLock()
+	path := inst.tailer.path
+	inst.mu.RUnlock()
+	if path != "/sessions/authoritative.jsonl" {
+		t.Fatalf("tailer path = %q, want authoritative OMP session file", path)
+	}
+}
+
 func TestCreateAgentClosesTerminalWhenShutdownWins(t *testing.T) {
 	store, err := runtimestore.Open(t.TempDir())
 	if err != nil {
@@ -217,6 +340,59 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for agent state event")
 		}
+	}
+}
+
+func TestAgentServiceTranscriptSameKindCursors(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sessionsDir := ComputeDefaultSessionDir(stateDir, "/workspace")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := filepath.Join(sessionsDir, "2026-09-11_01.jsonl")
+	if err := os.WriteFile(sessionFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "OMP Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan protocol.AgentEvent, 2)
+	unsub, err := svc.Subscribe(agent.ID, func(ev protocol.AgentEvent) {
+		if ev.Type == "message.assistant" {
+			received <- ev
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	lines := "{\"type\":\"message\",\"id\":\"msg-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"one\"}]}}\n{\"type\":\"message\",\"id\":\"msg-2\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n"
+	if err := os.WriteFile(sessionFile, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var first, second protocol.AgentEvent
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-received:
+			if i == 0 {
+				first = event
+			} else {
+				second = event
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for transcript events")
+		}
+	}
+	if first.Cursor == 0 || second.Cursor <= first.Cursor || first.EventID == second.EventID {
+		t.Fatalf("unexpected cursors: %+v %+v", first, second)
 	}
 }
 

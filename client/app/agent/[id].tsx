@@ -28,7 +28,7 @@ import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
 import type { AgentWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
-import type { AgentEvent, TmuxPane } from '../../src/protocol';
+import type { AgentCapability, AgentEvent, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
   id: string;
@@ -41,6 +41,33 @@ type MessageItem = {
   cursor?: number;
 };
 
+function toMessageItem(event: AgentEvent): MessageItem | null {
+  const id = event.eventId || event.messageId;
+  if (!id) return null;
+  return {
+    id,
+    type: event.type,
+    text: event.text,
+    toolName: event.toolName,
+    toolInput: event.toolInput,
+    toolOutput: event.toolOutput,
+    state: event.state,
+    cursor: event.cursor,
+  };
+}
+
+function eventsToMessageItems(events: AgentEvent[]): MessageItem[] {
+  const seen = new Set<string>();
+  const items: MessageItem[] = [];
+  for (const event of events) {
+    const item = toMessageItem(event);
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push(item);
+  }
+  return items;
+}
+
 export default function AgentScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -52,6 +79,7 @@ export default function AgentScreen() {
   const [promptText, setPromptText] = useState('');
   const [sending, setSending] = useState(false);
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>(tab?.view ?? 'chat');
+  const [capabilities, setCapabilities] = useState<AgentCapability[]>([]);
   const [terminalOutput, setTerminalOutput] = useState('');
   const [keyboardInset, setKeyboardInset] = useState(0);
 
@@ -89,54 +117,122 @@ export default function AgentScreen() {
   }, [tab?.tabId]);
 
   // Subscribe to Agent Runtime Events
+  // Subscribe to Agent Runtime Events and Bootstrap History
   useEffect(() => {
     const runtime = runtimeChannelRef.current;
     if (!tab?.agentSessionId || !runtime || !api) return;
     let active = true;
-    const currentAgentChannelIdRef = { current: null as string | null };
+    let isSyncing = false;
+    const eventBuffer: AgentEvent[] = [];
+    void api.agent(tab.agentSessionId).then((agent) => {
+      if (!active) return;
+      setCapabilities(agent.capabilities);
+      dispatch((prev) => updateTab(prev, tab.tabId, { state: agent.state }));
+    }).catch(() => {});
 
-    const handleCursorExpired = async () => {
-      // Fetch fresh snapshot; use its global cursor to resume from fresh point
-      const snapshot = await api!.runtimeSnapshot();
-      return snapshot.cursor;
+    const loadAndReplaceHistory = async (): Promise<number> => {
+      isSyncing = true;
+      eventBuffer.length = 0;
+      try {
+        const history = await api.agentHistory(tab.agentSessionId);
+        if (!active) return history.cursor ?? 0;
+
+        for (let i = history.events.length - 1; i >= 0; i--) {
+          if (history.events[i].state) {
+            dispatch((prev) => updateTab(prev, tab.tabId, { state: history.events[i].state as AgentWorkspaceTab['state'] }));
+            break;
+          }
+        }
+
+        const baseItems = eventsToMessageItems(history.events);
+        const seen = new Set<string>(baseItems.map((item) => item.id));
+
+        const mergedItems = [...baseItems];
+        for (const bufferedEvent of eventBuffer) {
+          const item = toMessageItem(bufferedEvent);
+          if (item && !seen.has(item.id)) {
+            seen.add(item.id);
+            mergedItems.push(item);
+          }
+        }
+
+        setMessages(mergedItems);
+        return history.cursor ?? 0;
+      } finally {
+        isSyncing = false;
+        eventBuffer.length = 0;
+      }
     };
 
-    void runtime.openAgentChannel(tab.agentSessionId, 0, (event: AgentEvent) => {
+    const handleEvent = (event: AgentEvent) => {
       if (!active) return;
+      if (event.capabilities) {
+        setCapabilities(event.capabilities);
+      }
       if (event.state) {
         dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
       }
-      setMessages((prev) => {
-        const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
-
-        const item: MessageItem = {
-          id,
-          type: event.type,
-          text: event.text,
-          toolName: event.toolName,
-          toolInput: event.toolInput,
-          toolOutput: event.toolOutput,
-          state: event.state,
-          cursor: event.cursor,
-        };
-        return [...prev, item];
-      });
-    }, handleCursorExpired).then(({ channelId }) => {
-      if (!active) {
-        runtime.closeChannel(channelId);
+      if (isSyncing) {
+        eventBuffer.push(event);
         return;
       }
-      currentAgentChannelIdRef.current = channelId;
-    }).catch((err) => {
-      if (active) {
-        console.error('Failed to open agent channel:', err);
+      const item = toMessageItem(event);
+      if (!item) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === item.id)) {
+          return prev;
+        }
+        return [...prev, item];
+      });
+    };
+
+    const handleCursorExpired = async (): Promise<number> => {
+      // ponytail: bounded backoff retry for transient history recovery
+      const maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (!active) return 0;
+        try {
+          return await loadAndReplaceHistory();
+        } catch (err) {
+          if (attempt === maxAttempts - 1 || !active) throw err;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(250 * 2 ** attempt, 2000)));
+        }
       }
-    });
+      return 0;
+    };
+
+    void (async () => {
+      let initialCursor = 0;
+      try {
+        initialCursor = await loadAndReplaceHistory();
+      } catch (err) {
+        console.error('Failed to bootstrap agent history:', err);
+      }
+      if (!active) return;
+      try {
+        const { channelId } = await runtime.openAgentChannel(
+          tab.agentSessionId,
+          initialCursor,
+          handleEvent,
+          handleCursorExpired,
+        );
+        if (!active) {
+          runtime.closeChannel(channelId);
+          return;
+        }
+        currentAgentChannelIdRef.current = channelId;
+      } catch (err) {
+        if (active) {
+          console.error('Failed to open agent channel:', err);
+        }
+      }
+    })();
 
     return () => {
       active = false;
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
+        currentAgentChannelIdRef.current = null;
       }
     };
   }, [tab?.agentSessionId, connection, api, dispatch, tab?.tabId]);
@@ -146,9 +242,15 @@ export default function AgentScreen() {
     if (!tab || !connection || !daemonChannelRef.current) return;
     const daemon = daemonChannelRef.current;
     setTerminalOutput('');
-    const decoder = new TextDecoder();
+    let decoder = new TextDecoder();
+    let lastSeq = -1;
     ptyUnsubRef.current = daemon.subscribe(tab.terminalSessionId, (msg) => {
-      if (msg.type === 'pty.output') {
+      if (msg.type === 'pty.baseline') {
+        decoder = new TextDecoder();
+        lastSeq = msg.seq;
+        setTerminalOutput(decoder.decode(decodeBase64(msg.data), { stream: true }));
+      } else if (msg.type === 'pty.output' && msg.seq > lastSeq) {
+        lastSeq = msg.seq;
         const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
         if (chunk) setTerminalOutput((prev) => prev + chunk);
       }
@@ -197,7 +299,7 @@ export default function AgentScreen() {
 	}, [dispatch, tab]);
 
   const sendPrompt = useCallback(async () => {
-    if (!promptText.trim() || !api || !tab || sending) return;
+    if (!promptText.trim() || !api || !tab || sending || !capabilities.some((capability) => capability.name === 'prompt' && capability.enabled)) return;
     const text = promptText.trim();
     setSending(true);
     try {
@@ -218,10 +320,10 @@ export default function AgentScreen() {
     } finally {
       setSending(false);
     }
-  }, [promptText, api, tab, sending]);
+  }, [promptText, api, tab, sending, capabilities]);
 
   const abortAgent = useCallback(async () => {
-    if (!api || !tab) return;
+    if (!api || !tab || !capabilities.some((capability) => capability.name === 'abort' && capability.enabled)) return;
     try {
       await api.abortAgent(tab.agentSessionId);
     } catch (error) {
@@ -236,7 +338,7 @@ export default function AgentScreen() {
         Alert.alert('Abort Failed', msg);
       }
     }
-  }, [api, tab]);
+  }, [api, tab, capabilities]);
 
   const close = useCallback(() => {
     if (!tab) return;
@@ -280,6 +382,9 @@ export default function AgentScreen() {
         return '#9CA3AF';
     }
   }, [tab?.state]);
+  const promptEnabled = capabilities.some((capability) => capability.name === 'prompt' && capability.enabled);
+  const abortEnabled = capabilities.some((capability) => capability.name === 'abort' && capability.enabled);
+
 
   const renderMessage = ({ item }: { item: MessageItem }) => {
     switch (item.type) {
@@ -379,9 +484,11 @@ export default function AgentScreen() {
           <Feather name="columns" size={18} color="#D19A2C" />
         </Pressable>
 
-        <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
-          <Feather name="slash" size={18} color="#EF4444" />
-        </Pressable>
+        {abortEnabled && (
+          <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
+            <Feather name="slash" size={18} color="#EF4444" />
+          </Pressable>
+        )}
         <Pressable accessibilityLabel="Close" style={styles.headerIcon} onPress={close}>
           <Feather name="x" size={20} color="#888" />
         </Pressable>
@@ -410,30 +517,36 @@ export default function AgentScreen() {
             }
           />
 
-          {/* Prompt Bar */}
-          <View style={styles.promptBar}>
-            <TextInput
-              style={styles.promptInput}
-              placeholder="Send instruction to agent..."
-              placeholderTextColor="#6B7280"
-              value={promptText}
-              onChangeText={setPromptText}
-              multiline
-              maxLength={4000}
-            />
-            <Pressable
-              accessibilityLabel="Send Prompt"
-              style={[styles.sendButton, (!promptText.trim() || sending) && styles.sendButtonDisabled]}
-              onPress={sendPrompt}
-              disabled={!promptText.trim() || sending}
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color="#0A0A0A" />
-              ) : (
-                <Feather name="send" size={18} color="#0A0A0A" />
-              )}
+          {promptEnabled ? (
+            <View style={styles.promptBar}>
+              <TextInput
+                style={styles.promptInput}
+                placeholder="Send instruction to agent..."
+                placeholderTextColor="#6B7280"
+                value={promptText}
+                onChangeText={setPromptText}
+                multiline
+                maxLength={4000}
+              />
+              <Pressable
+                accessibilityLabel="Send Prompt"
+                style={[styles.sendButton, (!promptText.trim() || sending) && styles.sendButtonDisabled]}
+                onPress={sendPrompt}
+                disabled={!promptText.trim() || sending}
+              >
+                {sending ? (
+                  <ActivityIndicator size="small" color="#0A0A0A" />
+                ) : (
+                  <Feather name="send" size={18} color="#0A0A0A" />
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable accessibilityLabel="Open Terminal to interact" style={styles.terminalFallback} onPress={() => setViewMode('terminal')}>
+              <Feather name="terminal" size={16} color="#D19A2C" />
+              <Text style={styles.terminalFallbackText}>Open Terminal to interact</Text>
             </Pressable>
-          </View>
+          )}
         </KeyboardAvoidingView>
       ) : (
         <View style={styles.terminalContainer}>
@@ -597,6 +710,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendButtonDisabled: { opacity: 0.4 },
+  terminalFallback: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
+  terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
   terminalContainer: { flex: 1 },
   connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
 });

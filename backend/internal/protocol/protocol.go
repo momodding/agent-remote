@@ -54,6 +54,8 @@ type AgentSession struct {
 	ID                string            `json:"id"`
 	Adapter           string            `json:"adapter"`
 	TerminalSessionID string            `json:"terminalSessionId"`
+	OMPSessionID      string            `json:"-"`
+	OMPSessionFile    string            `json:"-"`
 	CWD               string            `json:"cwd"`
 	State             string            `json:"state"`
 	Capabilities      []AgentCapability `json:"capabilities"`
@@ -62,17 +64,25 @@ type AgentSession struct {
 }
 
 type AgentEvent struct {
-	Type       string `json:"type"`
-	Cursor     int64  `json:"cursor,omitempty"`
-	EventID    string `json:"eventId"`
-	AgentID    string `json:"agentId"`
-	MessageID  string `json:"messageId,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	Text       string `json:"text,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	ToolInput  any    `json:"toolInput,omitempty"`
-	ToolOutput any    `json:"toolOutput,omitempty"`
-	State      string `json:"state,omitempty"`
+	Type         string            `json:"type"`
+	Cursor       int64             `json:"cursor,omitempty"`
+	EventID      string            `json:"eventId"`
+	AgentID      string            `json:"agentId"`
+	MessageID    string            `json:"messageId,omitempty"`
+	ToolCallID   string            `json:"toolCallId,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	ToolName     string            `json:"toolName,omitempty"`
+	ToolInput    any               `json:"toolInput,omitempty"`
+	ToolOutput   any               `json:"toolOutput,omitempty"`
+	State        string            `json:"state,omitempty"`
+	Capabilities []AgentCapability `json:"capabilities,omitempty"`
+	IsError      bool              `json:"isError,omitempty"`
+	Aborted      bool              `json:"aborted,omitempty"`
+}
+
+type AgentHistoryResponse struct {
+	Cursor int64        `json:"cursor"`
+	Events []AgentEvent `json:"events"`
 }
 type RuntimeLifecycleEvent struct {
 	SurfaceID string `json:"surfaceId"`
@@ -145,13 +155,14 @@ type ChannelClosedEnvelope struct {
 }
 
 type CreateSessionRequest struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	CWD     string   `json:"cwd"`
-	Cols    int      `json:"cols"`
-	Rows    int      `json:"rows"`
-	Backend string   `json:"backend,omitempty"`
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	CWD     string            `json:"cwd"`
+	Cols    int               `json:"cols"`
+	Rows    int               `json:"rows"`
+	Backend string            `json:"backend,omitempty"`
+	Env     map[string]string `json:"-"`
 }
 
 type ResizeSessionRequest struct {

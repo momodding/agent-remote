@@ -1,4 +1,5 @@
 import type {
+  AgentHistoryResponse,
   AgentSession,
   CopyFileRequest,
   CreateSessionRequest,
@@ -56,7 +57,11 @@ export class AgenticRemoteAPI {
     return this.request(`/v1/agents/${encodeURIComponent(id)}`);
   }
 
-  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd'>): Promise<AgentSession> {
+
+  async agentHistory(id: string): Promise<AgentHistoryResponse> {
+    return this.request(`/v1/agents/${encodeURIComponent(id)}/history`);
+  }
+  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd' | 'backend'>): Promise<AgentSession> {
     return this.request('/v1/agents', { method: 'POST', body: JSON.stringify(request) });
   }
 

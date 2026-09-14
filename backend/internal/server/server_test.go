@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,7 +35,7 @@ func (noopNotify) RegisterToken(context.Context, protocol.NotifyRegisterRequest)
 
 type replayOverflowAgents struct{}
 
-func (replayOverflowAgents) CreateAgent(context.Context, string, string, ...string) (*protocol.AgentSession, error) {
+func (replayOverflowAgents) CreateAgentRequest(context.Context, protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
 	return nil, nil
 }
 func (replayOverflowAgents) GetAgent(string) (*protocol.AgentSession, error) { return nil, nil }
@@ -45,6 +47,32 @@ func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (f
 		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
 	}
 	return func() {}, nil
+}
+func (replayOverflowAgents) History(agentID string) (*protocol.AgentHistoryResponse, error) {
+	if agentID == "missing" {
+		return nil, errors.New("agent not found")
+	}
+	return &protocol.AgentHistoryResponse{
+		Cursor: 42,
+		Events: []protocol.AgentEvent{
+			{
+				Type:    "message.assistant",
+				EventID: "msg-1",
+				AgentID: agentID,
+				Text:    "hello world",
+			},
+		},
+	}, nil
+}
+
+type recordingAgents struct {
+	replayOverflowAgents
+	req protocol.CreateSessionRequest
+}
+
+func (a *recordingAgents) CreateAgentRequest(_ context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
+	a.req = req
+	return &protocol.AgentSession{}, nil
 }
 
 type silentAgents struct{ replayOverflowAgents }
@@ -449,8 +477,25 @@ func TestDaemonIdentityRequiresBearerAndReturnsCapabilities(t *testing.T) {
 	if result.Identity.HostID != srv.tls.Fingerprint || result.Identity.ConnectionID != srv.tls.Fingerprint {
 		t.Fatalf("unexpected identity: %#v", result.Identity)
 	}
-	if len(result.Capabilities) != 3 || result.Capabilities[0].Name != "sessions" || !result.Capabilities[0].Enabled || result.Capabilities[1].Name != "files" || !result.Capabilities[1].Enabled || result.Capabilities[2].Name != "vnc" {
-		t.Fatalf("unexpected capabilities: %#v", result.Capabilities)
+	byName := make(map[string]bool, len(result.Capabilities))
+	for _, cap := range result.Capabilities {
+		byName[cap.Name] = cap.Enabled
+	}
+	if len(result.Capabilities) != 6 {
+		t.Fatalf("unexpected capability count: %#v", result.Capabilities)
+	}
+	if !byName["sessions"] || !byName["files"] || !byName["terminal.pty"] {
+		t.Fatalf("expected sessions/files/terminal.pty enabled: %#v", result.Capabilities)
+	}
+	if enabled, ok := byName["terminal.tmux"]; !ok || enabled {
+		t.Fatalf("expected terminal.tmux disabled without a wired tmux client: %#v", result.Capabilities)
+	}
+	_, wantOMPErr := exec.LookPath("omp")
+	if enabled, ok := byName["agent.omp"]; !ok || enabled != (wantOMPErr == nil) {
+		t.Fatalf("expected agent.omp to reflect exec.LookPath: %#v", result.Capabilities)
+	}
+	if _, ok := byName["vnc"]; !ok {
+		t.Fatalf("expected vnc capability present: %#v", result.Capabilities)
 	}
 }
 
@@ -698,6 +743,80 @@ func TestSessionWSAcceptsPTYAfterToken(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal(ctx.Err())
+}
+
+func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "noisy-shell",
+		Command: "sh",
+		Args:    []string{"-c", `i=0; while [ "$i" -lt 40 ]; do printf 'noise-%03d\n' "$i"; i=$((i + 1)); sleep 0.01; done; exec sh`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token := testBearerToken(t, srv, pairings)
+
+	open := func() *websocket.Conn {
+		conn, _, dialErr := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		if writeErr := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: token}); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		return conn
+	}
+	readBaseline := func(conn *websocket.Conn) string {
+		var frame protocol.PTYOutputEnvelope
+		if readErr := wsReadJSON(ctx, conn, &frame); readErr != nil {
+			t.Fatal(readErr)
+		}
+		if frame.Type != "pty.baseline" || frame.SessionID != summary.ID {
+			t.Fatalf("expected authenticated baseline for %q, got %+v", summary.ID, frame)
+		}
+		data, decodeErr := base64.StdEncoding.DecodeString(frame.Data)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		return string(data)
+	}
+	// First connection: receive baseline, write a known marker, then disconnect.
+	first := open()
+	_ = readBaseline(first)
+	if writeErr := wsWriteJSON(ctx, first, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": base64.StdEncoding.EncodeToString([]byte("echo reconnect-marker\n"))}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// Wait for the shell to echo the marker into scrollback.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
+		if strings.Contains(preview, "reconnect-marker") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := first.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+	// session.Manager.Close propagates through the session's subscriber teardown;
+	// disposal of the daemon-channel WebSocket is covered by disposeDaemonChannel
+	// tests in client/src/lib/daemon-channel.test.ts.
+
+	// Second connection: reconnect baseline must include the accumulated noise and the marker.
+	second := open()
+	defer second.Close(websocket.StatusNormalClosure, "")
+	reconnectBaseline := readBaseline(second)
+	if !strings.Contains(reconnectBaseline, "noise-") {
+		t.Fatalf("reconnect baseline omitted shell output: %q", reconnectBaseline)
+	}
+	if !strings.Contains(reconnectBaseline, "reconnect-marker") {
+		t.Fatalf("reconnect baseline missing echo'd marker (not exact convergence): %q", reconnectBaseline)
+	}
 }
 
 func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
@@ -1191,6 +1310,67 @@ func TestLogRequestRedactsTokens(t *testing.T) {
 	}
 	if !strings.Contains(logOut, "token=REDACTED") {
 		t.Fatalf("expected REDACTED marker in logs: %s", logOut)
+	}
+}
+
+func TestAgentReplayAllowsThinkingEvents(t *testing.T) {
+	if !isAgentEventKind("message.thinking") {
+		t.Fatal("message.thinking must survive Agent replay")
+	}
+}
+
+func TestAgentReplayAllowsSystemEvents(t *testing.T) {
+	if !isAgentEventKind("message.system") {
+		t.Fatal("message.system must survive Agent replay")
+	}
+}
+
+func TestRuntimeAgentCreateForwardsBackend(t *testing.T) {
+	agents := &recordingAgents{}
+	server := &Server{agents: agents}
+	server.executeCommand(context.Background(), protocol.CommandEnvelope{Command: "agent.create", Args: map[string]any{"cwd": "/workspace", "name": "Agent", "backend": "tmux"}}, func(any) error { return nil })
+	if agents.req.Backend != "tmux" {
+		t.Fatalf("backend = %q, want tmux", agents.req.Backend)
+	}
+}
+
+func TestCreateAgentRESTForwardsBackend(t *testing.T) {
+	srv := newTestServer(t)
+	agents := &recordingAgents{}
+	srv.agents = agents
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents", strings.NewReader(`{"cwd":"/workspace","name":"Agent","backend":"tmux"}`))
+	resp := httptest.NewRecorder()
+	srv.handleAgents(resp, req)
+	if resp.Code != http.StatusCreated || agents.req.Backend != "tmux" {
+		t.Fatalf("status=%d backend=%q", resp.Code, agents.req.Backend)
+	}
+}
+
+func TestAgentHistoryEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	srv.agents = replayOverflowAgents{}
+
+	// Success case
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/agent-123/history", nil)
+	resp := httptest.NewRecorder()
+	srv.handleAgentAction(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+	var history protocol.AgentHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if history.Cursor != 42 || len(history.Events) != 1 || history.Events[0].EventID != "msg-1" {
+		t.Fatalf("unexpected history response: %+v", history)
+	}
+
+	// Not found case
+	reqNotFound := httptest.NewRequest(http.MethodGet, "/v1/agents/missing/history", nil)
+	respNotFound := httptest.NewRecorder()
+	srv.handleAgentAction(respNotFound, reqNotFound)
+	if respNotFound.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", respNotFound.Code)
 	}
 }
 

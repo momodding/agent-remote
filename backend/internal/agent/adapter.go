@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -62,19 +64,22 @@ type agentInstance struct {
 }
 
 type Service struct {
-	mu         sync.RWMutex
-	termMgr    TerminalManager
-	store      *runtimestore.Store
-	agentDir   string
-	agents     map[string]*agentInstance
-	byTerminal map[string]string // terminalID -> agentID
-	closing    bool
+	mu           sync.RWMutex
+	termMgr      TerminalManager
+	store        *runtimestore.Store
+	agentDir     string
+	agents       map[string]*agentInstance
+	byTerminal   map[string]string // terminalID -> agentID
+	bridgeServer *BridgeServer
+	closing      bool
 }
 
 func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir string) *Service {
 	if agentDir == "" {
 		agentDir = DefaultAgentDir()
 	}
+	_ = os.MkdirAll(agentDir, 0o700)
+
 	s := &Service{
 		termMgr:    termMgr,
 		store:      store,
@@ -82,8 +87,184 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 		agents:     make(map[string]*agentInstance),
 		byTerminal: make(map[string]string),
 	}
+
+	socketPath := filepath.Join(agentDir, "bridge.sock")
+	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle); err == nil {
+		s.bridgeServer = bs
+	}
+
 	s.restorePersisted()
 	return s
+}
+
+func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
+	if hello.SessionID == "" || hello.SessionFile == "" {
+		return false
+	}
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return false
+	}
+
+	inst.mu.Lock()
+	if (inst.meta.OMPSessionID != "" && inst.meta.OMPSessionID != hello.SessionID) || (inst.meta.OMPSessionFile != "" && inst.meta.OMPSessionFile != hello.SessionFile) {
+		inst.mu.Unlock()
+		if s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+			s.terminateAgentRuntime(inst, "mismatched session identity on bridge connect")
+		}
+		return false
+	}
+	inst.meta.OMPSessionID = hello.SessionID
+	inst.meta.OMPSessionFile = hello.SessionFile
+	inst.sessionFile = hello.SessionFile
+	capsMap := make(map[string]bool)
+	for _, c := range hello.Capabilities {
+		capsMap[c] = true
+	}
+	inst.meta.Capabilities = []protocol.AgentCapability{
+		{Name: "chat", Enabled: true},
+		{Name: "prompt", Enabled: capsMap["prompt"]},
+		{Name: "abort", Enabled: capsMap["abort"]},
+		{Name: "model", Enabled: capsMap["model"]},
+		{Name: "thinking", Enabled: capsMap["thinking"]},
+	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	if inst.tailer == nil || inst.tailer.path != hello.SessionFile {
+		inst.tailer = NewTranscriptTailer(inst.meta.ID, hello.SessionFile, s.store)
+		_ = inst.tailer.RestoreState()
+	}
+	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+	return true
+}
+
+func (s *Service) handleBridgeDisconnect(agentID string) {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return
+	}
+
+	inst.mu.Lock()
+	inst.meta.Capabilities = []protocol.AgentCapability{
+		{Name: "chat", Enabled: true},
+		{Name: "prompt", Enabled: false},
+		{Name: "abort", Enabled: false},
+		{Name: "model", Enabled: false},
+		{Name: "thinking", Enabled: false},
+	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+}
+func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return
+	}
+
+	inst.mu.RLock()
+	curState := inst.meta.State
+	ompSessionID := inst.meta.OMPSessionID
+	ompSessionFile := inst.meta.OMPSessionFile
+	inst.mu.RUnlock()
+
+	if curState == "exited" {
+		return
+	}
+
+	if frame.Event == "session_changed" ||
+		(frame.SessionID != "" && ompSessionID != "" && frame.SessionID != ompSessionID) ||
+		(frame.SessionFile != "" && ompSessionFile != "" && frame.SessionFile != ompSessionFile) {
+		s.terminateAgentRuntime(inst, "session identity changed")
+		return
+	}
+
+	targetState := ""
+	switch frame.Event {
+	case "agent_start", "turn_start", "tool_start", "tool_end":
+		targetState = "working"
+	case "approval_requested":
+		targetState = "needsYou"
+	case "approval_resolved":
+		targetState = "working"
+	case "turn_end", "agent_end":
+		targetState = "idle"
+	case "session_shutdown":
+		targetState = "exited"
+	default:
+		if frame.State != "" {
+			targetState = frame.State
+		}
+	}
+
+	if targetState == "" {
+		return
+	}
+
+	if targetState == "exited" {
+		s.terminateAgentRuntime(inst, "bridge session shutdown")
+		return
+	}
+
+	inst.mu.Lock()
+	if inst.meta.State == "exited" {
+		inst.mu.Unlock()
+		return
+	}
+	if inst.meta.State == targetState {
+		inst.mu.Unlock()
+		return
+	}
+	inst.meta.State = targetState
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+}
+
+func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
+	inst.mu.Lock()
+	if inst.meta.State == "exited" {
+		inst.mu.Unlock()
+		return
+	}
+	inst.meta.State = "exited"
+	inst.meta.Capabilities = []protocol.AgentCapability{
+		{Name: "chat", Enabled: true},
+		{Name: "prompt", Enabled: false},
+		{Name: "abort", Enabled: false},
+		{Name: "model", Enabled: false},
+		{Name: "thinking", Enabled: false},
+	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	termID := inst.meta.TerminalSessionID
+	agentID := inst.meta.ID
+	stop := inst.stopTerminal
+	inst.stopTerminal = nil
+	inst.mu.Unlock()
+
+	if stop != nil {
+		stop()
+	}
+	if s.bridgeServer != nil {
+		s.bridgeServer.UnregisterAgent(agentID)
+	}
+	removeBridgeSecret(s.agentDir, agentID)
+	_ = s.termMgr.Close(termID)
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
 }
 
 func (s *Service) restorePersisted() {
@@ -102,12 +283,15 @@ func (s *Service) restorePersisted() {
 				ID:                a.ID,
 				Adapter:           a.Adapter,
 				TerminalSessionID: a.TerminalSessionID,
+				OMPSessionID:      a.OMPSessionID,
+				OMPSessionFile:    a.OMPSessionFile,
 				CWD:               a.CWD,
 				State:             a.State,
 				Capabilities:      caps,
 				CreatedAt:         a.CreatedAt,
 				UpdatedAt:         a.UpdatedAt,
 			},
+			sessionFile:  a.OMPSessionFile,
 			agentDir:     s.agentDir,
 			subscribers:  make(map[int]*AgentSubscriber),
 			stopPoll:     make(chan struct{}),
@@ -134,11 +318,13 @@ func (s *Service) restorePersisted() {
 		go s.pollTranscript(inst)
 		s.agents[a.ID] = inst
 		s.byTerminal[a.TerminalSessionID] = a.ID
+		if secret, err := loadBridgeSecret(s.agentDir, a.ID); err == nil && s.bridgeServer != nil {
+			s.bridgeServer.RegisterAgent(a.ID, secret)
+		}
 	}
 }
 
 func (s *Service) isTerminalRunning(terminalID string, snap *runtimestore.Snapshot) bool {
-	// ponytail: lister checked first, fallback to store snapshot
 	if lister, ok := s.termMgr.(terminalLister); ok {
 		for _, term := range lister.List(context.Background()) {
 			if term.ID == terminalID {
@@ -154,11 +340,17 @@ func (s *Service) isTerminalRunning(terminalID string, snap *runtimestore.Snapsh
 			}
 		}
 	}
-	return true
+	return false
 }
 
-// CreateAgent starts an OMP-backed terminal runtime and returns an AgentSession.
+// CreateAgent starts an OMP-backed terminal runtime with the default backend.
 func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...string) (*protocol.AgentSession, error) {
+	return s.CreateAgentRequest(ctx, protocol.CreateSessionRequest{CWD: cwd, Name: name, Args: args})
+}
+
+// CreateAgentRequest preserves the requested terminal backend for an Agent runtime.
+func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
+	cwd, name, args := req.CWD, req.Name, req.Args
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -166,16 +358,59 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 	}
 	s.mu.Unlock()
 
+	if err := validateUserArgs(args); err != nil {
+		return nil, err
+	}
+
 	if name == "" {
 		name = "OMP Agent"
 	}
+
+	agentID, err := newAgentID()
+	if err != nil {
+		return nil, err
+	}
+
+	secret, err := generateSecret()
+	if err != nil {
+		return nil, err
+	}
+	if err := saveBridgeSecret(s.agentDir, agentID, secret); err != nil {
+		return nil, fmt.Errorf("persist bridge secret: %w", err)
+	}
+
+	bridgePath, err := EnsureBridgeMaterialized(s.agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to materialize bridge: %w", err)
+	}
+
+	if s.bridgeServer != nil {
+		s.bridgeServer.RegisterAgent(agentID, secret)
+	}
+
+	cmdArgs := append([]string{"--no-extensions", "-e", bridgePath}, args...)
+	var env map[string]string
+	if s.bridgeServer != nil {
+		env = map[string]string{
+			"AGENTIC_REMOTE_BRIDGE_SOCKET":   s.bridgeServer.SocketPath(),
+			"AGENTIC_REMOTE_BRIDGE_AGENT_ID": agentID,
+			"AGENTIC_REMOTE_BRIDGE_SECRET":   secret,
+		}
+	}
+
 	termSummary, err := s.termMgr.Create(ctx, protocol.CreateSessionRequest{
 		Name:    name,
 		Command: "omp",
-		Args:    args,
+		Args:    cmdArgs,
 		CWD:     cwd,
+		Backend: req.Backend,
+		Env:     env,
 	})
 	if err != nil {
+		if s.bridgeServer != nil {
+			s.bridgeServer.UnregisterAgent(agentID)
+		}
+		removeBridgeSecret(s.agentDir, agentID)
 		return nil, fmt.Errorf("failed to create agent terminal: %w", err)
 	}
 
@@ -183,13 +418,11 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		{Name: "chat", Enabled: true},
 		{Name: "prompt", Enabled: false},
 		{Name: "abort", Enabled: false},
+		{Name: "model", Enabled: false},
+		{Name: "thinking", Enabled: false},
 	}
 	now := time.Now().UTC()
-	agentID, err := newAgentID()
-	if err != nil {
-		_ = s.termMgr.Close(termSummary.ID)
-		return nil, err
-	}
+
 	agentSession := protocol.AgentSession{
 		ID:                agentID,
 		Adapter:           "omp",
@@ -200,10 +433,22 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	inst := &agentInstance{meta: agentSession, agentDir: s.agentDir, subscribers: make(map[int]*AgentSubscriber), stopPoll: make(chan struct{}), pollInterval: 200 * time.Millisecond}
+
+	inst := &agentInstance{
+		meta:         agentSession,
+		agentDir:     s.agentDir,
+		subscribers:  make(map[int]*AgentSubscriber),
+		stopPoll:     make(chan struct{}),
+		pollInterval: 200 * time.Millisecond,
+	}
+
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
+		if s.bridgeServer != nil {
+			s.bridgeServer.UnregisterAgent(agentID)
+		}
+		removeBridgeSecret(s.agentDir, agentID)
 		_ = s.termMgr.Close(termSummary.ID)
 		return nil, errors.New("service closing")
 	}
@@ -213,6 +458,7 @@ func (s *Service) CreateAgent(ctx context.Context, cwd, name string, args ...str
 	s.watchTerminal(inst)
 	go s.pollTranscript(inst)
 	s.mu.Unlock()
+
 	return &agentSession, nil
 }
 
@@ -221,12 +467,7 @@ func (s *Service) watchTerminal(inst *agentInstance) {
 		if st.State != "exited" {
 			return
 		}
-		inst.mu.Lock()
-		inst.meta.State = "exited"
-		inst.meta.UpdatedAt = time.Now().UTC()
-		inst.mu.Unlock()
-		s.recordAgentSummary(inst, "agent.updated")
-		s.emitState(inst)
+		s.terminateAgentRuntime(inst, "terminal exited")
 	})
 	if err == nil {
 		inst.mu.Lock()
@@ -242,12 +483,13 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 	inst.mu.RLock()
 	meta := inst.meta
 	inst.mu.RUnlock()
-
 	capsBytes, _ := json.Marshal(meta.Capabilities)
 	_ = s.store.RecordAgent(runtimestore.AgentSummary{
 		ID:                meta.ID,
 		Adapter:           meta.Adapter,
 		TerminalSessionID: meta.TerminalSessionID,
+		OMPSessionID:      meta.OMPSessionID,
+		OMPSessionFile:    meta.OMPSessionFile,
 		CWD:               meta.CWD,
 		State:             meta.State,
 		Capabilities:      capsBytes,
@@ -258,7 +500,13 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 
 func (s *Service) emitState(inst *agentInstance) {
 	inst.mu.RLock()
-	event := protocol.AgentEvent{Type: "state", EventID: fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)), AgentID: inst.meta.ID, State: inst.meta.State}
+	event := protocol.AgentEvent{
+		Type:         "state",
+		EventID:      fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)),
+		AgentID:      inst.meta.ID,
+		State:        inst.meta.State,
+		Capabilities: append([]protocol.AgentCapability(nil), inst.meta.Capabilities...),
+	}
 	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
 	for _, sub := range inst.subscribers {
 		subscribers = append(subscribers, sub.fn)
@@ -311,27 +559,38 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	tailer := inst.tailer
 	inst.mu.Unlock()
+
 	if tailer == nil {
 		return
 	}
+
+	before := tailer.snapshot()
 	events, err := tailer.Read()
 	if err != nil || len(events) == 0 {
 		return
 	}
 
 	inst.mu.Lock()
-	var stateChanged bool
-	for _, ev := range events {
-		switch ev.Type {
-		case "message.user", "tool.call":
-			if inst.meta.State != "working" && inst.meta.State != "exited" {
-				inst.meta.State = "working"
-				stateChanged = true
-			}
-		case "message.assistant":
-			if inst.meta.State != "idle" && inst.meta.State != "exited" {
-				inst.meta.State = "idle"
-				stateChanged = true
+	stateChanged := false
+	bridgeConnected := s.bridgeServer != nil && s.bridgeServer.IsConnected(inst.meta.ID)
+	if !bridgeConnected {
+		for _, event := range events {
+			switch event.Type {
+			case "message.user", "tool.call":
+				if inst.meta.State != "working" && inst.meta.State != "exited" {
+					inst.meta.State = "working"
+					stateChanged = true
+				}
+			case "message.assistant":
+				if inst.meta.State != "idle" && inst.meta.State != "exited" {
+					inst.meta.State = "idle"
+					stateChanged = true
+				}
+			case "state":
+				if event.State != "" && event.State != inst.meta.State {
+					inst.meta.State = event.State
+					stateChanged = true
+				}
 			}
 		}
 	}
@@ -344,20 +603,41 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	inst.mu.Unlock()
 
-	for i := range events {
-		if s.store != nil {
-			cursor, err := s.store.RecordEvent(inst.meta.ID, events[i].Type, events[i])
-			if err == nil {
-				events[i].Cursor = cursor
+	if s.store != nil {
+		inputs := make([]runtimestore.AgentTranscriptEvent, 0, len(events))
+		for _, event := range events {
+			payload, err := json.Marshal(event)
+			if err != nil {
+				tailer.restore(before)
+				return
+			}
+			inputs = append(inputs, runtimestore.AgentTranscriptEvent{EventID: event.EventID, Kind: event.Type, Payload: payload})
+		}
+		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, inputs, tailer.checkpoint())
+		if err != nil {
+			tailer.restore(before)
+			return
+		}
+		cursors := make(map[string]int64, len(committed))
+		for _, stored := range committed {
+			cursors[stored.EventID] = stored.Event.Cursor
+		}
+		published := events[:0]
+		for _, event := range events {
+			if cursor, ok := cursors[event.EventID]; ok {
+				event.Cursor = cursor
+				published = append(published, event)
 			}
 		}
-		for _, fn := range subscribers {
-			fn(events[i])
-		}
+		events = published
+	} else if err := tailer.SaveState(); err != nil {
+		tailer.restore(before)
+		return
 	}
-	// Persist tailer state only after all semantic events recorded to store.
-	if len(events) > 0 && tailer != nil {
-		_ = tailer.SaveState()
+	for _, event := range events {
+		for _, fn := range subscribers {
+			fn(event)
+		}
 	}
 
 	if stateChanged {
@@ -366,27 +646,96 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 }
 
-// SubmitPrompt writes bracketed paste to the underlying terminal session.
+// SubmitPrompt sends a user prompt through the verified OMP bridge.
 func (s *Service) SubmitPrompt(agentID, prompt string) error {
 	s.mu.RLock()
-	_, ok := s.agents[agentID]
+	inst, ok := s.agents[agentID]
 	s.mu.RUnlock()
 	if !ok {
 		return ErrAgentNotFound
 	}
-	// Transcript tailing is read-only; prompt commands require a verified OMP bridge.
-	return errors.New("needs_terminal")
+	inst.mu.RLock()
+	promptEnabled := false
+	for _, c := range inst.meta.Capabilities {
+		if c.Name == "prompt" && c.Enabled {
+			promptEnabled = true
+			break
+		}
+	}
+	inst.mu.RUnlock()
+	if !promptEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+		return errors.New("needs_terminal")
+	}
+	return s.bridgeServer.SendCommand(context.Background(), agentID, "prompt", map[string]any{"prompt": prompt})
 }
 
-// Abort is unavailable until a verified OMP command bridge is installed.
+// Abort aborts the active operation through the verified OMP bridge.
 func (s *Service) Abort(agentID string) error {
 	s.mu.RLock()
-	_, ok := s.agents[agentID]
+	inst, ok := s.agents[agentID]
 	s.mu.RUnlock()
 	if !ok {
 		return ErrAgentNotFound
 	}
-	return errors.New("needs_terminal")
+	inst.mu.RLock()
+	abortEnabled := false
+	for _, c := range inst.meta.Capabilities {
+		if c.Name == "abort" && c.Enabled {
+			abortEnabled = true
+			break
+		}
+	}
+	inst.mu.RUnlock()
+	if !abortEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+		return errors.New("needs_terminal")
+	}
+	return s.bridgeServer.SendCommand(context.Background(), agentID, "abort", nil)
+}
+
+// SetModel changes the active model through the verified OMP bridge.
+func (s *Service) SetModel(agentID, model string) error {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotFound
+	}
+	inst.mu.RLock()
+	modelEnabled := false
+	for _, c := range inst.meta.Capabilities {
+		if c.Name == "model" && c.Enabled {
+			modelEnabled = true
+			break
+		}
+	}
+	inst.mu.RUnlock()
+	if !modelEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+		return errors.New("needs_terminal")
+	}
+	return s.bridgeServer.SendCommand(context.Background(), agentID, "model", map[string]any{"model": model})
+}
+
+// SetThinking changes the thinking level through the verified OMP bridge.
+func (s *Service) SetThinking(agentID, level string) error {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotFound
+	}
+	inst.mu.RLock()
+	thinkingEnabled := false
+	for _, c := range inst.meta.Capabilities {
+		if c.Name == "thinking" && c.Enabled {
+			thinkingEnabled = true
+			break
+		}
+	}
+	inst.mu.RUnlock()
+	if !thinkingEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+		return errors.New("needs_terminal")
+	}
+	return s.bridgeServer.SendCommand(context.Background(), agentID, "thinking", map[string]any{"level": level})
 }
 
 // GetAgent retrieves agent session summary.
@@ -424,7 +773,6 @@ func (s *Service) Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(
 	if !ok {
 		return nil, ErrAgentNotFound
 	}
-
 	inst.mu.Lock()
 	subID := inst.nextSubID
 	inst.nextSubID++
@@ -438,7 +786,52 @@ func (s *Service) Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(
 	}, nil
 }
 
-// Close shuts down all background polling workers.
+// History returns ordered durable semantic events and runtime high-water cursor for an agent.
+func (s *Service) History(agentID string) (*protocol.AgentHistoryResponse, error) {
+	s.mu.RLock()
+	_, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, ErrAgentNotFound
+	}
+	if s.store == nil {
+		return &protocol.AgentHistoryResponse{
+			Cursor: 0,
+			Events: []protocol.AgentEvent{},
+		}, nil
+	}
+	entries, cursor, err := s.store.AgentHistory(agentID)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]protocol.AgentEvent, 0, len(entries))
+	for _, entry := range entries {
+		var event protocol.AgentEvent
+		if err := json.Unmarshal(entry.Payload, &event); err != nil {
+			event = protocol.AgentEvent{
+				Type:    entry.Kind,
+				EventID: entry.EventID,
+				AgentID: entry.AgentID,
+			}
+		}
+		if event.EventID == "" {
+			event.EventID = entry.EventID
+		}
+		if event.AgentID == "" {
+			event.AgentID = entry.AgentID
+		}
+		if event.Type == "" {
+			event.Type = entry.Kind
+		}
+		events = append(events, event)
+	}
+	return &protocol.AgentHistoryResponse{
+		Cursor: cursor,
+		Events: events,
+	}, nil
+}
+
+// Close shuts down all background polling workers and the bridge server.
 func (s *Service) Close() error {
 	s.mu.Lock()
 	if s.closing {
@@ -452,7 +845,13 @@ func (s *Service) Close() error {
 	}
 	s.agents = make(map[string]*agentInstance)
 	s.byTerminal = make(map[string]string)
+	bs := s.bridgeServer
+	s.bridgeServer = nil
 	s.mu.Unlock()
+
+	if bs != nil {
+		_ = bs.Close()
+	}
 
 	for _, inst := range instances {
 		close(inst.stopPoll)

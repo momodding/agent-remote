@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -22,15 +23,37 @@ type PtyBackend struct {
 	mu     sync.RWMutex
 	cmd    *exec.Cmd
 	ptmx   *os.File
+	tty    string
 	closed bool
 }
 
 func newPtyBackend(cmd *exec.Cmd, cols, rows int) (*PtyBackend, error) {
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	ptmx, tty, err := pty.Open()
 	if err != nil {
 		return nil, err
 	}
-	return &PtyBackend{cmd: cmd, ptmx: ptmx}, nil
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		return nil, err
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setsid = true
+	cmd.SysProcAttr.Setctty = true
+	if err := cmd.Start(); err != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		return nil, err
+	}
+	ttyName := tty.Name()
+	if err := tty.Close(); err != nil {
+		_ = ptmx.Close()
+		return nil, err
+	}
+	return &PtyBackend{cmd: cmd, ptmx: ptmx, tty: ttyName}, nil
 }
 
 func (b *PtyBackend) file() (*os.File, error) {
@@ -100,12 +123,8 @@ func (b *PtyBackend) Identity() string {
 func (b *PtyBackend) TTY() string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if b.closed || b.cmd.Process == nil {
+	if b.closed {
 		return ""
 	}
-	tty, err := os.Readlink("/proc/" + strconv.Itoa(b.cmd.Process.Pid) + "/fd/0")
-	if err != nil {
-		return ""
-	}
-	return tty
+	return b.tty
 }

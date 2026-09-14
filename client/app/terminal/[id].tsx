@@ -76,9 +76,13 @@ export default function TerminalScreen() {
     const channel = channelRef.current;
     if (!tab || !channel) return;
     setOutput('');
-    const decoder = new TextDecoder();
+    let decoder = new TextDecoder();
     primaryUnsubscribeRef.current = channel.subscribe(tab.remoteSessionId, (msg) => {
-      if (msg.type === 'pty.output') {
+      if (msg.type === 'pty.baseline') {
+        decoder = new TextDecoder();
+        const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
+        setOutput(chunk);
+      } else if (msg.type === 'pty.output') {
         const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
         if (chunk) setOutput((existing) => existing + chunk);
       } else if (msg.type === 'session.state') {
@@ -221,9 +225,13 @@ export default function TerminalScreen() {
     if (!tab || !channel || multiChannelsRef.current[sessionId]) return;
     void (async () => {
       const channelId = await channel.openChannel('terminal', { sessionId });
-      const decoder = new TextDecoder();
+      let decoder = new TextDecoder();
       const unsubscribe = channel.subscribe(channelId, (msg) => {
-        if (msg.type === 'pty.output') {
+        if (msg.type === 'pty.baseline') {
+          decoder = new TextDecoder();
+          const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
+          setMultiSessions((prev) => updateOutput(prev, sessionId, chunk));
+        } else if (msg.type === 'pty.output') {
           const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
           if (chunk) setMultiSessions((prev) => updateOutput(prev, sessionId, (prev[sessionId]?.output ?? '') + chunk));
         } else if (msg.type === 'session.state') {
