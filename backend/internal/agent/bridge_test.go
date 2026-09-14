@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -405,6 +406,21 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PI_CODING_AGENT_DIR", piDir)
+	ompPID := func() string {
+		output, err := exec.Command("ps", "-o", "pid=,ppid=,comm=", "-e").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parentPID := strconv.Itoa(os.Getpid())
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 3 && fields[1] == parentPID && fields[2] == "omp" {
+				return fields[0]
+			}
+		}
+		t.Fatal("managed OMP is not a direct child of the terminal runtime")
+		return ""
+	}
 
 	termMgr, err := session.NewManager(workDir, filepath.Join(t.TempDir(), "terminals"), workDir, 1<<20, 64, nil)
 	if err != nil {
@@ -457,10 +473,11 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	bridgeState := svc.bridgeServer.agents[created.ID]
 	svc.bridgeServer.mu.RUnlock()
 	bridgeState.mu.Lock()
-	beforeSessionID, bridgeConn := bridgeState.sessionID, bridgeState.conn
+	beforeSessionID, beforeSessionFile, bridgeConn := bridgeState.sessionID, bridgeState.sessionFile, bridgeState.conn
 	bridgeState.mu.Unlock()
-	if beforeSessionID == "" || bridgeConn == nil {
-		t.Fatal("authenticated bridge has no session identity or connection")
+	beforePID := ompPID()
+	if beforeSessionID == "" || beforeSessionFile == "" || bridgeConn == nil {
+		t.Fatal("authenticated bridge has no session identity, session file, or connection")
 	}
 	if err := bridgeConn.Close(); err != nil {
 		t.Fatal(err)
@@ -481,9 +498,12 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 		t.Fatal("real OMP extension did not reconnect and restore capabilities")
 	}
 	bridgeState.mu.Lock()
-	afterSessionID := bridgeState.sessionID
+	afterSessionID, afterSessionFile := bridgeState.sessionID, bridgeState.sessionFile
 	bridgeState.mu.Unlock()
-	if afterSessionID != beforeSessionID {
-		t.Fatalf("bridge reconnect session ID = %q, want %q", afterSessionID, beforeSessionID)
+	if afterSessionID != beforeSessionID || afterSessionFile != beforeSessionFile {
+		t.Fatalf("bridge reconnect identity = (%q, %q), want (%q, %q)", afterSessionID, afterSessionFile, beforeSessionID, beforeSessionFile)
+	}
+	if afterPID := ompPID(); afterPID != beforePID {
+		t.Fatalf("bridge reconnect OMP PID = %s, want %s", afterPID, beforePID)
 	}
 }
