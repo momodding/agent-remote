@@ -122,7 +122,7 @@ Required tests: Linux runtime and Darwin builds plus same-CWD isolation.
 
 ## RAR-017 — Raw terminal reconnect duplicates or loses baseline
 Severity: P1
-Status: DONE — `TestSessionWSReconnectSeedsNoisyShellBaseline` now proves exact convergence: first authenticated connection writes `echo reconnect-marker` and waits for it in the preview, then disconnects; second authenticated connection asserts its `pty.baseline` contains both `noise-` (accumulated shell output) and `reconnect-marker` (exact convergence). Server-side socket disposal propagates through `session.Manager` subscriber teardown; client-side channel disposal is proven by `TestDisposeClosesSockets`/`TestDisposeIsolatesChannels` in `client/src/lib/daemon-channel.test.ts`.
+Status: DONE — `TestSessionWSReconnectSeedsNoisyShellBaseline` now proves exact convergence: first authenticated connection writes `echo reconnect-marker` and waits for it in the preview, then disconnects; second authenticated connection asserts its `pty.baseline` contains both `noise-` (accumulated shell output) and `reconnect-marker` (exact convergence). Server-side socket disposal propagates through `session.Manager` subscriber teardown; client-side channel disposal is proven by the Jest tests `'dispose removes the registry entry and closes its sockets'` and `'gives each daemon its own registry entry and socket set'` in `client/src/lib/daemon-channel.test.ts`.
 Source: client socket review
 Plan requirement: reconnect replaces bounded viewport baseline then accepts only later bytes.
 Required change: explicit sequenced baseline frame and bounded reconnect with no input replay.
