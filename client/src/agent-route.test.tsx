@@ -19,7 +19,7 @@ jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () =
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import AgentScreen from '../app/agent/[id]';
-import type { AgentCapability } from './protocol';
+import type { AgentCapability, AgentEvent } from './protocol';
 import type { Connection, ConnectionStore } from './lib/connection';
 import type { AgentWorkspaceTab } from './lib/tabs/types';
 
@@ -51,8 +51,15 @@ jest.mock('./lib/api', () => ({
 jest.mock('./lib/daemon-channel', () => ({
   createDaemonChannel: jest.fn(() => ({ subscribe: jest.fn(() => jest.fn()), send: jest.fn(), closeChannel: jest.fn() })),
 }));
+let mockHandleEvent: ((event: AgentEvent) => void) | undefined;
 jest.mock('./lib/runtime-channel', () => ({
-  createRuntimeChannel: jest.fn(() => ({ openAgentChannel: jest.fn(async () => ({ channelId: 'agent-channel' })), closeChannel: jest.fn() })),
+  createRuntimeChannel: jest.fn(() => ({
+    openAgentChannel: jest.fn(async (_agentId: string, _after: number, fn: (event: AgentEvent) => void) => {
+      mockHandleEvent = fn;
+      return { channelId: 'agent-channel' };
+    }),
+    closeChannel: jest.fn(),
+  })),
 }));
 const mockDispatch = jest.fn();
 const mockCloseTab = jest.fn();
@@ -89,6 +96,36 @@ describe('AgentScreen capability gates', () => {
   it('shows prompt and Abort only when the bridge enables them', async () => {
     mockCapabilities = [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: true }, { name: 'abort', enabled: true }];
     const tree = await renderScreen();
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Send Prompt' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Abort' })).toBeTruthy();
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'Open Terminal to interact' })).toThrow();
+    act(() => tree.unmount());
+  });
+
+  it('disables prompt/Abort when bridge fires a capability state event clearing them', async () => {
+    mockCapabilities = [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: true }, { name: 'abort', enabled: true }];
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Send Prompt' })).toBeTruthy();
+
+    await act(async () => {
+      mockHandleEvent?.({ type: 'state', agentId: 'agent-1', state: 'idle', capabilities: [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: false }, { name: 'abort', enabled: false }] });
+    });
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Open Terminal to interact' })).toBeTruthy();
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'Send Prompt' })).toThrow();
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'Abort' })).toThrow();
+    act(() => tree.unmount());
+  });
+
+  it('enables prompt/Abort when bridge fires a capability state event enabling them', async () => {
+    mockCapabilities = [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: false }, { name: 'abort', enabled: false }];
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Open Terminal to interact' })).toBeTruthy();
+
+    await act(async () => {
+      mockHandleEvent?.({ type: 'state', agentId: 'agent-1', state: 'working', capabilities: [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: true }, { name: 'abort', enabled: true }] });
+    });
 
     expect(tree.root.findByProps({ accessibilityLabel: 'Send Prompt' })).toBeTruthy();
     expect(tree.root.findByProps({ accessibilityLabel: 'Abort' })).toBeTruthy();

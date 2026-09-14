@@ -767,18 +767,37 @@ func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
 		}
 		return string(data)
 	}
-
+	// First connection: receive baseline, write a known marker, then disconnect.
 	first := open()
 	_ = readBaseline(first)
+	if writeErr := wsWriteJSON(ctx, first, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": base64.StdEncoding.EncodeToString([]byte("echo reconnect-marker\n"))}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// Wait for the shell to echo the marker into scrollback.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		preview := strings.Join(srv.sessions.List(context.Background())[0].Preview, "\n")
+		if strings.Contains(preview, "reconnect-marker") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err := first.Close(websocket.StatusNormalClosure, ""); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	// session.Manager.Close propagates through the session's subscriber teardown;
+	// disposal of the daemon-channel WebSocket is covered by disposeDaemonChannel
+	// tests in client/src/lib/daemon-channel.test.ts.
 
+	// Second connection: reconnect baseline must include the accumulated noise and the marker.
 	second := open()
 	defer second.Close(websocket.StatusNormalClosure, "")
-	if baseline := readBaseline(second); !strings.Contains(baseline, "noise-") {
-		t.Fatalf("reconnect baseline omitted shell output: %q", baseline)
+	reconnectBaseline := readBaseline(second)
+	if !strings.Contains(reconnectBaseline, "noise-") {
+		t.Fatalf("reconnect baseline omitted shell output: %q", reconnectBaseline)
+	}
+	if !strings.Contains(reconnectBaseline, "reconnect-marker") {
+		t.Fatalf("reconnect baseline missing echo'd marker (not exact convergence): %q", reconnectBaseline)
 	}
 }
 
