@@ -47,7 +47,7 @@ Required tests: persisted state event appears on agent replay.
 
 ## RAR-007 — Backend selection is daemon-wide
 Severity: P1
-Status: IN_PROGRESS — manager support exists; Agent REST/control/client propagation remains missing.
+Status: DONE — Agent REST/control/client forwarding preserves `backend`; focused server/Agent tests passed on 2026-09-14.
 Source: external-code-review
 Plan requirement: each session chooses `auto | pty | tmux`; explicit tmux fails clearly when unavailable.
 Required tests: request selection and unavailable tmux behavior.
@@ -90,7 +90,7 @@ Required tests: intentionally overflow replay buffering and observe explicit rec
 
 ## RAR-013 — Agent history cannot survive cursor expiry
 Severity: P0
-Status: IN_PROGRESS
+Status: DONE — authenticated ordered history/high-water endpoint and idempotent client bootstrap/resync landed; backend and client suites passed on 2026-09-14.
 Source: recovery review
 Plan requirement: durable semantic history bootstraps every Agent remount and cursor resync.
 Required change: persist stable Agent events separately from bounded runtime replay; provide authenticated history/high-water API and idempotent client merge.
@@ -98,7 +98,7 @@ Required tests: pruned cursor remount retains history exactly once and receives 
 
 ## RAR-014 — Transcript projection drops current OMP v3 semantics
 Severity: P0/P1
-Status: IN_PROGRESS
+Status: DONE — installed v3 projection fixtures cover thinking, calls/results, executions, mentions, custom messages, errors, and aborted turns; backend suite passed on 2026-09-14.
 Source: installed OMP schema review
 Plan requirement: project current OMP messages, thinking, calls/results, executions, mentions, custom messages, and aborted turns.
 Required change: deterministic event IDs from exact OMP entry/block IDs; ignore unsupported/hidden entries.
@@ -106,7 +106,7 @@ Required tests: sanitized v3 fixtures and repeat decoding are stable.
 
 ## RAR-015 — Transcript event/checkpoint commit is non-atomic
 Severity: P0
-Status: IN_PROGRESS
+Status: DONE — transactional history/runtime/checkpoint commit with checkpoint fingerprinting and duplicate suppression is covered by runtime/Agent tests passed on 2026-09-14.
 Source: runtime durability review
 Plan requirement: semantic events and checkpoint advance commit exactly once together.
 Required change: transactional batch store with stable uniqueness, rotation fingerprint, and failure-safe tail candidates.
@@ -114,7 +114,7 @@ Required tests: partial lines, rewrite/rotation, retry, and injected transaction
 
 ## RAR-016 — Direct PTY identity is Linux-only
 Severity: P1
-Status: IN_PROGRESS
+Status: DONE — slave TTY is captured at PTY creation and Linux tests/Darwin cross-build proof passed.
 Source: PTY dependency review
 Plan requirement: direct OMP association uses exact portable slave TTY identity.
 Required change: retain `pty.Open` slave `Name()` at launch; no `/proc` primary path.
@@ -130,7 +130,7 @@ Required tests: real socket disconnect, noisy output, exact convergence, and dis
 
 ## RAR-018 — Agent backend choice is discarded
 Severity: P1
-Status: IN_PROGRESS
+Status: DONE — Agent create request preserves backend through REST, runtime, service, manager, and client; focused/backend tests passed on 2026-09-14.
 Source: server/client call-path review
 Plan requirement: every Agent creation route preserves auto/pty/tmux selection.
 Required change: request-object API through REST, control, service, manager, and client.
@@ -146,7 +146,7 @@ Required tests: unavailable executables, bridge loss, read-only and interactive 
 
 ## RAR-020 — tmux socket path is not a server generation
 Severity: P1
-Status: IN_PROGRESS
+Status: DONE — private tmux generation token is included in persisted identity; tmux integration tests passed on 2026-09-14.
 Source: tmux topology review
 Plan requirement: old topology cannot reattach to a new tmux server at the same socket.
 Required change: private-server global generation token in persisted server identity.
