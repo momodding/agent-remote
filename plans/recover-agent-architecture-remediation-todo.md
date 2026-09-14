@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a3
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: IN_PROGRESS — `TestRealOMPBridgeLifecycle` joins installed OMP 18.1.15 under a real PTY to production `Service.CreateAgentRequest`/`session.Manager`/`BridgeServer`, proves authenticated capability enablement and `thinking`/`abort` command round trips, forcibly disconnects the production bridge connection, observes controls disable, then observes controls restore with the same OMP PID, session ID, and session file (2026-09-14). `TestRestoredAgentAcceptsPersistedBridgeCredential` now proves immutable OMP session ID/session-file binding survives service restart, matching reattachment succeeds, and a credential-valid mismatched identity is rejected without displacing the valid bridge or changing durable transcript association. Earlier isolated PTY proof also validated `model` and unknown-command rejection. Only a live daemon-mediated `prompt` turn (requires reachable model backend) and real macOS runtime proof remain required.
+Status: IN_PROGRESS — `TestRealOMPBridgeLifecycle` joins installed OMP 18.1.15 under a real PTY to production `Service.CreateAgentRequest`/`session.Manager`/`BridgeServer`, proves authenticated capability enablement and `thinking`/`abort` command round trips, forcibly disconnects the production bridge connection, observes controls disable, then observes controls restore with the same OMP PID, session ID, and session file (2026-09-14). `TestRestoredAgentAcceptsPersistedBridgeCredential` proves immutable OMP session ID/session-file binding survives service restart, matching reattachment succeeds, and a credential-valid mismatched identity cannot displace the valid bridge or change the durable transcript association. `TestBridgeHelloReplacesFallbackTranscriptTailer` proves authenticated OMP identity replaces a provisional fallback transcript path. Remaining evidence: live prompt/semantic turn and real macOS runtime.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
@@ -138,7 +138,7 @@ Required tests: explicit backend selection and unavailable tmux error.
 
 ## RAR-019 — Capabilities do not reflect available runtime operations
 Severity: P1
-Status: IN_PROGRESS
+Status: DONE — Agent state events carry bridge capabilities; the active Agent screen bootstraps them from the Agent snapshot, updates them live, exposes prompt and Abort only while enabled, and otherwise provides `Open Terminal to interact`. `TestBridgeDisconnectMakesCommandsUnavailable` verifies connected/disconnected state events enable then disable prompt capability.
 Source: capability review
 Plan requirement: daemon and Agent UI expose only executable/connected operations while retaining Chat and Terminal.
 Required change: startup availability snapshot and bridge-driven Agent capability transitions.

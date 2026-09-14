@@ -64,19 +64,20 @@ type AgentSession struct {
 }
 
 type AgentEvent struct {
-	Type       string `json:"type"`
-	Cursor     int64  `json:"cursor,omitempty"`
-	EventID    string `json:"eventId"`
-	AgentID    string `json:"agentId"`
-	MessageID  string `json:"messageId,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	Text       string `json:"text,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	ToolInput  any    `json:"toolInput,omitempty"`
-	ToolOutput any    `json:"toolOutput,omitempty"`
-	State      string `json:"state,omitempty"`
-	IsError    bool   `json:"isError,omitempty"`
-	Aborted    bool   `json:"aborted,omitempty"`
+	Type         string            `json:"type"`
+	Cursor       int64             `json:"cursor,omitempty"`
+	EventID      string            `json:"eventId"`
+	AgentID      string            `json:"agentId"`
+	MessageID    string            `json:"messageId,omitempty"`
+	ToolCallID   string            `json:"toolCallId,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	ToolName     string            `json:"toolName,omitempty"`
+	ToolInput    any               `json:"toolInput,omitempty"`
+	ToolOutput   any               `json:"toolOutput,omitempty"`
+	State        string            `json:"state,omitempty"`
+	Capabilities []AgentCapability `json:"capabilities,omitempty"`
+	IsError      bool              `json:"isError,omitempty"`
+	Aborted      bool              `json:"aborted,omitempty"`
 }
 
 type AgentHistoryResponse struct {

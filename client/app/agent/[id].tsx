@@ -28,7 +28,7 @@ import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
 import type { AgentWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
-import type { AgentEvent, TmuxPane } from '../../src/protocol';
+import type { AgentCapability, AgentEvent, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
   id: string;
@@ -79,6 +79,7 @@ export default function AgentScreen() {
   const [promptText, setPromptText] = useState('');
   const [sending, setSending] = useState(false);
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>(tab?.view ?? 'chat');
+  const [capabilities, setCapabilities] = useState<AgentCapability[]>([]);
   const [terminalOutput, setTerminalOutput] = useState('');
   const [keyboardInset, setKeyboardInset] = useState(0);
 
@@ -123,6 +124,11 @@ export default function AgentScreen() {
     let active = true;
     let isSyncing = false;
     const eventBuffer: AgentEvent[] = [];
+    void api.agent(tab.agentSessionId).then((agent) => {
+      if (!active) return;
+      setCapabilities(agent.capabilities);
+      dispatch((prev) => updateTab(prev, tab.tabId, { state: agent.state }));
+    }).catch(() => {});
 
     const loadAndReplaceHistory = async (): Promise<number> => {
       isSyncing = true;
@@ -160,6 +166,9 @@ export default function AgentScreen() {
 
     const handleEvent = (event: AgentEvent) => {
       if (!active) return;
+      if (event.capabilities) {
+        setCapabilities(event.capabilities);
+      }
       if (event.state) {
         dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
       }
@@ -279,7 +288,7 @@ export default function AgentScreen() {
 	}, [dispatch, tab]);
 
   const sendPrompt = useCallback(async () => {
-    if (!promptText.trim() || !api || !tab || sending) return;
+    if (!promptText.trim() || !api || !tab || sending || !capabilities.some((capability) => capability.name === 'prompt' && capability.enabled)) return;
     const text = promptText.trim();
     setSending(true);
     try {
@@ -300,10 +309,10 @@ export default function AgentScreen() {
     } finally {
       setSending(false);
     }
-  }, [promptText, api, tab, sending]);
+  }, [promptText, api, tab, sending, capabilities]);
 
   const abortAgent = useCallback(async () => {
-    if (!api || !tab) return;
+    if (!api || !tab || !capabilities.some((capability) => capability.name === 'abort' && capability.enabled)) return;
     try {
       await api.abortAgent(tab.agentSessionId);
     } catch (error) {
@@ -318,7 +327,7 @@ export default function AgentScreen() {
         Alert.alert('Abort Failed', msg);
       }
     }
-  }, [api, tab]);
+  }, [api, tab, capabilities]);
 
   const close = useCallback(() => {
     if (!tab) return;
@@ -362,6 +371,9 @@ export default function AgentScreen() {
         return '#9CA3AF';
     }
   }, [tab?.state]);
+  const promptEnabled = capabilities.some((capability) => capability.name === 'prompt' && capability.enabled);
+  const abortEnabled = capabilities.some((capability) => capability.name === 'abort' && capability.enabled);
+
 
   const renderMessage = ({ item }: { item: MessageItem }) => {
     switch (item.type) {
@@ -461,9 +473,11 @@ export default function AgentScreen() {
           <Feather name="columns" size={18} color="#D19A2C" />
         </Pressable>
 
-        <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
-          <Feather name="slash" size={18} color="#EF4444" />
-        </Pressable>
+        {abortEnabled && (
+          <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
+            <Feather name="slash" size={18} color="#EF4444" />
+          </Pressable>
+        )}
         <Pressable accessibilityLabel="Close" style={styles.headerIcon} onPress={close}>
           <Feather name="x" size={20} color="#888" />
         </Pressable>
@@ -492,30 +506,36 @@ export default function AgentScreen() {
             }
           />
 
-          {/* Prompt Bar */}
-          <View style={styles.promptBar}>
-            <TextInput
-              style={styles.promptInput}
-              placeholder="Send instruction to agent..."
-              placeholderTextColor="#6B7280"
-              value={promptText}
-              onChangeText={setPromptText}
-              multiline
-              maxLength={4000}
-            />
-            <Pressable
-              accessibilityLabel="Send Prompt"
-              style={[styles.sendButton, (!promptText.trim() || sending) && styles.sendButtonDisabled]}
-              onPress={sendPrompt}
-              disabled={!promptText.trim() || sending}
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color="#0A0A0A" />
-              ) : (
-                <Feather name="send" size={18} color="#0A0A0A" />
-              )}
+          {promptEnabled ? (
+            <View style={styles.promptBar}>
+              <TextInput
+                style={styles.promptInput}
+                placeholder="Send instruction to agent..."
+                placeholderTextColor="#6B7280"
+                value={promptText}
+                onChangeText={setPromptText}
+                multiline
+                maxLength={4000}
+              />
+              <Pressable
+                accessibilityLabel="Send Prompt"
+                style={[styles.sendButton, (!promptText.trim() || sending) && styles.sendButtonDisabled]}
+                onPress={sendPrompt}
+                disabled={!promptText.trim() || sending}
+              >
+                {sending ? (
+                  <ActivityIndicator size="small" color="#0A0A0A" />
+                ) : (
+                  <Feather name="send" size={18} color="#0A0A0A" />
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable accessibilityLabel="Open Terminal to interact" style={styles.terminalFallback} onPress={() => setViewMode('terminal')}>
+              <Feather name="terminal" size={16} color="#D19A2C" />
+              <Text style={styles.terminalFallbackText}>Open Terminal to interact</Text>
             </Pressable>
-          </View>
+          )}
         </KeyboardAvoidingView>
       ) : (
         <View style={styles.terminalContainer}>
@@ -679,6 +699,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendButtonDisabled: { opacity: 0.4 },
+  terminalFallback: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
+  terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
   terminalContainer: { flex: 1 },
   connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
 });

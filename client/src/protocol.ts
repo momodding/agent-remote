@@ -52,6 +52,9 @@ export type AgentEvent = {
   toolInput?: unknown;
   toolOutput?: unknown;
   state?: string;
+  capabilities?: AgentCapability[];
+  isError?: boolean;
+  aborted?: boolean;
 };
 
 export type AgentHistoryResponse = {

@@ -128,8 +128,8 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 		{Name: "thinking", Enabled: capsMap["thinking"]},
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
-	if inst.tailer == nil {
-		inst.tailer = NewTranscriptTailer(inst.meta.ID, inst.sessionFile, s.store)
+	if inst.tailer == nil || inst.tailer.path != hello.SessionFile {
+		inst.tailer = NewTranscriptTailer(inst.meta.ID, hello.SessionFile, s.store)
 		_ = inst.tailer.RestoreState()
 	}
 	inst.mu.Unlock()
@@ -411,10 +411,11 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 func (s *Service) emitState(inst *agentInstance) {
 	inst.mu.RLock()
 	event := protocol.AgentEvent{
-		Type:    "state",
-		EventID: fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)),
-		AgentID: inst.meta.ID,
-		State:   inst.meta.State,
+		Type:         "state",
+		EventID:      fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)),
+		AgentID:      inst.meta.ID,
+		State:        inst.meta.State,
+		Capabilities: append([]protocol.AgentCapability(nil), inst.meta.Capabilities...),
 	}
 	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
 	for _, sub := range inst.subscribers {

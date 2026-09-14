@@ -189,6 +189,16 @@ func TestBridgeDisconnectMakesCommandsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent failed: %v", err)
 	}
+	stateEvents := make(chan protocol.AgentEvent, 2)
+	unsubscribe, err := svc.Subscribe(agent.ID, func(event protocol.AgentEvent) {
+		if event.Type == "state" {
+			stateEvents <- event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
 
 	secret := termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"]
 	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
@@ -218,6 +228,14 @@ func TestBridgeDisconnectMakesCommandsUnavailable(t *testing.T) {
 	}
 	if !svc.bridgeServer.IsConnected(agent.ID) {
 		t.Fatal("agent failed to authenticate via bridge")
+	}
+	select {
+	case event := <-stateEvents:
+		if !hasEnabledCapability(event.Capabilities, "prompt") {
+			t.Fatalf("connected state event missing prompt capability: %+v", event.Capabilities)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing connected state event")
 	}
 
 	ag, err := svc.GetAgent(agent.ID)
@@ -256,10 +274,27 @@ func TestBridgeDisconnectMakesCommandsUnavailable(t *testing.T) {
 			t.Fatal("prompt capability should be disabled after disconnect")
 		}
 	}
+	select {
+	case event := <-stateEvents:
+		if hasEnabledCapability(event.Capabilities, "prompt") {
+			t.Fatalf("disconnected state event retained prompt capability: %+v", event.Capabilities)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing disconnected state event")
+	}
 
 	if err := svc.SubmitPrompt(agent.ID, "hello"); err == nil || err.Error() != "needs_terminal" {
 		t.Fatalf("expected needs_terminal after disconnect, got %v", err)
 	}
+}
+
+func hasEnabledCapability(capabilities []protocol.AgentCapability, name string) bool {
+	for _, capability := range capabilities {
+		if capability.Name == name {
+			return capability.Enabled
+		}
+	}
+	return false
 }
 
 func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {

@@ -173,6 +173,7 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 	second := NewService(newMockTermMgr(), store, stateDir)
 	defer second.Close()
 	conn, err := net.Dial("unix", second.bridgeServer.SocketPath())
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +209,35 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 	}
 	if len(snapshot.Agents) != 1 || snapshot.Agents[0].OMPSessionID != "omp-session" || snapshot.Agents[0].OMPSessionFile != "/sessions/omp.jsonl" {
 		t.Fatalf("persisted OMP association = %+v", snapshot.Agents)
+	}
+}
+func TestBridgeHelloReplacesFallbackTranscriptTailer(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.RLock()
+	inst := svc.agents[agent.ID]
+	svc.mu.RUnlock()
+	inst.mu.Lock()
+	inst.tailer = NewTranscriptTailer(agent.ID, "/sessions/fallback.jsonl", store)
+	inst.mu.Unlock()
+	if !svc.handleBridgeHello(agent.ID, BridgeHello{SessionID: "omp-session", SessionFile: "/sessions/authoritative.jsonl"}) {
+		t.Fatal("bridge hello rejected")
+	}
+	inst.mu.RLock()
+	path := inst.tailer.path
+	inst.mu.RUnlock()
+	if path != "/sessions/authoritative.jsonl" {
+		t.Fatalf("tailer path = %q, want authoritative OMP session file", path)
 	}
 }
 
