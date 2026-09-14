@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
+	"github.com/agenticremote/agenticremote/backend/internal/session"
 )
 
 func TestBridgeUnknownSecretRejected(t *testing.T) {
@@ -376,5 +379,71 @@ func TestBridgeReplacementDoesNotDisconnectLiveConnection(t *testing.T) {
 	}
 	if disconnected.Load() != 1 {
 		t.Fatalf("live close calls=%d, want 1", disconnected.Load())
+	}
+}
+
+// TestRealOMPBridgeLifecycle joins the real managed extension to the production
+// BridgeServer. It is opt-in because CI intentionally has no reachable OMP model.
+func TestRealOMPBridgeLifecycle(t *testing.T) {
+	modelsFile := os.Getenv("AGENTICREMOTE_OMP_MODELS_FILE")
+	if modelsFile == "" {
+		t.Skip("set AGENTICREMOTE_OMP_MODELS_FILE to run against installed OMP")
+	}
+	if _, err := exec.LookPath("omp"); err != nil {
+		t.Skip("installed omp is required")
+	}
+	models, err := os.ReadFile(modelsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	piDir := filepath.Join(t.TempDir(), "omp")
+	if err := os.MkdirAll(piDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "models.yml"), models, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", piDir)
+
+	termMgr, err := session.NewManager(workDir, filepath.Join(t.TempDir(), "terminals"), workDir, 1<<20, 64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentState := t.TempDir()
+	store, err := runtimestore.Open(agentState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	svc := NewService(termMgr, store, agentState)
+	defer svc.Close()
+
+	created, err := svc.CreateAgentRequest(context.Background(), protocol.CreateSessionRequest{CWD: workDir, Name: "real omp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = termMgr.Close(created.TerminalSessionID) })
+	deadline := time.Now().Add(15 * time.Second)
+	for !svc.bridgeServer.IsConnected(created.ID) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(created.ID) {
+		t.Fatal("real OMP extension never authenticated with production BridgeServer")
+	}
+	if err := svc.SetThinking(created.ID, "low"); err != nil {
+		t.Fatalf("thinking command through real bridge: %v", err)
+	}
+	if err := svc.Abort(created.ID); err != nil {
+		t.Fatalf("abort command through real bridge: %v", err)
+	}
+	current, err := svc.GetAgent(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range current.Capabilities {
+		if capability.Name == "prompt" && !capability.Enabled {
+			t.Fatal("authenticated extension did not enable prompt capability")
+		}
 	}
 }
