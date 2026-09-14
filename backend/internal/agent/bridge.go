@@ -146,11 +146,11 @@ type BridgeServer struct {
 	agents       map[string]*bridgeAgentState // agentID -> state
 	closing      bool
 	reqCounter   uint64
-	onHello      func(agentID string, hello BridgeHello)
+	onHello      func(agentID string, hello BridgeHello) bool
 	onDisconnect func(agentID string)
 }
 
-func NewBridgeServer(socketPath string, onHello func(agentID string, hello BridgeHello), onDisconnect func(agentID string)) (*BridgeServer, error) {
+func NewBridgeServer(socketPath string, onHello func(agentID string, hello BridgeHello) bool, onDisconnect func(agentID string)) (*BridgeServer, error) {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create bridge socket dir: %w", err)
@@ -226,8 +226,12 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 		state.mu.Unlock()
 		return
 	}
+	if b.onHello != nil && !b.onHello(hello.AgentID, hello) {
+		state.mu.Unlock()
+		return
+	}
 
-	// Reject replayed / concurrent connections on the same agent while one is active
+	// Reject replayed / concurrent connections on the same agent while one is active.
 	if state.conn != nil {
 		oldConn := state.conn
 		state.conn = nil
@@ -241,7 +245,6 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 			}
 		}
 	}
-
 	state.conn = conn
 	state.authenticated = true
 	state.sessionID = hello.SessionID
@@ -254,10 +257,6 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 	state.mu.Unlock()
 
 	_ = conn.SetReadDeadline(time.Time{})
-
-	if b.onHello != nil {
-		b.onHello(agentID, hello)
-	}
 
 	defer func() {
 		disconnected := false

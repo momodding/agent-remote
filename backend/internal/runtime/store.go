@@ -46,6 +46,8 @@ type AgentSummary struct {
 	ID                string          `json:"id"`
 	Adapter           string          `json:"adapter"`
 	TerminalSessionID string          `json:"terminalSessionId"`
+	OMPSessionID      string          `json:"-"`
+	OMPSessionFile    string          `json:"-"`
 	CWD               string          `json:"cwd"`
 	State             string          `json:"state"`
 	Capabilities      json.RawMessage `json:"capabilities"`
@@ -114,7 +116,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}, {version: 5, apply: migrate0005}, {version: 6, apply: migrate0006}, {version: 7, apply: migrate0007}} {
+	for _, migration := range []migration{{version: 1, apply: migrate0001}, {version: 2, apply: migrate0002}, {version: 3, apply: migrate0003}, {version: 4, apply: migrate0004}, {version: 5, apply: migrate0005}, {version: 6, apply: migrate0006}, {version: 7, apply: migrate0007}, {version: 8, apply: migrate0008}} {
 		var applied bool
 		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)`, migration.version).Scan(&applied); err != nil {
 			return err
@@ -206,6 +208,18 @@ func migrate0007(tx *sql.Tx) error {
 	return nil
 }
 
+func migrate0008(tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE agent_sessions ADD COLUMN omp_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_sessions ADD COLUMN omp_session_file TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) RecordTerminal(term TerminalSummary, kind string) error {
 	payload, err := json.Marshal(term)
 	if err != nil {
@@ -259,7 +273,7 @@ func (s *Store) RecordAgent(agent AgentSummary, kind string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
+	if _, err = tx.Exec(`INSERT INTO agent_sessions (id, adapter, terminal_session_id, omp_session_id, omp_session_file, cwd, state, capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, terminal_session_id=excluded.terminal_session_id, omp_session_id=excluded.omp_session_id, omp_session_file=excluded.omp_session_file, cwd=excluded.cwd, state=excluded.state, capabilities=excluded.capabilities, updated_at=excluded.updated_at`, agent.ID, agent.Adapter, agent.TerminalSessionID, agent.OMPSessionID, agent.OMPSessionFile, agent.CWD, agent.State, agent.Capabilities, agent.CreatedAt.Unix(), agent.UpdatedAt.Unix()); err != nil {
 		return err
 	}
 	result, err := appendRuntimeEvent(tx, agent.ID, kind, payload)
@@ -512,7 +526,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	agents, err := s.db.Query(`SELECT id, adapter, terminal_session_id, cwd, state, capabilities, created_at, updated_at FROM agent_sessions ORDER BY created_at, id`)
+	agents, err := s.db.Query(`SELECT id, adapter, terminal_session_id, omp_session_id, omp_session_file, cwd, state, capabilities, created_at, updated_at FROM agent_sessions ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +534,7 @@ func (s *Store) Snapshot() (*Snapshot, error) {
 	for agents.Next() {
 		var agent AgentSummary
 		var created, updated int64
-		if err := agents.Scan(&agent.ID, &agent.Adapter, &agent.TerminalSessionID, &agent.CWD, &agent.State, &agent.Capabilities, &created, &updated); err != nil {
+		if err := agents.Scan(&agent.ID, &agent.Adapter, &agent.TerminalSessionID, &agent.OMPSessionID, &agent.OMPSessionFile, &agent.CWD, &agent.State, &agent.Capabilities, &created, &updated); err != nil {
 			return nil, err
 		}
 		agent.CreatedAt, agent.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)

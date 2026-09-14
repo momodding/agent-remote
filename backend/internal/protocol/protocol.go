@@ -54,6 +54,8 @@ type AgentSession struct {
 	ID                string            `json:"id"`
 	Adapter           string            `json:"adapter"`
 	TerminalSessionID string            `json:"terminalSessionId"`
+	OMPSessionID      string            `json:"-"`
+	OMPSessionFile    string            `json:"-"`
 	CWD               string            `json:"cwd"`
 	State             string            `json:"state"`
 	Capabilities      []AgentCapability `json:"capabilities"`

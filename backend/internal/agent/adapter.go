@@ -97,18 +97,25 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 	return s
 }
 
-func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) {
+func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
+	if hello.SessionID == "" || hello.SessionFile == "" {
+		return false
+	}
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
 	s.mu.RUnlock()
 	if !ok || inst == nil {
-		return
+		return false
 	}
 
 	inst.mu.Lock()
-	if hello.SessionFile != "" {
-		inst.sessionFile = hello.SessionFile
+	if (inst.meta.OMPSessionID != "" && inst.meta.OMPSessionID != hello.SessionID) || (inst.meta.OMPSessionFile != "" && inst.meta.OMPSessionFile != hello.SessionFile) {
+		inst.mu.Unlock()
+		return false
 	}
+	inst.meta.OMPSessionID = hello.SessionID
+	inst.meta.OMPSessionFile = hello.SessionFile
+	inst.sessionFile = hello.SessionFile
 	capsMap := make(map[string]bool)
 	for _, c := range hello.Capabilities {
 		capsMap[c] = true
@@ -121,7 +128,7 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) {
 		{Name: "thinking", Enabled: capsMap["thinking"]},
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
-	if inst.tailer == nil && inst.sessionFile != "" {
+	if inst.tailer == nil {
 		inst.tailer = NewTranscriptTailer(inst.meta.ID, inst.sessionFile, s.store)
 		_ = inst.tailer.RestoreState()
 	}
@@ -129,6 +136,7 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) {
 
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
+	return true
 }
 
 func (s *Service) handleBridgeDisconnect(agentID string) {
@@ -170,12 +178,15 @@ func (s *Service) restorePersisted() {
 				ID:                a.ID,
 				Adapter:           a.Adapter,
 				TerminalSessionID: a.TerminalSessionID,
+				OMPSessionID:      a.OMPSessionID,
+				OMPSessionFile:    a.OMPSessionFile,
 				CWD:               a.CWD,
 				State:             a.State,
 				Capabilities:      caps,
 				CreatedAt:         a.CreatedAt,
 				UpdatedAt:         a.UpdatedAt,
 			},
+			sessionFile:  a.OMPSessionFile,
 			agentDir:     s.agentDir,
 			subscribers:  make(map[int]*AgentSubscriber),
 			stopPoll:     make(chan struct{}),
@@ -387,6 +398,8 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 		ID:                meta.ID,
 		Adapter:           meta.Adapter,
 		TerminalSessionID: meta.TerminalSessionID,
+		OMPSessionID:      meta.OMPSessionID,
+		OMPSessionFile:    meta.OMPSessionFile,
 		CWD:               meta.CWD,
 		State:             meta.State,
 		Capabilities:      capsBytes,

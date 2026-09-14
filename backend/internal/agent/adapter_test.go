@@ -153,7 +153,20 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bind, err := net.Dial("unix", first.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret, SessionID: "omp-session", SessionFile: "/sessions/omp.jsonl"})
+	if _, err := bind.Write(append(frame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); !first.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	_ = bind.Close()
 	_ = first.Close()
+
 	second := NewService(newMockTermMgr(), store, stateDir)
 	defer second.Close()
 	conn, err := net.Dial("unix", second.bridgeServer.SocketPath())
@@ -161,7 +174,6 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	frame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret})
 	if _, err := conn.Write(append(frame, '\n')); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +181,30 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	if !second.bridgeServer.IsConnected(agent.ID) {
-		t.Fatal("restored Agent rejected its persisted bridge credential")
+		t.Fatal("restored Agent rejected its matching persisted bridge identity")
+	}
+	mismatch, err := net.Dial("unix", second.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mismatch.Close()
+	mismatchFrame, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: secret, SessionID: "other-session", SessionFile: "/sessions/other.jsonl"})
+	if _, err := mismatch.Write(append(mismatchFrame, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	_ = mismatch.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := mismatch.Read(make([]byte, 1)); err == nil {
+		t.Fatal("mismatched persisted OMP identity was accepted")
+	}
+	if !second.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("mismatched reconnect displaced the matching bridge")
+	}
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Agents) != 1 || snapshot.Agents[0].OMPSessionID != "omp-session" || snapshot.Agents[0].OMPSessionFile != "/sessions/omp.jsonl" {
+		t.Fatalf("persisted OMP association = %+v", snapshot.Agents)
 	}
 }
 
