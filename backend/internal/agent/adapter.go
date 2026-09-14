@@ -89,7 +89,7 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 	}
 
 	socketPath := filepath.Join(agentDir, "bridge.sock")
-	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect); err == nil {
+	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle); err == nil {
 		s.bridgeServer = bs
 	}
 
@@ -111,6 +111,9 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 	inst.mu.Lock()
 	if (inst.meta.OMPSessionID != "" && inst.meta.OMPSessionID != hello.SessionID) || (inst.meta.OMPSessionFile != "" && inst.meta.OMPSessionFile != hello.SessionFile) {
 		inst.mu.Unlock()
+		if s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+			s.terminateAgentRuntime(inst, "mismatched session identity on bridge connect")
+		}
 		return false
 	}
 	inst.meta.OMPSessionID = hello.SessionID
@@ -157,6 +160,108 @@ func (s *Service) handleBridgeDisconnect(agentID string) {
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
 	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+}
+func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return
+	}
+
+	inst.mu.RLock()
+	curState := inst.meta.State
+	ompSessionID := inst.meta.OMPSessionID
+	ompSessionFile := inst.meta.OMPSessionFile
+	inst.mu.RUnlock()
+
+	if curState == "exited" {
+		return
+	}
+
+	if frame.Event == "session_changed" ||
+		(frame.SessionID != "" && ompSessionID != "" && frame.SessionID != ompSessionID) ||
+		(frame.SessionFile != "" && ompSessionFile != "" && frame.SessionFile != ompSessionFile) {
+		s.terminateAgentRuntime(inst, "session identity changed")
+		return
+	}
+
+	targetState := ""
+	switch frame.Event {
+	case "agent_start", "turn_start", "tool_start", "tool_end":
+		targetState = "working"
+	case "approval_requested":
+		targetState = "needsYou"
+	case "approval_resolved":
+		targetState = "working"
+	case "turn_end", "agent_end":
+		targetState = "idle"
+	case "session_shutdown":
+		targetState = "exited"
+	default:
+		if frame.State != "" {
+			targetState = frame.State
+		}
+	}
+
+	if targetState == "" {
+		return
+	}
+
+	if targetState == "exited" {
+		s.terminateAgentRuntime(inst, "bridge session shutdown")
+		return
+	}
+
+	inst.mu.Lock()
+	if inst.meta.State == "exited" {
+		inst.mu.Unlock()
+		return
+	}
+	if inst.meta.State == targetState {
+		inst.mu.Unlock()
+		return
+	}
+	inst.meta.State = targetState
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+}
+
+func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
+	inst.mu.Lock()
+	if inst.meta.State == "exited" {
+		inst.mu.Unlock()
+		return
+	}
+	inst.meta.State = "exited"
+	inst.meta.Capabilities = []protocol.AgentCapability{
+		{Name: "chat", Enabled: true},
+		{Name: "prompt", Enabled: false},
+		{Name: "abort", Enabled: false},
+		{Name: "model", Enabled: false},
+		{Name: "thinking", Enabled: false},
+	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	termID := inst.meta.TerminalSessionID
+	agentID := inst.meta.ID
+	stop := inst.stopTerminal
+	inst.stopTerminal = nil
+	inst.mu.Unlock()
+
+	if stop != nil {
+		stop()
+	}
+	if s.bridgeServer != nil {
+		s.bridgeServer.UnregisterAgent(agentID)
+	}
+	removeBridgeSecret(s.agentDir, agentID)
+	_ = s.termMgr.Close(termID)
 
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
@@ -362,22 +467,7 @@ func (s *Service) watchTerminal(inst *agentInstance) {
 		if st.State != "exited" {
 			return
 		}
-		inst.mu.Lock()
-		inst.meta.State = "exited"
-		inst.meta.Capabilities = []protocol.AgentCapability{
-			{Name: "chat", Enabled: true},
-			{Name: "prompt", Enabled: false},
-			{Name: "abort", Enabled: false},
-			{Name: "model", Enabled: false},
-			{Name: "thinking", Enabled: false},
-		}
-		inst.meta.UpdatedAt = time.Now().UTC()
-		inst.mu.Unlock()
-		if s.bridgeServer != nil {
-			s.bridgeServer.UnregisterAgent(inst.meta.ID)
-		}
-		s.recordAgentSummary(inst, "agent.updated")
-		s.emitState(inst)
+		s.terminateAgentRuntime(inst, "terminal exited")
 	})
 	if err == nil {
 		inst.mu.Lock()
@@ -482,22 +572,25 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 
 	inst.mu.Lock()
 	stateChanged := false
-	for _, event := range events {
-		switch event.Type {
-		case "message.user", "tool.call":
-			if inst.meta.State != "working" && inst.meta.State != "exited" {
-				inst.meta.State = "working"
-				stateChanged = true
-			}
-		case "message.assistant":
-			if inst.meta.State != "idle" && inst.meta.State != "exited" {
-				inst.meta.State = "idle"
-				stateChanged = true
-			}
-		case "state":
-			if event.State != "" && event.State != inst.meta.State {
-				inst.meta.State = event.State
-				stateChanged = true
+	bridgeConnected := s.bridgeServer != nil && s.bridgeServer.IsConnected(inst.meta.ID)
+	if !bridgeConnected {
+		for _, event := range events {
+			switch event.Type {
+			case "message.user", "tool.call":
+				if inst.meta.State != "working" && inst.meta.State != "exited" {
+					inst.meta.State = "working"
+					stateChanged = true
+				}
+			case "message.assistant":
+				if inst.meta.State != "idle" && inst.meta.State != "exited" {
+					inst.meta.State = "idle"
+					stateChanged = true
+				}
+			case "state":
+				if event.State != "" && event.State != inst.meta.State {
+					inst.meta.State = event.State
+					stateChanged = true
+				}
 			}
 		}
 	}

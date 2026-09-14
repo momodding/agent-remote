@@ -50,8 +50,15 @@ var (
 )
 
 // Start launches the parser loop
-func (p *Parser) Start() error {
+func (p *Parser) Start() (resultErr error) {
 	defer close(p.notifyChan)
+	defer func() {
+		code := "EOF"
+		if resultErr != nil {
+			code = "parser_error"
+		}
+		p.failPendingCommands(code, "parser exited")
+	}()
 
 	for p.scanner.Scan() {
 		line := p.scanner.Text()
@@ -67,20 +74,29 @@ func (p *Parser) Start() error {
 	if err := p.scanner.Err(); err != nil {
 		return err
 	}
+	return nil
+}
 
-	// Cleanup
+func (p *Parser) failPendingCommands(code, message string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.currentCmd != nil {
-		p.currentCmd.Result.Error = &ControlError{Code: "EOF", Message: "parser exited"}
+
+	fail := func(cmd *ControlCommand) {
+		cmd.Result = &CommandResult{CommandID: cmd.ID, Error: &ControlError{Code: code, Message: message}}
 		select {
-		case p.currentCmd.resultChan <- p.currentCmd.Result:
+		case cmd.resultChan <- cmd.Result:
 		default:
 		}
-		close(p.currentCmd.resultChan)
+		close(cmd.resultChan)
 	}
-
-	return nil
+	if p.currentCmd != nil {
+		fail(p.currentCmd)
+		p.currentCmd = nil
+	}
+	for _, cmd := range p.cmdQueue {
+		fail(cmd)
+	}
+	p.cmdQueue = p.cmdQueue[:0]
 }
 
 // handleLine processes a single line

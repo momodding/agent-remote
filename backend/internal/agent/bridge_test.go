@@ -377,7 +377,7 @@ func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {
 
 func TestBridgeReplacementDoesNotDisconnectLiveConnection(t *testing.T) {
 	var disconnected atomic.Uint32
-	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) })
+	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,5 +540,327 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	}
 	if afterPID := ompPID(); afterPID != beforePID {
 		t.Fatalf("bridge reconnect OMP PID = %s, want %s", afterPID, beforePID)
+	}
+}
+
+func TestBridgeLifecycleStateTransitions(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	stateEvents := make(chan protocol.AgentEvent, 10)
+	unsubscribe, err := svc.Subscribe(agent.ID, func(event protocol.AgentEvent) {
+		if event.Type == "state" {
+			stateEvents <- event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+
+	secret := termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"]
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatalf("failed to dial bridge socket: %v", err)
+	}
+	defer conn.Close()
+
+	hello := BridgeHello{
+		Type:         "hello",
+		AgentID:      agent.ID,
+		Secret:       secret,
+		SessionID:    "session-1",
+		SessionFile:  "/path/to/session.jsonl",
+		Capabilities: []string{"prompt", "abort", "model", "thinking"},
+	}
+	helloBytes, _ := json.Marshal(hello)
+	helloBytes = append(helloBytes, '\n')
+	if _, err := conn.Write(helloBytes); err != nil {
+		t.Fatalf("failed to write hello frame: %v", err)
+	}
+
+	for range 50 {
+		if svc.bridgeServer.IsConnected(agent.ID) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("agent failed to authenticate via bridge")
+	}
+
+	// Drain the state event emitted by the hello handshake itself before
+	// asserting on lifecycle-driven transitions below.
+	select {
+	case <-stateEvents:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hello state event")
+	}
+
+	sendLifecycle := func(event, state string) {
+		frame := BridgeLifecycleFrame{
+			Type:  "lifecycle",
+			Event: event,
+			State: state,
+		}
+		b, _ := json.Marshal(frame)
+		b = append(b, '\n')
+		if _, err := conn.Write(b); err != nil {
+			t.Fatalf("failed to write lifecycle frame: %v", err)
+		}
+	}
+
+	// 1. turn_start -> working
+	sendLifecycle("turn_start", "working")
+	select {
+	case ev := <-stateEvents:
+		if ev.State != "working" {
+			t.Fatalf("expected state working, got %s", ev.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for turn_start state event")
+	}
+
+	// 2. tool_approval_requested -> needsYou
+	sendLifecycle("approval_requested", "needsYou")
+	select {
+	case ev := <-stateEvents:
+		if ev.State != "needsYou" {
+			t.Fatalf("expected state needsYou, got %s", ev.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for approval_requested state event")
+	}
+
+	// 3. tool_approval_resolved -> working
+	sendLifecycle("approval_resolved", "working")
+	select {
+	case ev := <-stateEvents:
+		if ev.State != "working" {
+			t.Fatalf("expected state working, got %s", ev.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for approval_resolved state event")
+	}
+
+	// 4. turn_end -> idle
+	sendLifecycle("turn_end", "idle")
+	select {
+	case ev := <-stateEvents:
+		if ev.State != "idle" {
+			t.Fatalf("expected state idle, got %s", ev.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for turn_end state event")
+	}
+
+	// 5. session_shutdown -> exited
+	sendLifecycle("session_shutdown", "exited")
+	select {
+	case ev := <-stateEvents:
+		if ev.State != "exited" {
+			t.Fatalf("expected state exited, got %s", ev.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for session_shutdown state event")
+	}
+}
+
+func TestBridgeAuthorityOverTranscriptPolling(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	sessionFile := filepath.Join(stateDir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	secret := termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"]
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatalf("failed to dial bridge socket: %v", err)
+	}
+	defer conn.Close()
+
+	hello := BridgeHello{
+		Type:         "hello",
+		AgentID:      agent.ID,
+		Secret:       secret,
+		SessionID:    "session-1",
+		SessionFile:  sessionFile,
+		Capabilities: []string{"prompt", "abort"},
+	}
+	helloBytes, _ := json.Marshal(hello)
+	helloBytes = append(helloBytes, '\n')
+	if _, err := conn.Write(helloBytes); err != nil {
+		t.Fatalf("failed to write hello frame: %v", err)
+	}
+
+	for range 50 {
+		if svc.bridgeServer.IsConnected(agent.ID) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Set state to needsYou via bridge
+	frame := BridgeLifecycleFrame{
+		Type:  "lifecycle",
+		Event: "approval_requested",
+		State: "needsYou",
+	}
+	b, _ := json.Marshal(frame)
+	_, _ = conn.Write(append(b, '\n'))
+	time.Sleep(50 * time.Millisecond)
+
+	ag, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.State != "needsYou" {
+		t.Fatalf("expected state needsYou, got %s", ag.State)
+	}
+
+	// Simulate transcript event appended
+	userMsg := `{"type":"message","id":"msg1","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}` + "\n"
+	if err := os.WriteFile(sessionFile, []byte(userMsg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.mu.RLock()
+	inst := svc.agents[agent.ID]
+	svc.mu.RUnlock()
+	svc.checkTranscript(inst)
+
+	// Since bridge is connected, state should remain needsYou, NOT overwritten by transcript
+	ag, err = svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.State != "needsYou" {
+		t.Fatalf("expected state to remain needsYou under bridge authority, got %s", ag.State)
+	}
+
+	// Disconnect bridge
+	_ = conn.Close()
+	for range 50 {
+		if !svc.bridgeServer.IsConnected(agent.ID) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Append assistant message in transcript
+	asstMsg := `{"type":"message","id":"msg2","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}` + "\n"
+	f, _ := os.OpenFile(sessionFile, os.O_APPEND|os.O_WRONLY, 0o600)
+	_, _ = f.Write([]byte(asstMsg))
+	_ = f.Close()
+
+	svc.checkTranscript(inst)
+
+	// Now disconnected: transcript should derive idle state
+	ag, err = svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.State != "idle" {
+		t.Fatalf("expected state idle after transcript fallback, got %s", ag.State)
+	}
+}
+
+func TestBridgeSessionChangedTerminatesRuntime(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	secret := termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"]
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatalf("failed to dial bridge socket: %v", err)
+	}
+	defer conn.Close()
+
+	hello := BridgeHello{
+		Type:         "hello",
+		AgentID:      agent.ID,
+		Secret:       secret,
+		SessionID:    "session-1",
+		SessionFile:  "/path/to/session1.jsonl",
+		Capabilities: []string{"prompt", "abort"},
+	}
+	helloBytes, _ := json.Marshal(hello)
+	helloBytes = append(helloBytes, '\n')
+	if _, err := conn.Write(helloBytes); err != nil {
+		t.Fatalf("failed to write hello frame: %v", err)
+	}
+
+	for range 50 {
+		if svc.bridgeServer.IsConnected(agent.ID) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Send session_changed event with different session
+	frame := BridgeLifecycleFrame{
+		Type:        "lifecycle",
+		Event:       "session_changed",
+		SessionID:   "session-2",
+		SessionFile: "/path/to/session2.jsonl",
+	}
+	b, _ := json.Marshal(frame)
+	_, _ = conn.Write(append(b, '\n'))
+	for range 50 {
+		ag, _ := svc.GetAgent(agent.ID)
+		if ag != nil && ag.State == "exited" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ag, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.State != "exited" {
+		t.Fatalf("expected state exited on session change, got %s", ag.State)
+	}
+	if svc.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("expected bridge to be unregistered after runtime termination")
 	}
 }

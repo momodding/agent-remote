@@ -3,7 +3,7 @@ jest.mock('react-native', () => {
   const element = (name: string) => ({ children, ...props }: { children?: React.ReactNode }) => React.createElement(name, props, children);
   const View = element('View');
   return {
-    ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, ...props }: { ListEmptyComponent?: React.ReactNode }) => React.createElement('FlatList', props, ListEmptyComponent),
+    ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, data, renderItem, ...props }: { ListEmptyComponent?: React.ReactNode; data?: unknown[]; renderItem?: (info: { item: unknown; index: number }) => React.ReactNode }) => React.createElement('FlatList', props, data && renderItem ? data.map((item, index) => renderItem({ item, index })) : ListEmptyComponent),
     Keyboard: { addListener: () => ({ remove: jest.fn() }), dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
     useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
@@ -19,7 +19,7 @@ jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () =
 
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import AgentScreen from '../app/agent/[id]';
-import type { AgentCapability, AgentEvent } from './protocol';
+import type { AgentCapability, AgentEvent, AgentHistoryResponse } from './protocol';
 import type { Connection, ConnectionStore } from './lib/connection';
 import type { AgentWorkspaceTab } from './lib/tabs/types';
 
@@ -32,6 +32,7 @@ const mockTab: AgentWorkspaceTab = {
   agentSessionId: 'agent-1', terminalSessionId: 'terminal-1', state: 'working', view: 'chat',
 };
 let mockCapabilities: AgentCapability[] = [];
+const mockAgentHistory = jest.fn<Promise<AgentHistoryResponse>, [string]>(async () => ({ cursor: 0, events: [] }));
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null }, router: { replace: jest.fn(), push: jest.fn() }, useLocalSearchParams: () => ({ id: mockTab.tabId }),
@@ -42,7 +43,7 @@ jest.mock('./lib/connection', () => ({
 jest.mock('./lib/api', () => ({
   AgenticRemoteAPI: jest.fn(() => ({
     agent: jest.fn(async () => ({ state: 'working', capabilities: mockCapabilities })),
-    agentHistory: jest.fn(async () => ({ cursor: 0, events: [] })),
+    agentHistory: mockAgentHistory,
     runtimeSnapshot: jest.fn(async () => ({ topology: [] })),
     submitAgentPrompt: jest.fn(), abortAgent: jest.fn(), closeSession: jest.fn(),
   })),
@@ -52,10 +53,12 @@ jest.mock('./lib/daemon-channel', () => ({
   createDaemonChannel: jest.fn(() => ({ subscribe: jest.fn(() => jest.fn()), send: jest.fn(), closeChannel: jest.fn() })),
 }));
 let mockHandleEvent: ((event: AgentEvent) => void) | undefined;
+let mockHandleCursorExpired: (() => Promise<number>) | undefined;
 jest.mock('./lib/runtime-channel', () => ({
   createRuntimeChannel: jest.fn(() => ({
-    openAgentChannel: jest.fn(async (_agentId: string, _after: number, fn: (event: AgentEvent) => void) => {
+    openAgentChannel: jest.fn(async (_agentId: string, _after: number, fn: (event: AgentEvent) => void, onCursorExpired?: () => Promise<number>) => {
       mockHandleEvent = fn;
+      mockHandleCursorExpired = onCursorExpired;
       return { channelId: 'agent-channel' };
     }),
     closeChannel: jest.fn(),
@@ -81,6 +84,16 @@ async function renderScreen(): Promise<ReactTestRenderer> {
   return tree!;
 }
 
+
+beforeEach(() => {
+  mockCapabilities = [];
+  mockHandleEvent = undefined;
+  mockHandleCursorExpired = undefined;
+  mockAgentHistory.mockReset();
+  mockAgentHistory.mockResolvedValue({ cursor: 0, events: [] });
+  mockDispatch.mockClear();
+  mockCloseTab.mockClear();
+});
 
 describe('AgentScreen capability gates', () => {
   it('shows terminal fallback and hides interactive controls without bridge capabilities', async () => {
@@ -131,5 +144,51 @@ describe('AgentScreen capability gates', () => {
     expect(tree.root.findByProps({ accessibilityLabel: 'Abort' })).toBeTruthy();
     expect(() => tree.root.findByProps({ accessibilityLabel: 'Open Terminal to interact' })).toThrow();
     act(() => tree.unmount());
+  });
+
+  it('recovers and resyncs visible screen after transient history failure on cursor expiry', async () => {
+    mockCapabilities = [{ name: 'chat', enabled: true }, { name: 'prompt', enabled: true }, { name: 'abort', enabled: true }];
+    mockAgentHistory.mockResolvedValueOnce({ cursor: 0, events: [] });
+    const tree = await renderScreen();
+
+    expect(mockHandleCursorExpired).toBeDefined();
+
+    mockAgentHistory
+      .mockRejectedValueOnce(new Error('transient history failure'))
+      .mockResolvedValueOnce({
+        cursor: 12,
+        events: [
+          {
+            eventId: 'evt-rec-1',
+            agentId: 'agent-1',
+            type: 'message.assistant',
+            text: 'Resynced after transient error',
+            state: 'idle',
+            cursor: 12,
+          },
+        ],
+      });
+
+    jest.useFakeTimers();
+    let cursorPromise: Promise<number> | undefined;
+    act(() => {
+      cursorPromise = mockHandleCursorExpired!();
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300);
+    });
+
+    const cursor = await cursorPromise!;
+    expect(cursor).toBe(12);
+    expect(mockAgentHistory).toHaveBeenCalledTimes(3);
+
+    expect(
+      tree.root.findAll((node) => node.props?.children === 'Resynced after transient error').length,
+    ).toBeGreaterThan(0);
+    expect(mockDispatch).toHaveBeenCalledWith(expect.any(Function));
+
+    act(() => tree.unmount());
+    jest.useRealTimers();
   });
 });

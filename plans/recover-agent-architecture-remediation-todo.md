@@ -151,3 +151,27 @@ Source: tmux topology review
 Plan requirement: old topology cannot reattach to a new tmux server at the same socket.
 Required change: private-server global generation token in persisted server identity.
 Required tests: daemon restart preserves token; same-socket server recreation rejects stale panes.
+
+## RAR-021 — tmux control loss leaves queued commands unresolved
+Severity: P1
+Status: DONE — `Parser.Start` now defers `failPendingCommands` on every exit path (clean EOF, scanner error, `handleLine` protocol error), failing `currentCmd` and every queued `cmdQueue` entry exactly once with a non-blocking send. `TestParserControlLossFailsEveryQueuedCommand` and `TestParserProtocolErrorFailsQueuedCommand` in `backend/internal/tmux/parser_test.go` cover EOF-with-multiple-queued-commands and protocol-error-with-queued-command paths; both pass.
+Source: independent runtime-integrity review (OracleRuntimeIntegrity)
+Plan requirement: tmux server/control loss must fail pending commands; no `SendCommand` caller may remain blocked after parser termination.
+Required change: centralize exit cleanup in `backend/internal/tmux/parser.go` so every return path from `Parser.Start` fails the active and queued commands with a terminal error before returning.
+Required tests: queued-command EOF and protocol-error regression coverage.
+
+## RAR-022 — Transcript projection mis-decodes display and aborted-turn fields
+Severity: P1
+Status: DONE — `backend/internal/agent/transcript.go` decodes nested `message.display` and suppresses `custom`/`hookMessage` rows unless display is true (`custom_message` top-level entries already honored `Display`); `message.stopReason == "aborted"` now derives the durable `Aborted` flag alongside the legacy `message.aborted` boolean, covering both empty and content-array assistant turns. `backend/internal/agent/transcript_test.go` adds displayed/hidden custom and hook coverage plus `stopReason`-driven aborted-turn cases (empty, plain string, and structured content blocks).
+Source: independent transcript-durability review (OracleTranscriptDurability)
+Plan requirement: only displayed custom/hook messages are projected; aborted assistant turns are durably marked regardless of content shape.
+Required change: decode installed OMP v3 `display` and `stopReason` fields instead of the non-schema `aborted` boolean alone.
+Required tests: hidden nested custom/hook suppression; `stopReason=aborted` empty and content-array assistant projection.
+
+## RAR-023 — Agent screen stays stale after one transient history resync failure
+Severity: P1
+Status: DONE — `client/app/agent/[id].tsx`'s cursor-expiry handler (`handleCursorExpired`) now retries `loadAndReplaceHistory` with bounded exponential backoff (three attempts, 250ms/500ms capped at 2000ms) instead of propagating the first `agentHistory` rejection. `client/src/agent-route.test.tsx` adds a deterministic regression proving the screen recovers and resyncs after one rejected `agentHistory` call followed by a successful one.
+Source: independent transcript-durability review (OracleTranscriptDurability)
+Plan requirement: an established Agent channel must not remain permanently stale after a transient durable-history failure.
+Required change: bounded retry around the cursor-expiry resync path in the Agent route.
+Required tests: transient failure followed by successful resync restores visible history and cursor.

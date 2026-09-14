@@ -125,6 +125,20 @@ type BridgeCommandResult struct {
 	OK        bool   `json:"ok"`
 	Error     string `json:"error,omitempty"`
 }
+type BridgeLifecycleFrame struct {
+	Type         string `json:"type"`
+	Event        string `json:"event"`
+	State        string `json:"state,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
+	SessionFile  string `json:"sessionFile,omitempty"`
+	ToolCallID   string `json:"toolCallId,omitempty"`
+	ToolName     string `json:"toolName,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	ApprovalMode string `json:"approvalMode,omitempty"`
+	Approved     *bool  `json:"approved,omitempty"`
+	IsError      bool   `json:"isError,omitempty"`
+	StopReason   string `json:"stopReason,omitempty"`
+}
 
 type bridgeAgentState struct {
 	mu            sync.Mutex
@@ -148,29 +162,33 @@ type BridgeServer struct {
 	reqCounter   uint64
 	onHello      func(agentID string, hello BridgeHello) bool
 	onDisconnect func(agentID string)
+	onLifecycle  func(agentID string, frame BridgeLifecycleFrame)
 }
 
-func NewBridgeServer(socketPath string, onHello func(agentID string, hello BridgeHello) bool, onDisconnect func(agentID string)) (*BridgeServer, error) {
+func NewBridgeServer(
+	socketPath string,
+	onHello func(agentID string, hello BridgeHello) bool,
+	onDisconnect func(agentID string),
+	onLifecycle func(agentID string, frame BridgeLifecycleFrame),
+) (*BridgeServer, error) {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create bridge socket dir: %w", err)
 	}
-
 	_ = os.Remove(socketPath)
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on bridge socket: %w", err)
 	}
 	_ = os.Chmod(socketPath, 0o600)
-
 	bs := &BridgeServer{
 		socketPath:   socketPath,
 		listener:     l,
 		agents:       make(map[string]*bridgeAgentState),
 		onHello:      onHello,
 		onDisconnect: onDisconnect,
+		onLifecycle:  onLifecycle,
 	}
-
 	go bs.acceptLoop()
 	return bs, nil
 }
@@ -226,11 +244,16 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 		state.mu.Unlock()
 		return
 	}
+	state.mu.Unlock()
+
+	// onHello (Service.handleBridgeHello) may call back into BridgeServer
+	// methods that lock this same per-agent state (e.g. IsConnected on a
+	// session-identity mismatch), so it must run without state.mu held.
 	if b.onHello != nil && !b.onHello(hello.AgentID, hello) {
-		state.mu.Unlock()
 		return
 	}
 
+	state.mu.Lock()
 	// Reject replayed / concurrent connections on the same agent while one is active.
 	if state.conn != nil {
 		oldConn := state.conn
@@ -289,15 +312,25 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 		}
 
 		var raw struct {
-			Type      string `json:"type"`
-			RequestID string `json:"requestId"`
-			OK        bool   `json:"ok"`
-			Error     string `json:"error,omitempty"`
+			Type         string `json:"type"`
+			RequestID    string `json:"requestId"`
+			OK           bool   `json:"ok"`
+			Error        string `json:"error,omitempty"`
+			Event        string `json:"event"`
+			State        string `json:"state"`
+			SessionID    string `json:"sessionId"`
+			SessionFile  string `json:"sessionFile"`
+			ToolCallID   string `json:"toolCallId"`
+			ToolName     string `json:"toolName"`
+			Reason       string `json:"reason"`
+			ApprovalMode string `json:"approvalMode"`
+			Approved     *bool  `json:"approved"`
+			IsError      bool   `json:"isError"`
+			StopReason   string `json:"stopReason"`
 		}
 		if err := json.Unmarshal(line, &raw); err != nil {
 			continue
 		}
-
 		if raw.Type == "command.result" && raw.RequestID != "" {
 			state.mu.Lock()
 			ch, ok := state.pending[raw.RequestID]
@@ -305,7 +338,6 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 				delete(state.pending, raw.RequestID)
 			}
 			state.mu.Unlock()
-
 			if ok && ch != nil {
 				ch <- BridgeCommandResult{
 					Type:      raw.Type,
@@ -313,6 +345,24 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 					OK:        raw.OK,
 					Error:     raw.Error,
 				}
+			}
+		} else if raw.Type == "lifecycle" {
+			if b.onLifecycle != nil {
+				frame := BridgeLifecycleFrame{
+					Type:         raw.Type,
+					Event:        raw.Event,
+					State:        raw.State,
+					SessionID:    raw.SessionID,
+					SessionFile:  raw.SessionFile,
+					ToolCallID:   raw.ToolCallID,
+					ToolName:     raw.ToolName,
+					Reason:       raw.Reason,
+					ApprovalMode: raw.ApprovalMode,
+					Approved:     raw.Approved,
+					IsError:      raw.IsError,
+					StopReason:   raw.StopReason,
+				}
+				b.onLifecycle(agentID, frame)
 			}
 		}
 	}

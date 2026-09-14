@@ -187,7 +187,18 @@ export default function AgentScreen() {
     };
 
     const handleCursorExpired = async (): Promise<number> => {
-      return await loadAndReplaceHistory();
+      // ponytail: bounded backoff retry for transient history recovery
+      const maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (!active) return 0;
+        try {
+          return await loadAndReplaceHistory();
+        } catch (err) {
+          if (attempt === maxAttempts - 1 || !active) throw err;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(250 * 2 ** attempt, 2000)));
+        }
+      }
+      return 0;
     };
 
     void (async () => {

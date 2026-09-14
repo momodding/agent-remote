@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/agenticremote/agenticremote/backend/internal/protocol"
-	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
+
+	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
 
 type TranscriptTailer struct {
@@ -194,8 +196,10 @@ type transcriptMessage struct {
 	Files      []struct {
 		Path string `json:"path"`
 	} `json:"files"`
-	IsError bool `json:"isError"`
-	Aborted bool `json:"aborted"`
+	IsError    bool   `json:"isError"`
+	Aborted    bool   `json:"aborted"`
+	StopReason string `json:"stopReason"`
+	Display    bool   `json:"display,omitempty"`
 }
 
 type transcriptContent struct {
@@ -211,16 +215,27 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 		return nil
 	}
 	if e.Type == "custom_message" {
-		if !e.Display {
+		isDisplayed := e.Display || (e.Message != nil && e.Message.Display)
+		if !isDisplayed {
 			return nil
 		}
 		text, _ := transcriptText(e.Content)
+		if text == "" && e.Message != nil {
+			text, _ = transcriptText(e.Message.Content)
+		}
+		if text == "" {
+			return nil
+		}
 		return []protocol.AgentEvent{{Type: "message.system", EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, Text: text}}
 	}
 	if e.Type != "message" || e.Message == nil {
 		return nil
 	}
 	message := e.Message
+	isDisplayed := e.Display || message.Display
+	if (message.Role == "custom" || message.Role == "hookMessage") && !isDisplayed {
+		return nil
+	}
 	text, contents := transcriptText(message.Content)
 	if message.Role == "fileMention" && text == "" {
 		for index, file := range message.Files {
@@ -247,18 +262,21 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if role == "fileMention" || role == "custom" || role == "hookMessage" {
 		role = "system"
 	}
+	isAborted := message.Aborted || strings.EqualFold(message.StopReason, "aborted")
 	if role != "assistant" || len(contents) == 0 {
-		if text == "" && !(role == "assistant" && message.Aborted) {
+		if text == "" && !(role == "assistant" && isAborted) {
 			return nil
 		}
-		return []protocol.AgentEvent{{Type: "message." + role, EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, Text: text, IsError: message.IsError, Aborted: message.Aborted}}
+		return []protocol.AgentEvent{{Type: "message." + role, EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, Text: text, IsError: message.IsError, Aborted: isAborted}}
 	}
 	events := make([]protocol.AgentEvent, 0, len(contents))
+	hasAssistant := false
 	for index, content := range contents {
 		switch content.Type {
 		case "text":
-			if content.Text != "" || message.Aborted {
-				events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":message:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text})
+			if content.Text != "" || isAborted {
+				hasAssistant = true
+				events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":message:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text, IsError: message.IsError, Aborted: isAborted})
 			}
 		case "thinking":
 			if content.Text != "" {
@@ -269,6 +287,9 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: e.ID + ":tool-call:" + content.ToolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: content.ToolCallID, ToolName: content.Name, ToolInput: json.RawMessage(content.Arguments)})
 			}
 		}
+	}
+	if isAborted && !hasAssistant {
+		events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, IsError: message.IsError, Aborted: true})
 	}
 	return events
 }

@@ -26,6 +26,8 @@ export default function (pi: ExtensionAPI) {
 	let shuttingDown = false;
 	let retryTimer: ReturnType<typeof setTimeout> | null = null;
 	let retryDelayMs = 100;
+	let initialSessionId: string | null = null;
+	let initialSessionFile: string | null = null;
 
 	function sendFrame(frame: unknown) {
 		if (socket && isConnected) {
@@ -146,14 +148,20 @@ export default function (pi: ExtensionAPI) {
 
 	function sendHello(ctx: ExtensionContext) {
 		if (!socket || !isConnected) return;
-		const sessionId = ctx.sessionManager.getSessionId();
-		const sessionFile = ctx.sessionManager.getSessionFile();
+		const sessionId = ctx.sessionManager.getSessionId() || "";
+		const sessionFile = ctx.sessionManager.getSessionFile() || "";
+		if (!initialSessionId && sessionId) {
+			initialSessionId = sessionId;
+		}
+		if (!initialSessionFile && sessionFile) {
+			initialSessionFile = sessionFile;
+		}
 		sendFrame({
 			type: "hello",
 			agentId,
 			secret,
-			sessionId: sessionId || "",
-			sessionFile: sessionFile || "",
+			sessionId,
+			sessionFile,
 			capabilities: ["prompt", "abort", "model", "thinking"],
 		});
 	}
@@ -222,22 +230,128 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("turn_start", async (_event, ctx) => {
-		latestCtx = ctx;
+	pi.on("session_before_switch", async () => {
+		return { cancel: true };
 	});
 
-	pi.on("turn_end", async (_event, ctx) => {
-		latestCtx = ctx;
+	pi.on("session_before_branch", async () => {
+		return { cancel: true };
 	});
 
 	pi.on("session_switch", async (_event, ctx) => {
 		latestCtx = ctx;
-		sendHello(ctx);
+		const currentSessionId = ctx.sessionManager.getSessionId() || "";
+		const currentSessionFile = ctx.sessionManager.getSessionFile() || "";
+		if (
+			(initialSessionId && currentSessionId && currentSessionId !== initialSessionId) ||
+			(initialSessionFile && currentSessionFile && currentSessionFile !== initialSessionFile)
+		) {
+			sendFrame({
+				type: "lifecycle",
+				event: "session_changed",
+				sessionId: currentSessionId,
+				sessionFile: currentSessionFile,
+			});
+		} else {
+			sendHello(ctx);
+		}
 	});
 
 	pi.on("session_branch", async (_event, ctx) => {
 		latestCtx = ctx;
-		sendHello(ctx);
+		const currentSessionId = ctx.sessionManager.getSessionId() || "";
+		const currentSessionFile = ctx.sessionManager.getSessionFile() || "";
+		if (
+			(initialSessionId && currentSessionId && currentSessionId !== initialSessionId) ||
+			(initialSessionFile && currentSessionFile && currentSessionFile !== initialSessionFile)
+		) {
+			sendFrame({
+				type: "lifecycle",
+				event: "session_changed",
+				sessionId: currentSessionId,
+				sessionFile: currentSessionFile,
+			});
+		} else {
+			sendHello(ctx);
+		}
+	});
+
+	pi.on("agent_start", async () => {
+		sendFrame({
+			type: "lifecycle",
+			event: "agent_start",
+			state: "working",
+		});
+	});
+
+	pi.on("turn_start", async (_event, ctx) => {
+		latestCtx = ctx;
+		sendFrame({
+			type: "lifecycle",
+			event: "turn_start",
+			state: "working",
+		});
+	});
+
+	pi.on("tool_execution_start", async (event) => {
+		sendFrame({
+			type: "lifecycle",
+			event: "tool_start",
+			state: "working",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+		});
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		sendFrame({
+			type: "lifecycle",
+			event: "tool_end",
+			state: "working",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			isError: event.isError,
+		});
+	});
+
+	pi.on("tool_approval_requested", async (event) => {
+		sendFrame({
+			type: "lifecycle",
+			event: "approval_requested",
+			state: "needsYou",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			reason: event.reason,
+			approvalMode: event.approvalMode,
+		});
+	});
+
+	pi.on("tool_approval_resolved", async (event) => {
+		sendFrame({
+			type: "lifecycle",
+			event: "approval_resolved",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			approved: event.approved,
+			reason: event.reason,
+		});
+	});
+
+	pi.on("turn_end", async (_event, ctx) => {
+		latestCtx = ctx;
+		sendFrame({
+			type: "lifecycle",
+			event: "turn_end",
+			state: "idle",
+		});
+	});
+
+	pi.on("agent_end", async () => {
+		sendFrame({
+			type: "lifecycle",
+			event: "agent_end",
+			state: "idle",
+		});
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
@@ -246,6 +360,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
+		sendFrame({
+			type: "lifecycle",
+			event: "session_shutdown",
+			state: "exited",
+		});
 		if (retryTimer) {
 			clearTimeout(retryTimer);
 			retryTimer = null;
