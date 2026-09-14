@@ -460,6 +460,7 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 		return
 	}
 
+	before := tailer.snapshot()
 	events, err := tailer.Read()
 	if err != nil || len(events) == 0 {
 		return
@@ -495,21 +496,41 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	inst.mu.Unlock()
 
-	for i := range events {
-		if s.store != nil {
-			cursor, err := s.store.RecordEvent(inst.meta.ID, events[i].Type, events[i])
-			if err == nil {
-				events[i].Cursor = cursor
+	if s.store != nil {
+		inputs := make([]runtimestore.AgentTranscriptEvent, 0, len(events))
+		for _, event := range events {
+			payload, err := json.Marshal(event)
+			if err != nil {
+				tailer.restore(before)
+				return
+			}
+			inputs = append(inputs, runtimestore.AgentTranscriptEvent{EventID: event.EventID, Kind: event.Type, Payload: payload})
+		}
+		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, inputs, tailer.checkpoint())
+		if err != nil {
+			tailer.restore(before)
+			return
+		}
+		cursors := make(map[string]int64, len(committed))
+		for _, stored := range committed {
+			cursors[stored.EventID] = stored.Event.Cursor
+		}
+		published := events[:0]
+		for _, event := range events {
+			if cursor, ok := cursors[event.EventID]; ok {
+				event.Cursor = cursor
+				published = append(published, event)
 			}
 		}
-		for _, fn := range subscribers {
-			fn(events[i])
-		}
+		events = published
+	} else if err := tailer.SaveState(); err != nil {
+		tailer.restore(before)
+		return
 	}
-
-	// Persist tailer state only after all semantic events recorded to store.
-	if len(events) > 0 && tailer != nil {
-		_ = tailer.SaveState()
+	for _, event := range events {
+		for _, fn := range subscribers {
+			fn(event)
+		}
 	}
 
 	if stateChanged {
@@ -655,6 +676,51 @@ func (s *Service) Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(
 		inst.mu.Lock()
 		delete(inst.subscribers, subID)
 		inst.mu.Unlock()
+	}, nil
+}
+
+// History returns ordered durable semantic events and runtime high-water cursor for an agent.
+func (s *Service) History(agentID string) (*protocol.AgentHistoryResponse, error) {
+	s.mu.RLock()
+	_, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, ErrAgentNotFound
+	}
+	if s.store == nil {
+		return &protocol.AgentHistoryResponse{
+			Cursor: 0,
+			Events: []protocol.AgentEvent{},
+		}, nil
+	}
+	entries, cursor, err := s.store.AgentHistory(agentID)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]protocol.AgentEvent, 0, len(entries))
+	for _, entry := range entries {
+		var event protocol.AgentEvent
+		if err := json.Unmarshal(entry.Payload, &event); err != nil {
+			event = protocol.AgentEvent{
+				Type:    entry.Kind,
+				EventID: entry.EventID,
+				AgentID: entry.AgentID,
+			}
+		}
+		if event.EventID == "" {
+			event.EventID = entry.EventID
+		}
+		if event.AgentID == "" {
+			event.AgentID = entry.AgentID
+		}
+		if event.Type == "" {
+			event.Type = entry.Kind
+		}
+		events = append(events, event)
+	}
+	return &protocol.AgentHistoryResponse{
+		Cursor: cursor,
+		Events: events,
 	}, nil
 }
 

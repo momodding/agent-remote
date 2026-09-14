@@ -104,4 +104,37 @@ describe('WebSocketDaemonChannel raw terminal reconnect', () => {
     socket.receive({ type: 'pty.baseline', sessionId: 'term-1', data: 'YQ==', seq: 5 });
     expect(received).toEqual([{ channelId: 'term-1', kind: 'terminal', type: 'pty.baseline', data: 'YQ==', seq: 5 }]);
   });
+
+  it('drops duplicate output at or before the baseline sequence', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'reconnect-host' }) as WebSocketDaemonChannel;
+    const received: unknown[] = [];
+    channel.subscribe('term-1', (msg) => received.push(msg));
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'pty.baseline', sessionId: 'term-1', data: 'YQ==', seq: 5 });
+    socket.receive({ type: 'pty.output', sessionId: 'term-1', data: 'Yg==', seq: 5 });
+    socket.receive({ type: 'pty.output', sessionId: 'term-1', data: 'Yw==', seq: 6 });
+    expect(received).toHaveLength(2);
+    expect(received[1]).toMatchObject({ type: 'pty.output', seq: 6 });
+  });
+
+  it('drops terminal input but retains the latest resize during reconnect', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'reconnect-host' }) as WebSocketDaemonChannel;
+    channel.subscribe('term-1', jest.fn());
+    const first = FakeSocket.instances[0];
+    first.open();
+    first.close();
+
+    channel.send({ channelId: 'term-1', kind: 'terminal', type: 'pty.input', data: 'c3RhbGU=' });
+    channel.send({ channelId: 'term-1', kind: 'terminal', type: 'pty.resize', cols: 80, rows: 24 });
+    channel.send({ channelId: 'term-1', kind: 'terminal', type: 'pty.resize', cols: 120, rows: 40 });
+    jest.advanceTimersByTime(250);
+
+    const second = FakeSocket.instances[1];
+    second.open();
+    expect(second.sent).toEqual([
+      JSON.stringify({ type: 'auth.token', token: 'tok' }),
+      JSON.stringify({ type: 'pty.resize', sessionId: 'term-1', cols: 120, rows: 40 }),
+    ]);
+  });
 });

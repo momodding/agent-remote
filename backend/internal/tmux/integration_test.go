@@ -277,3 +277,100 @@ func TestReattachPaneRecoversStreamingOutput(t *testing.T) {
 		t.Fatalf("reattached output = %q, want streaming output", buf[:n])
 	}
 }
+
+// TestSameSocketGenerationRegression verifies that multiple clients connecting to the
+// same private tmux server share the same ServerID generation, and recreating a server
+// at the exact same socket path assigns a new, distinct ServerID generation.
+func TestSameSocketGenerationRegression(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found")
+	}
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "tmux_state")
+	socketPath := filepath.Join(stateDir, "tmux.sock")
+
+	t.Cleanup(func() {
+		_ = exec.Command(tmuxPath, "-S", socketPath, "kill-server").Run()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// 1. Start first control client. It will initialize the private tmux server and generation.
+	svc1 := NewControlClient(stateDir, tmuxPath)
+	if err := svc1.Start(ctx); err != nil {
+		t.Fatalf("first client start failed: %v", err)
+	}
+	defer svc1.Close()
+
+	serverID1 := svc1.ServerID()
+	if serverID1 == "" {
+		t.Fatal("first client ServerID is empty")
+	}
+	if !strings.HasPrefix(serverID1, socketPath+":") {
+		t.Fatalf("serverID1 = %q, expected prefix %q", serverID1, socketPath+":")
+	}
+	gen1 := strings.TrimPrefix(serverID1, socketPath+":")
+	if gen1 == "" {
+		t.Fatalf("generation in serverID1 is empty: %q", serverID1)
+	}
+
+	// 2. Start second control client on same stateDir / socketPath without killing server.
+	svc2 := NewControlClient(stateDir, tmuxPath)
+	if err := svc2.Start(ctx); err != nil {
+		t.Fatalf("second client start failed: %v", err)
+	}
+	defer svc2.Close()
+
+	serverID2 := svc2.ServerID()
+	if serverID2 != serverID1 {
+		t.Fatalf("expected identical ServerID for same server: svc1=%q, svc2=%q", serverID1, serverID2)
+	}
+
+	// 3. Close active clients and kill the private tmux server.
+	_ = svc1.Close()
+	_ = svc2.Close()
+
+	killCmd := exec.Command(tmuxPath, "-S", socketPath, "kill-server")
+	if err := killCmd.Run(); err != nil {
+		t.Fatalf("kill-server failed: %v", err)
+	}
+
+	// Wait briefly for tmux server process and socket cleanup.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		probe := exec.CommandContext(ctx, tmuxPath, "-S", socketPath, "has-session")
+		if err := probe.Run(); err != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// 4. Start third control client on the exact same socketPath.
+	// It must spin up a new server and assign a new, distinct generation.
+	svc3 := NewControlClient(stateDir, tmuxPath)
+	if err := svc3.Start(ctx); err != nil {
+		t.Fatalf("third client start failed: %v", err)
+	}
+	defer svc3.Close()
+
+	serverID3 := svc3.ServerID()
+	if serverID3 == "" {
+		t.Fatal("third client ServerID is empty")
+	}
+	if !strings.HasPrefix(serverID3, socketPath+":") {
+		t.Fatalf("serverID3 = %q, expected prefix %q", serverID3, socketPath+":")
+	}
+	gen3 := strings.TrimPrefix(serverID3, socketPath+":")
+	if gen3 == "" {
+		t.Fatalf("generation in serverID3 is empty: %q", serverID3)
+	}
+
+	if serverID3 == serverID1 {
+		t.Fatalf("expected different ServerID after server recreation at same socket, got same %q", serverID3)
+	}
+	if gen3 == gen1 {
+		t.Fatalf("expected new generation after server recreation: gen1=%q, gen3=%q", gen1, gen3)
+	}
+}

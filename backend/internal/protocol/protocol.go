@@ -73,6 +73,13 @@ type AgentEvent struct {
 	ToolInput  any    `json:"toolInput,omitempty"`
 	ToolOutput any    `json:"toolOutput,omitempty"`
 	State      string `json:"state,omitempty"`
+	IsError    bool   `json:"isError,omitempty"`
+	Aborted    bool   `json:"aborted,omitempty"`
+}
+
+type AgentHistoryResponse struct {
+	Cursor int64        `json:"cursor"`
+	Events []AgentEvent `json:"events"`
 }
 type RuntimeLifecycleEvent struct {
 	SurfaceID string `json:"surfaceId"`

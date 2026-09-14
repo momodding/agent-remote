@@ -438,7 +438,8 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 	// Holding the individual subscriber lock makes replay complete before a
 	// concurrent forward can deliver newer frames to this subscriber.
 	sub.mu.Lock()
-	if data, err := os.ReadFile(scrollback); err == nil && len(data) > 0 && sub.active {
+	data, _ := os.ReadFile(scrollback)
+	if sub.active {
 		sub.fn(protocol.PTYOutputEnvelope{Type: "pty.baseline", SessionID: id, Data: base64.StdEncoding.EncodeToString(data), Seq: sub.replaySeq}, protocol.SessionStateEnvelope{})
 	}
 	sub.mu.Unlock()

@@ -41,6 +41,33 @@ type MessageItem = {
   cursor?: number;
 };
 
+function toMessageItem(event: AgentEvent): MessageItem | null {
+  const id = event.eventId || event.messageId;
+  if (!id) return null;
+  return {
+    id,
+    type: event.type,
+    text: event.text,
+    toolName: event.toolName,
+    toolInput: event.toolInput,
+    toolOutput: event.toolOutput,
+    state: event.state,
+    cursor: event.cursor,
+  };
+}
+
+function eventsToMessageItems(events: AgentEvent[]): MessageItem[] {
+  const seen = new Set<string>();
+  const items: MessageItem[] = [];
+  for (const event of events) {
+    const item = toMessageItem(event);
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push(item);
+  }
+  return items;
+}
+
 export default function AgentScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -89,54 +116,103 @@ export default function AgentScreen() {
   }, [tab?.tabId]);
 
   // Subscribe to Agent Runtime Events
+  // Subscribe to Agent Runtime Events and Bootstrap History
   useEffect(() => {
     const runtime = runtimeChannelRef.current;
     if (!tab?.agentSessionId || !runtime || !api) return;
     let active = true;
-    const currentAgentChannelIdRef = { current: null as string | null };
+    let isSyncing = false;
+    const eventBuffer: AgentEvent[] = [];
 
-    const handleCursorExpired = async () => {
-      // Fetch fresh snapshot; use its global cursor to resume from fresh point
-      const snapshot = await api!.runtimeSnapshot();
-      return snapshot.cursor;
+    const loadAndReplaceHistory = async (): Promise<number> => {
+      isSyncing = true;
+      eventBuffer.length = 0;
+      try {
+        const history = await api.agentHistory(tab.agentSessionId);
+        if (!active) return history.cursor ?? 0;
+
+        for (let i = history.events.length - 1; i >= 0; i--) {
+          if (history.events[i].state) {
+            dispatch((prev) => updateTab(prev, tab.tabId, { state: history.events[i].state as AgentWorkspaceTab['state'] }));
+            break;
+          }
+        }
+
+        const baseItems = eventsToMessageItems(history.events);
+        const seen = new Set<string>(baseItems.map((item) => item.id));
+
+        const mergedItems = [...baseItems];
+        for (const bufferedEvent of eventBuffer) {
+          const item = toMessageItem(bufferedEvent);
+          if (item && !seen.has(item.id)) {
+            seen.add(item.id);
+            mergedItems.push(item);
+          }
+        }
+
+        setMessages(mergedItems);
+        return history.cursor ?? 0;
+      } finally {
+        isSyncing = false;
+        eventBuffer.length = 0;
+      }
     };
 
-    void runtime.openAgentChannel(tab.agentSessionId, 0, (event: AgentEvent) => {
+    const handleEvent = (event: AgentEvent) => {
       if (!active) return;
       if (event.state) {
         dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
       }
-      setMessages((prev) => {
-        const id = event.eventId || event.messageId || `${event.type}-${event.cursor || Date.now()}-${prev.length}`;
-
-        const item: MessageItem = {
-          id,
-          type: event.type,
-          text: event.text,
-          toolName: event.toolName,
-          toolInput: event.toolInput,
-          toolOutput: event.toolOutput,
-          state: event.state,
-          cursor: event.cursor,
-        };
-        return [...prev, item];
-      });
-    }, handleCursorExpired).then(({ channelId }) => {
-      if (!active) {
-        runtime.closeChannel(channelId);
+      if (isSyncing) {
+        eventBuffer.push(event);
         return;
       }
-      currentAgentChannelIdRef.current = channelId;
-    }).catch((err) => {
-      if (active) {
-        console.error('Failed to open agent channel:', err);
+      const item = toMessageItem(event);
+      if (!item) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === item.id)) {
+          return prev;
+        }
+        return [...prev, item];
+      });
+    };
+
+    const handleCursorExpired = async (): Promise<number> => {
+      return await loadAndReplaceHistory();
+    };
+
+    void (async () => {
+      let initialCursor = 0;
+      try {
+        initialCursor = await loadAndReplaceHistory();
+      } catch (err) {
+        console.error('Failed to bootstrap agent history:', err);
       }
-    });
+      if (!active) return;
+      try {
+        const { channelId } = await runtime.openAgentChannel(
+          tab.agentSessionId,
+          initialCursor,
+          handleEvent,
+          handleCursorExpired,
+        );
+        if (!active) {
+          runtime.closeChannel(channelId);
+          return;
+        }
+        currentAgentChannelIdRef.current = channelId;
+      } catch (err) {
+        if (active) {
+          console.error('Failed to open agent channel:', err);
+        }
+      }
+    })();
 
     return () => {
       active = false;
       if (currentAgentChannelIdRef.current) {
         runtime.closeChannel(currentAgentChannelIdRef.current);
+        currentAgentChannelIdRef.current = null;
       }
     };
   }, [tab?.agentSessionId, connection, api, dispatch, tab?.tabId]);
@@ -146,9 +222,15 @@ export default function AgentScreen() {
     if (!tab || !connection || !daemonChannelRef.current) return;
     const daemon = daemonChannelRef.current;
     setTerminalOutput('');
-    const decoder = new TextDecoder();
+    let decoder = new TextDecoder();
+    let lastSeq = -1;
     ptyUnsubRef.current = daemon.subscribe(tab.terminalSessionId, (msg) => {
-      if (msg.type === 'pty.output') {
+      if (msg.type === 'pty.baseline') {
+        decoder = new TextDecoder();
+        lastSeq = msg.seq;
+        setTerminalOutput(decoder.decode(decodeBase64(msg.data), { stream: true }));
+      } else if (msg.type === 'pty.output' && msg.seq > lastSeq) {
+        lastSeq = msg.seq;
         const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
         if (chunk) setTerminalOutput((prev) => prev + chunk);
       }

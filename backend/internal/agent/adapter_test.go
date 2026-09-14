@@ -275,6 +275,59 @@ func TestAgentServiceTranscriptIngestion(t *testing.T) {
 	}
 }
 
+func TestAgentServiceTranscriptSameKindCursors(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sessionsDir := ComputeDefaultSessionDir(stateDir, "/workspace")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := filepath.Join(sessionsDir, "2026-09-11_01.jsonl")
+	if err := os.WriteFile(sessionFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "OMP Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan protocol.AgentEvent, 2)
+	unsub, err := svc.Subscribe(agent.ID, func(ev protocol.AgentEvent) {
+		if ev.Type == "message.assistant" {
+			received <- ev
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	lines := "{\"type\":\"message\",\"id\":\"msg-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"one\"}]}}\n{\"type\":\"message\",\"id\":\"msg-2\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n"
+	if err := os.WriteFile(sessionFile, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var first, second protocol.AgentEvent
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-received:
+			if i == 0 {
+				first = event
+			} else {
+				second = event
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for transcript events")
+		}
+	}
+	if first.Cursor == 0 || second.Cursor <= first.Cursor || first.EventID == second.EventID {
+		t.Fatalf("unexpected cursors: %+v %+v", first, second)
+	}
+}
+
 func TestRestoredAgentResumesTranscriptPolling(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Now().UTC()

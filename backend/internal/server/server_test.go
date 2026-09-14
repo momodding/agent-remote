@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -45,6 +46,22 @@ func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (f
 		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
 	}
 	return func() {}, nil
+}
+func (replayOverflowAgents) History(agentID string) (*protocol.AgentHistoryResponse, error) {
+	if agentID == "missing" {
+		return nil, errors.New("agent not found")
+	}
+	return &protocol.AgentHistoryResponse{
+		Cursor: 42,
+		Events: []protocol.AgentEvent{
+			{
+				Type:    "message.assistant",
+				EventID: "msg-1",
+				AgentID: agentID,
+				Text:    "hello world",
+			},
+		},
+	}, nil
 }
 
 type recordingAgents struct {
@@ -1210,6 +1227,12 @@ func TestAgentReplayAllowsThinkingEvents(t *testing.T) {
 	}
 }
 
+func TestAgentReplayAllowsSystemEvents(t *testing.T) {
+	if !isAgentEventKind("message.system") {
+		t.Fatal("message.system must survive Agent replay")
+	}
+}
+
 func TestRuntimeAgentCreateForwardsBackend(t *testing.T) {
 	agents := &recordingAgents{}
 	server := &Server{agents: agents}
@@ -1228,6 +1251,34 @@ func TestCreateAgentRESTForwardsBackend(t *testing.T) {
 	srv.handleAgents(resp, req)
 	if resp.Code != http.StatusCreated || agents.req.Backend != "tmux" {
 		t.Fatalf("status=%d backend=%q", resp.Code, agents.req.Backend)
+	}
+}
+
+func TestAgentHistoryEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	srv.agents = replayOverflowAgents{}
+
+	// Success case
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/agent-123/history", nil)
+	resp := httptest.NewRecorder()
+	srv.handleAgentAction(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+	var history protocol.AgentHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if history.Cursor != 42 || len(history.Events) != 1 || history.Events[0].EventID != "msg-1" {
+		t.Fatalf("unexpected history response: %+v", history)
+	}
+
+	// Not found case
+	reqNotFound := httptest.NewRequest(http.MethodGet, "/v1/agents/missing/history", nil)
+	respNotFound := httptest.NewRecorder()
+	srv.handleAgentAction(respNotFound, reqNotFound)
+	if respNotFound.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", respNotFound.Code)
 	}
 }
 

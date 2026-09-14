@@ -139,3 +139,40 @@ func TestTranscriptAssistantTextBlocksHaveDistinctIDs(t *testing.T) {
 		t.Fatalf("text events = %+v", events)
 	}
 }
+
+func TestTranscriptProjectsSpecialMessages(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry transcriptEntry
+		want  []string
+	}{
+		{"execution", transcriptEntry{Type: "message", ID: "exec", Message: &transcriptMessage{Role: "bashExecution", Command: "pwd", Output: "/workspace"}}, []string{"exec:execution:call", "exec:execution:result"}},
+		{"file", transcriptEntry{Type: "message", ID: "file", Message: &transcriptMessage{Role: "fileMention", Files: []struct {
+			Path string `json:"path"`
+		}{{Path: "README.md"}}}}, []string{"file:message"}},
+		{"displayed custom", transcriptEntry{Type: "custom_message", ID: "custom", Display: true, Content: json.RawMessage(`"notice"`)}, []string{"custom:message"}},
+		{"hidden custom", transcriptEntry{Type: "custom_message", ID: "hidden", Display: false, Content: json.RawMessage(`"secret"`)}, nil},
+		{"aborted", transcriptEntry{Type: "message", ID: "aborted", Message: &transcriptMessage{Role: "assistant", Aborted: true, Content: json.RawMessage(`"`)}}, []string{"aborted:message"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := test.entry.events("agent")
+			if len(events) != len(test.want) {
+				t.Fatalf("events = %+v", events)
+			}
+			for i, id := range test.want {
+				if events[i].EventID != id {
+					t.Fatalf("events = %+v", events)
+				}
+			}
+		})
+	}
+	result := transcriptEntry{Type: "message", ID: "error", Message: &transcriptMessage{Role: "toolResult", ToolCallID: "call", IsError: true, Content: json.RawMessage(`"failed"`)}}.events("agent")
+	if len(result) != 1 || !result[0].IsError {
+		t.Fatalf("error result = %+v", result)
+	}
+	aborted := transcriptEntry{Type: "message", ID: "aborted", Message: &transcriptMessage{Role: "assistant", Aborted: true, Content: json.RawMessage(`"`)}}.events("agent")
+	if len(aborted) != 1 || !aborted[0].Aborted {
+		t.Fatalf("aborted result = %+v", aborted)
+	}
+}

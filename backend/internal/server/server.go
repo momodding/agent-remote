@@ -63,6 +63,7 @@ type AgentAPI interface {
 	SubmitPrompt(agentID, prompt string) error
 	Abort(agentID string) error
 	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
+	History(agentID string) (*protocol.AgentHistoryResponse, error)
 }
 
 type NotifyAPI interface {
@@ -410,6 +411,15 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "history" && r.Method == http.MethodGet {
+		history, err := s.agents.History(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "agent_not_found", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, history)
 		return
 	}
 	if len(parts) == 2 && r.Method == http.MethodPost {
@@ -1220,7 +1230,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-	case "message.user", "message.assistant", "message.thinking", "tool.call", "tool.result", "state":
+	case "message.user", "message.assistant", "message.system", "message.thinking", "tool.call", "tool.result", "state":
 		return true
 	default:
 		return false

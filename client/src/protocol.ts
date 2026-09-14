@@ -53,6 +53,11 @@ export type AgentEvent = {
   toolOutput?: unknown;
   state?: string;
 };
+
+export type AgentHistoryResponse = {
+  cursor: number;
+  events: AgentEvent[];
+};
 export type RuntimeLifecycleEvent = {
   cursor?: number;
   surfaceId: string;

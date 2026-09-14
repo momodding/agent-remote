@@ -67,6 +67,8 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   private pendingSends = new Map<string, Array<string | ArrayBuffer | ArrayBufferView | object>>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  private reconnectAttempts = new Map<string, number>();
+  private terminalSeq = new Map<string, number>();
   constructor(private readonly connection: Connection) {
     this.daemonId = connection.hostId;
     this.api = new AgenticRemoteAPI(connection);
@@ -129,8 +131,10 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       if (wireFrame) {
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(wireFrame));
-        } else {
+        } else if (envelope.type === 'pty.resize') {
           this.queuePending(channelId, wireFrame);
+          this.ensureSocket(channelId);
+        } else {
           this.ensureSocket(channelId);
         }
       }
@@ -180,6 +184,7 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       if (!isDesktop) {
         socket.send(JSON.stringify({ type: 'auth.token', token: this.connection.token }));
       }
+      this.reconnectAttempts.delete(channelId);
       const pending = this.pendingSends.get(channelId) || [];
       this.pendingSends.delete(channelId);
       for (const item of pending) {
@@ -201,10 +206,16 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       } else {
         try {
           const frame = JSON.parse(String(event.data));
-          if (frame.type === 'pty.output') {
-            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.output', data: frame.data, seq: frame.seq });
-          } else if (frame.type === 'pty.baseline') {
+          if (frame.type === 'pty.baseline') {
+            const seq = Number(frame.seq);
+            if (Number.isFinite(seq)) this.terminalSeq.set(channelId, seq);
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.baseline', data: frame.data, seq: frame.seq });
+          } else if (frame.type === 'pty.output') {
+            const seq = Number(frame.seq);
+            const previous = this.terminalSeq.get(channelId);
+            if (!Number.isFinite(seq) || (previous !== undefined && seq <= previous)) return;
+            this.terminalSeq.set(channelId, seq);
+            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.output', data: frame.data, seq: frame.seq });
           } else if (frame.type === 'session.state') {
             this.dispatch(channelId, { channelId, kind: 'terminal', type: 'session.state', state: frame.state, waitState: frame.waitState });
           } else if (frame.type === 'error') {
@@ -230,10 +241,12 @@ export class WebSocketDaemonChannel implements DaemonChannel {
 
   private scheduleReconnect(channelId: string): void {
     if (this.reconnectTimers.has(channelId)) return;
+    const attempt = this.reconnectAttempts.get(channelId) ?? 0;
+    this.reconnectAttempts.set(channelId, attempt + 1);
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(channelId);
       if (this.subscribers.has(channelId)) this.ensureSocket(channelId);
-    }, 250);
+    }, Math.min(250 * 2 ** attempt, 4000));
     this.reconnectTimers.set(channelId, timer);
   }
 
@@ -243,7 +256,8 @@ export class WebSocketDaemonChannel implements DaemonChannel {
       list = [];
       this.pendingSends.set(channelId, list);
     }
-    list.push(item);
+    if (typeof item === 'object' && item !== null && 'type' in item && item.type === 'pty.resize') list.splice(0, list.length, item);
+    else list.push(item);
   }
 
   private dispatch(channelId: string, msg: ChannelEnvelope): void {
@@ -259,6 +273,8 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   }
 
   private closeSocket(channelId: string): void {
+    this.reconnectAttempts.delete(channelId);
+    this.terminalSeq.delete(channelId);
     const timer = this.reconnectTimers.get(channelId);
     if (timer) {
       clearTimeout(timer);
