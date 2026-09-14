@@ -203,22 +203,28 @@ func TestRemoveTerminalRemovesSnapshotProjection(t *testing.T) {
 func TestRecordAgentSnapshotAndEvents(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()
-	agent := AgentSummary{ID: "a1", Adapter: "omp", TerminalSessionID: "t1", CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat","enabled":true}]`), CreatedAt: now, UpdatedAt: now}
+	agent := AgentSummary{ID: "a1", Adapter: "omp", TerminalSessionID: "t1", OMPSessionID: "omp-1", OMPSessionFile: "/sessions/omp-1.jsonl", CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat","enabled":true}]`), CreatedAt: now, UpdatedAt: now}
 	if err := s.RecordAgent(agent, "agent.created"); err != nil {
 		t.Fatalf("record: %v", err)
+	}
+	updated := agent
+	updated.OMPSessionID = "other-omp"
+	updated.OMPSessionFile = ""
+	if err := s.RecordAgent(updated, "agent.updated"); err != nil {
+		t.Fatalf("update: %v", err)
 	}
 	snapshot, err := s.Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != agent.ID || snapshot.Agents[0].TerminalSessionID != agent.TerminalSessionID {
+	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != agent.ID || snapshot.Agents[0].TerminalSessionID != agent.TerminalSessionID || snapshot.Agents[0].OMPSessionID != agent.OMPSessionID || snapshot.Agents[0].OMPSessionFile != agent.OMPSessionFile {
 		t.Fatalf("unexpected snapshot: %+v", snapshot.Agents)
 	}
-	events, _, err := s.Events(snapshot.Cursor-1, 1)
+	events, _, err := s.Events(0, 10)
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	if len(events) != 1 || events[0].Kind != "agent.created" {
+	if len(events) != 2 || events[0].Kind != "agent.created" || events[1].Kind != "agent.updated" {
 		t.Fatalf("unexpected events: %+v", events)
 	}
 }

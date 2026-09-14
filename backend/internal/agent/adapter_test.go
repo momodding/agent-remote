@@ -164,6 +164,9 @@ func TestRestoredAgentAcceptsPersistedBridgeCredential(t *testing.T) {
 	for deadline := time.Now().Add(time.Second); !first.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)
 	}
+	if !first.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("initial Agent bridge did not bind before restart")
+	}
 	_ = bind.Close()
 	_ = first.Close()
 
