@@ -727,6 +727,61 @@ func TestSessionWSAcceptsPTYAfterToken(t *testing.T) {
 	t.Fatal(ctx.Err())
 }
 
+func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "noisy-shell",
+		Command: "sh",
+		Args:    []string{"-c", `i=0; while [ "$i" -lt 40 ]; do printf 'noise-%03d\n' "$i"; i=$((i + 1)); sleep 0.01; done; exec sh`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token := testBearerToken(t, srv, pairings)
+
+	open := func() *websocket.Conn {
+		conn, _, dialErr := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		if writeErr := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: token}); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		return conn
+	}
+	readBaseline := func(conn *websocket.Conn) string {
+		var frame protocol.PTYOutputEnvelope
+		if readErr := wsReadJSON(ctx, conn, &frame); readErr != nil {
+			t.Fatal(readErr)
+		}
+		if frame.Type != "pty.baseline" || frame.SessionID != summary.ID {
+			t.Fatalf("expected authenticated baseline for %q, got %+v", summary.ID, frame)
+		}
+		data, decodeErr := base64.StdEncoding.DecodeString(frame.Data)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		return string(data)
+	}
+
+	first := open()
+	_ = readBaseline(first)
+	if err := first.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	second := open()
+	defer second.Close(websocket.StatusNormalClosure, "")
+	if baseline := readBaseline(second); !strings.Contains(baseline, "noise-") {
+		t.Fatalf("reconnect baseline omitted shell output: %q", baseline)
+	}
+}
+
 func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
 	srv, _ := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{

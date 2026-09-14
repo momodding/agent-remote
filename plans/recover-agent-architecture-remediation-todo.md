@@ -122,7 +122,7 @@ Required tests: Linux runtime and Darwin builds plus same-CWD isolation.
 
 ## RAR-017 — Raw terminal reconnect duplicates or loses baseline
 Severity: P1
-Status: IN_PROGRESS
+Status: DONE — `TestSessionWSReconnectSeedsNoisyShellBaseline` in `backend/internal/server/server_test.go` opens a real authenticated `/v1/ws/sessions/:id` WebSocket over TLS against a noisy shell (`printf` loop, ~0.4s of continuous output), closes it mid-stream, reconnects with a fresh authenticated socket, and asserts the new connection's first frame is `pty.baseline` carrying current shell output — proving the server-side authenticated reconnect path, not only the client `FakeSocket` unit harness.
 Source: client socket review
 Plan requirement: reconnect replaces bounded viewport baseline then accepts only later bytes.
 Required change: explicit sequenced baseline frame and bounded reconnect with no input replay.
@@ -138,7 +138,7 @@ Required tests: explicit backend selection and unavailable tmux error.
 
 ## RAR-019 — Capabilities do not reflect available runtime operations
 Severity: P1
-Status: DONE — Agent state events carry bridge capabilities; the active Agent screen bootstraps them from the Agent snapshot, updates them live, exposes prompt and Abort only while enabled, and otherwise provides `Open Terminal to interact`. `TestBridgeDisconnectMakesCommandsUnavailable` verifies connected/disconnected state events enable then disable prompt capability.
+Status: DONE — Agent state events carry bridge capabilities; the active Agent screen bootstraps them from the Agent snapshot, updates them live, exposes prompt and Abort only while enabled, and otherwise provides `Open Terminal to interact`. `TestBridgeDisconnectMakesCommandsUnavailable` verifies connected/disconnected state events enable then disable prompt capability. `client/src/agent-route.test.tsx` renders the real Agent route and asserts both UI states: disabled capabilities hide Send Prompt/Abort and show the terminal fallback; enabled capabilities show Send Prompt/Abort and hide the fallback.
 Source: capability review
 Plan requirement: daemon and Agent UI expose only executable/connected operations while retaining Chat and Terminal.
 Required change: startup availability snapshot and bridge-driven Agent capability transitions.
