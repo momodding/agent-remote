@@ -437,13 +437,53 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err := svc.Abort(created.ID); err != nil {
 		t.Fatalf("abort command through real bridge: %v", err)
 	}
-	current, err := svc.GetAgent(created.ID)
-	if err != nil {
+	capabilityEnabled := func(name string) bool {
+		current, err := svc.GetAgent(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, capability := range current.Capabilities {
+			if capability.Name == name {
+				return capability.Enabled
+			}
+		}
+		return false
+	}
+	if !capabilityEnabled("prompt") {
+		t.Fatal("authenticated extension did not enable prompt capability")
+	}
+
+	svc.bridgeServer.mu.RLock()
+	bridgeState := svc.bridgeServer.agents[created.ID]
+	svc.bridgeServer.mu.RUnlock()
+	bridgeState.mu.Lock()
+	beforeSessionID, bridgeConn := bridgeState.sessionID, bridgeState.conn
+	bridgeState.mu.Unlock()
+	if beforeSessionID == "" || bridgeConn == nil {
+		t.Fatal("authenticated bridge has no session identity or connection")
+	}
+	if err := bridgeConn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, capability := range current.Capabilities {
-		if capability.Name == "prompt" && !capability.Enabled {
-			t.Fatal("authenticated extension did not enable prompt capability")
-		}
+
+	deadline = time.Now().Add(15 * time.Second)
+	for (svc.bridgeServer.IsConnected(created.ID) || capabilityEnabled("prompt")) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if svc.bridgeServer.IsConnected(created.ID) || capabilityEnabled("prompt") {
+		t.Fatal("bridge loss did not disable interactive capabilities")
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for !svc.bridgeServer.IsConnected(created.ID) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(created.ID) || !capabilityEnabled("prompt") {
+		t.Fatal("real OMP extension did not reconnect and restore capabilities")
+	}
+	bridgeState.mu.Lock()
+	afterSessionID := bridgeState.sessionID
+	bridgeState.mu.Unlock()
+	if afterSessionID != beforeSessionID {
+		t.Fatalf("bridge reconnect session ID = %q, want %q", afterSessionID, beforeSessionID)
 	}
 }

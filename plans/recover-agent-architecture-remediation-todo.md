@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a3
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: IN_PROGRESS — `TestRealOMPBridgeLifecycle` now joins installed OMP 18.1.15 under a real PTY to production `Service.CreateAgentRequest`/`session.Manager`/`BridgeServer`, proves authenticated capability enablement and `thinking`/`abort` command round trips (2026-09-14). Earlier isolated PTY proof also validated `model`, unknown-command rejection, and same-PID reconnect after forced socket loss. Only a live daemon-mediated `prompt` turn (requires reachable model backend) and real macOS runtime proof remain required.
+Status: IN_PROGRESS — `TestRealOMPBridgeLifecycle` joins installed OMP 18.1.15 under a real PTY to production `Service.CreateAgentRequest`/`session.Manager`/`BridgeServer`, proves authenticated capability enablement and `thinking`/`abort` command round trips, forcibly disconnects the production bridge connection, observes controls disable, and observes same-session reconnect with controls restored (2026-09-14). Earlier isolated PTY proof also validated `model` and unknown-command rejection. Only a live daemon-mediated `prompt` turn (requires reachable model backend) and real macOS runtime proof remain required.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
