@@ -609,3 +609,27 @@ func TestRestoredAgentWithMissingTerminalBecomesExited(t *testing.T) {
 		t.Fatalf("agent.State = %q, want %q", agent.State, "exited")
 	}
 }
+
+func TestAgentSetModelAndThinking(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := runtimestore.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	svc := NewService(newMockTermMgr(), store, tmpDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), tmpDir, "Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	if err := svc.SetModel(agent.ID, "gpt-4"); err == nil {
+		t.Fatal("expected error when model capability disabled or not connected")
+	}
+	if err := svc.SetThinking(agent.ID, "high"); err == nil {
+		t.Fatal("expected error when thinking capability disabled or not connected")
+	}
+}

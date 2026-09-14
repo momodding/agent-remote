@@ -63,6 +63,8 @@ type AgentAPI interface {
 	ListAgents() []protocol.AgentSession
 	SubmitPrompt(agentID, prompt string) error
 	Abort(agentID string) error
+	SetModel(agentID, model string) error
+	SetThinking(agentID, level string) error
 	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
 	History(agentID string) (*protocol.AgentHistoryResponse, error)
 }
@@ -97,6 +99,9 @@ func NewWithAgents(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *s
 	fsSvc, err := fsservice.NewService(cfg.WorkspaceRoot, filepath.Join(cfg.WorkspaceRoot, cfg.UploadDir), cfg.AllowDestructiveFiles)
 	if err != nil {
 		return nil, err
+	}
+	if mc, ok := sessions.(interface{ SetMaxSessions(int) }); ok {
+		mc.SetMaxSessions(cfg.MaxSessions)
 	}
 	_, ompErr := exec.LookPath("omp")
 	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot, ompAvailable: ompErr == nil}, nil
@@ -320,15 +325,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, s.sessions.List(r.Context()))
 	case http.MethodPost:
-		if !s.limits.TryStartSession() {
-			writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
-			return
-		}
-		defer func() {
-			if recover() != nil {
-				s.limits.EndSession()
-			}
-		}()
 		var req protocol.CreateSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
@@ -336,7 +332,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		summary, err := s.sessions.Create(r.Context(), req)
 		if err != nil {
-			s.limits.EndSession()
+			if errors.Is(err, session.ErrTooManySessions) || errors.Is(err, ErrTooManySessions) {
+				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
 			return
 		}
@@ -380,15 +379,6 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, s.agents.ListAgents())
 	case http.MethodPost:
-		if !s.limits.TryStartSession() {
-			writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
-			return
-		}
-		defer func() {
-			if recover() != nil {
-				s.limits.EndSession()
-			}
-		}()
 		var req protocol.CreateSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
@@ -396,7 +386,10 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		summary, err := s.agents.CreateAgentRequest(r.Context(), req)
 		if err != nil {
-			s.limits.EndSession()
+			if errors.Is(err, session.ErrTooManySessions) || errors.Is(err, ErrTooManySessions) {
+				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
 			return
 		}
@@ -455,6 +448,34 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 		case "abort":
 			if err := s.agents.Abort(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "abort_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		case "model":
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+				return
+			}
+			if err := s.agents.SetModel(id, req.Model); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "model_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		case "thinking":
+			var req struct {
+				Level string `json:"level"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+				return
+			}
+			if err := s.agents.SetThinking(id, req.Level); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "thinking_failed", Message: err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -1300,6 +1321,44 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 			return
 		}
 		err := s.agents.Abort(cmd.TargetID)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "agent.model":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		var args struct {
+			Model string `json:"model"`
+		}
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &args)
+			}
+		}
+		err := s.agents.SetModel(cmd.TargetID, args.Model)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "agent.thinking":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		var args struct {
+			Level string `json:"level"`
+		}
+		if cmd.Args != nil {
+			if m, ok := cmd.Args.(map[string]any); ok {
+				_ = mapToStruct(m, &args)
+			}
+		}
+		err := s.agents.SetThinking(cmd.TargetID, args.Level)
 		if err != nil {
 			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
 			return

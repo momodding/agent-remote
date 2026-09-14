@@ -533,14 +533,12 @@ func (b *BridgeServer) Close() error {
 	}
 	b.agents = make(map[string]*bridgeAgentState)
 	l := b.listener
-	b.listener = nil
 	b.mu.Unlock()
 
 	var err error
 	if l != nil {
 		err = l.Close()
 	}
-	_ = os.Remove(b.socketPath)
 
 	for _, a := range agents {
 		a.mu.Lock()

@@ -51,6 +51,7 @@ type AgentSubscriber struct {
 
 type agentInstance struct {
 	mu           sync.RWMutex
+	tailerMu     sync.Mutex
 	meta         protocol.AgentSession
 	tailer       *TranscriptTailer
 	sessionFile  string
@@ -59,6 +60,7 @@ type agentInstance struct {
 	subscribers  map[int]*AgentSubscriber
 	nextSubID    int
 	stopPoll     chan struct{}
+	stopPollOnce sync.Once
 	stopTerminal func()
 	pollInterval time.Duration
 }
@@ -253,6 +255,10 @@ func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
 	stop := inst.stopTerminal
 	inst.stopTerminal = nil
 	inst.mu.Unlock()
+
+	inst.stopPollOnce.Do(func() {
+		close(inst.stopPoll)
+	})
 
 	if stop != nil {
 		stop()
@@ -536,6 +542,9 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 }
 
 func (s *Service) checkTranscript(inst *agentInstance) {
+	inst.tailerMu.Lock()
+	defer inst.tailerMu.Unlock()
+
 	inst.mu.Lock()
 	if inst.tailer == nil {
 		if inst.sessionFile == "" {
@@ -559,7 +568,6 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 	tailer := inst.tailer
 	inst.mu.Unlock()
-
 	if tailer == nil {
 		return
 	}
@@ -666,7 +674,9 @@ func (s *Service) SubmitPrompt(agentID, prompt string) error {
 	if !promptEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	return s.bridgeServer.SendCommand(context.Background(), agentID, "prompt", map[string]any{"prompt": prompt})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.bridgeServer.SendCommand(ctx, agentID, "prompt", map[string]any{"prompt": prompt})
 }
 
 // Abort aborts the active operation through the verified OMP bridge.
@@ -689,7 +699,9 @@ func (s *Service) Abort(agentID string) error {
 	if !abortEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	return s.bridgeServer.SendCommand(context.Background(), agentID, "abort", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.bridgeServer.SendCommand(ctx, agentID, "abort", nil)
 }
 
 // SetModel changes the active model through the verified OMP bridge.
@@ -712,7 +724,9 @@ func (s *Service) SetModel(agentID, model string) error {
 	if !modelEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	return s.bridgeServer.SendCommand(context.Background(), agentID, "model", map[string]any{"model": model})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.bridgeServer.SendCommand(ctx, agentID, "model", map[string]any{"model": model})
 }
 
 // SetThinking changes the thinking level through the verified OMP bridge.
@@ -735,7 +749,9 @@ func (s *Service) SetThinking(agentID, level string) error {
 	if !thinkingEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	return s.bridgeServer.SendCommand(context.Background(), agentID, "thinking", map[string]any{"level": level})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.bridgeServer.SendCommand(ctx, agentID, "thinking", map[string]any{"level": level})
 }
 
 // GetAgent retrieves agent session summary.
@@ -854,7 +870,9 @@ func (s *Service) Close() error {
 	}
 
 	for _, inst := range instances {
-		close(inst.stopPoll)
+		inst.stopPollOnce.Do(func() {
+			close(inst.stopPoll)
+		})
 		inst.mu.Lock()
 		stop := inst.stopTerminal
 		inst.stopTerminal = nil

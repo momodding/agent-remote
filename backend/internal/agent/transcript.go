@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
@@ -16,6 +17,7 @@ import (
 )
 
 type TranscriptTailer struct {
+	mu          sync.Mutex
 	agentID     string
 	path        string
 	offset      int64
@@ -37,8 +39,9 @@ type tailerState struct {
 	lastMtime   int64
 	fingerprint string
 }
-
 func (t *TranscriptTailer) snapshot() tailerState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	seen := make(map[string]struct{}, len(t.seen))
 	for id := range t.seen {
 		seen[id] = struct{}{}
@@ -47,6 +50,8 @@ func (t *TranscriptTailer) snapshot() tailerState {
 }
 
 func (t *TranscriptTailer) restore(state tailerState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.offset, t.pending, t.seen, t.lastInode, t.lastSize, t.lastMtime, t.fingerprint = state.offset, state.pending, state.seen, state.lastInode, state.lastSize, state.lastMtime, state.fingerprint
 }
 
@@ -61,6 +66,8 @@ func NewTranscriptTailer(agentID, path string, store *runtimestore.Store) *Trans
 
 // RestoreState loads prior tailer state from persistent store
 func (t *TranscriptTailer) RestoreState() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.store == nil {
 		return nil
 	}
@@ -84,12 +91,13 @@ func (t *TranscriptTailer) RestoreState() error {
 }
 
 func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	file, err := os.Open(t.path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
@@ -168,10 +176,14 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 // SaveState persists current offset and file state to durable storage.
 // Called after all semantic events from this read have been recorded to the store.
 func (t *TranscriptTailer) checkpoint() runtimestore.TranscriptState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return runtimestore.TranscriptState{AgentID: t.agentID, TranscriptPath: t.path, FileOffset: t.offset, FileInode: t.lastInode, FileSize: t.lastSize, FileMtime: t.lastMtime, BoundaryFingerprint: t.fingerprint}
 }
 
 func (t *TranscriptTailer) SaveState() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.store == nil {
 		return nil
 	}
@@ -252,8 +264,11 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 		return []protocol.AgentEvent{{Type: "tool.result", EventID: e.ID + ":tool-result:" + message.ToolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: message.ToolCallID, Text: text, ToolOutput: text, IsError: message.IsError}}
 	}
 	if message.Role == "bashExecution" || message.Role == "pythonExecution" {
-		input := map[string]string{"command": message.Command}
-		return []protocol.AgentEvent{{Type: "tool.call", EventID: e.ID + ":execution:call", AgentID: agentID, MessageID: e.ID, ToolName: message.Role, ToolInput: input}, {Type: "tool.result", EventID: e.ID + ":execution:result", AgentID: agentID, MessageID: e.ID, ToolName: message.Role, Text: message.Output, ToolOutput: message.Output, IsError: message.IsError}}
+		inputJSON, _ := json.Marshal(map[string]string{"command": message.Command})
+		return []protocol.AgentEvent{
+			{Type: "tool.call", EventID: e.ID + ":execution:call", AgentID: agentID, MessageID: e.ID, ToolName: message.Role, ToolInput: json.RawMessage(inputJSON)},
+			{Type: "tool.result", EventID: e.ID + ":execution:result", AgentID: agentID, MessageID: e.ID, ToolName: message.Role, Text: message.Output, ToolOutput: message.Output, IsError: message.IsError},
+		}
 	}
 	role := message.Role
 	if role == "" {

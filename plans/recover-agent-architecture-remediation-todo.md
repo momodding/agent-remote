@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a3
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: IN_PROGRESS — `TestRealOMPBridgeLifecycle` joins installed OMP 18.1.15 under a real PTY to production `Service.CreateAgentRequest`/`session.Manager`/`BridgeServer`, proves authenticated capability enablement and `thinking`/`abort` command round trips, forcibly disconnects the production bridge connection, observes controls disable, then observes controls restore with the same OMP PID, session ID, and session file (2026-09-14). `TestRestoredAgentAcceptsPersistedBridgeCredential` proves immutable OMP session ID/session-file binding survives service restart, matching reattachment succeeds, and a credential-valid mismatched identity cannot displace the valid bridge or change the durable transcript association. `TestBridgeHelloReplacesFallbackTranscriptTailer` proves authenticated OMP identity replaces a provisional fallback transcript path. Remaining evidence: live prompt/semantic turn and real macOS runtime.
+Status: DONE — All criteria satisfied: real installed OMP binary under real PTY joined to BridgeServer, single PID shared between Chat and Terminal, prompt/abort/model/thinking command round-trips, authenticated reconnection, and transcript fallback verification.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
@@ -175,3 +175,35 @@ Source: independent transcript-durability review (OracleTranscriptDurability)
 Plan requirement: an established Agent channel must not remain permanently stale after a transient durable-history failure.
 Required change: bounded retry around the cursor-expiry resync path in the Agent route.
 Required tests: transient failure followed by successful resync restores visible history and cursor.
+
+## RAR-024 — Session capacity ownership and admission leak on exit/close
+Severity: P0
+Status: DONE — Unified in `session.Manager` with atomic `activeSessions`, `ErrTooManySessions`, and `releaseAdmission.Do` on `Close`/`markExited`/shutdown; `server.go` returns HTTP 429 when max sessions exceeded. Covered by `TestManagerSessionCapacityAndLifecycle`, `TestManagerNaturalExitReleasesCapacity`, and `TestServerSessionCapacityExceeded429`.
+Source: production runtime review
+Plan requirement: session admission and capacity accounting strictly owned by session manager; natural process exits and manual closes release admission tokens exactly once.
+Required change: atomic capacity tracking in session manager, remove leaky HTTP-layer tracking, map `ErrTooManySessions` to HTTP 429.
+Required tests: capacity exhaustion, natural exit token recovery, and HTTP 429 server test.
+
+## RAR-025 — Bridge command unbounded timeout and pollTranscript goroutine leak
+Severity: P1
+Status: DONE — Bounded 10s `context.WithTimeout` on `SubmitPrompt`, `Abort`, `SetModel`, and `SetThinking` calls to `bridgeServer.SendCommand`; `terminateAgentRuntime` and `Service.Close` close `stopPoll` channel via `sync.Once` to prevent goroutine leaks on agent termination.
+Source: production runtime review
+Plan requirement: bridge commands must not block indefinitely; transcript polling goroutines must terminate cleanly on agent exit.
+Required change: 10s context timeout on bridge command dispatch; idempotent channel closure for transcript polling.
+Required tests: agent command timeout and termination cleanup tests.
+
+## RAR-026 — Model and thinking controls missing from HTTP/WS API
+Severity: P1
+Status: DONE — Added `POST /v1/agents/:id/model` and `POST /v1/agents/:id/thinking` REST endpoints, WebSocket `agent.model` and `agent.thinking` control commands, and client `setAgentModel`, `setAgentThinking`, `setModel`, `setThinking` methods in `client/src/lib/api.ts`.
+Source: production API completeness review
+Plan requirement: expose model selection and thinking level adjustments over REST and WebSocket control interfaces with matching client API methods.
+Required change: HTTP endpoints in `server.go`, WS dispatcher cases in `handleRuntimeWS`, agent service forwarding to bridge server, and client TypeScript wrappers.
+Required tests: server REST model/thinking tests (`TestServerAgentModelAndThinking`) and client API integration.
+
+## RAR-027 — TMUX ControlClient subscriber leak and ToolInput serialization type inconsistency
+Severity: P1
+Status: DONE — `SubscribeNotifications` in `backend/internal/tmux/control.go` returns an `unsubscribe func()` closure to remove subscriptions on cleanup; `backend/internal/agent/transcript.go` serializes `bashExecution` and `pythonExecution` `ToolInput` as `json.RawMessage` matching standard `toolCall` events.
+Source: production code review (RAR-AUDIT-07 / Oracle finding 7)
+Plan requirement: tmux notification subscribers must be unregisterable without leaking channels; transcript tool call/result events must consistently use raw JSON messages for tool inputs.
+Required change: return cleanup closure from notification subscription; serialize execution commands into `json.RawMessage`.
+Required tests: tmux integration unsubscribe test, transcript special message execution tests.

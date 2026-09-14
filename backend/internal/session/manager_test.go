@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -688,4 +689,87 @@ func TestManagerTmuxAvailable(t *testing.T) {
 	if manager.TmuxAvailable() {
 		t.Fatal("expected TmuxAvailable false after control client loss")
 	}
+}
+func TestManagerSessionCapacityAndLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewManager(tmpDir, filepath.Join(tmpDir, "state"), tmpDir, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer manager.Shutdown()
+	maxSess := 3
+	manager.SetMaxSessions(maxSess)
+
+	for i := 0; i < maxSess*2; i++ {
+		summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+			Name:    fmt.Sprintf("sess-%d", i),
+			Command: "sh",
+			Args:    []string{"-c", "echo hello"},
+		})
+		if err != nil {
+			t.Fatalf("iteration %d: Create failed: %v", i, err)
+		}
+		if err := manager.Close(summary.ID); err != nil {
+			t.Fatalf("iteration %d: Close failed: %v", i, err)
+		}
+	}
+
+	for i := 0; i < maxSess; i++ {
+		_, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+			Name:    fmt.Sprintf("active-%d", i),
+			Command: "sleep",
+			Args:    []string{"10"},
+		})
+		if err != nil {
+			t.Fatalf("active create %d failed: %v", i, err)
+		}
+	}
+	_, err = manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "overflow",
+		Command: "sh",
+		Args:    []string{"-c", "echo overflow"},
+	})
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("expected ErrTooManySessions, got %v", err)
+	}
+	for _, s := range manager.List(context.Background()) {
+		_ = manager.Close(s.ID)
+	}
+}
+
+func TestManagerNaturalExitReleasesCapacity(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager, err := NewManager(tmpDir, filepath.Join(tmpDir, "state"), tmpDir, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer manager.Shutdown()
+	manager.SetMaxSessions(1)
+
+	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "quick",
+		Command: "sh",
+		Args:    []string{"-c", "exit 0"},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s2, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+			Name:    "second",
+			Command: "sh",
+			Args:    []string{"-c", "exit 0"},
+		})
+		if err == nil {
+			_ = manager.Close(s2.ID)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("capacity not released after natural exit: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = manager.Close(summary.ID)
 }

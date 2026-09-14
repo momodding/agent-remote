@@ -183,6 +183,11 @@ func TestTranscriptProjectsSpecialMessages(t *testing.T) {
 					t.Fatalf("events = %+v", events)
 				}
 			}
+			if test.name == "execution" {
+				if raw, ok := events[0].ToolInput.(json.RawMessage); !ok || string(raw) != `{"command":"pwd"}` {
+					t.Fatalf("execution ToolInput = %v (%T), want json.RawMessage", events[0].ToolInput, events[0].ToolInput)
+				}
+			}
 		})
 	}
 

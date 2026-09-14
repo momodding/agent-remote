@@ -430,13 +430,27 @@ func (c *ControlClient) forwardNotifications() {
 	}
 }
 
-// SubscribeNotifications returns notification channel
-func (c *ControlClient) SubscribeNotifications() <-chan NotificationEvent {
+// SubscribeNotifications returns notification channel and an unsubscribe func.
+func (c *ControlClient) SubscribeNotifications() (<-chan NotificationEvent, func()) {
 	ch := make(chan NotificationEvent, 16)
 	c.mu.Lock()
 	c.notificationsSub = append(c.notificationsSub, ch)
 	c.mu.Unlock()
-	return ch
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			for i, sub := range c.notificationsSub {
+				if sub == ch {
+					c.notificationsSub = append(c.notificationsSub[:i], c.notificationsSub[i+1:]...)
+					break
+				}
+			}
+		})
+	}
+	return ch, unsubscribe
 }
 
 // CreatePane starts one terminal command in its own persistent tmux session.

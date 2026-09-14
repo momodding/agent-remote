@@ -182,8 +182,8 @@ func TestNotificationDispatch(t *testing.T) {
 	defer svc.Close()
 
 	// Subscribe to notifications
-	notifChan := svc.SubscribeNotifications()
-
+	notifChan, unsub := svc.SubscribeNotifications()
+	defer unsub()
 	// Create a session which should trigger notifications
 	result, err := svc.SendCommand(ctx, "new-session -d -s notif-test 'sleep 10'")
 	if err != nil {

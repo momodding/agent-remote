@@ -73,6 +73,22 @@ export class AgenticRemoteAPI {
     await this.request(`/v1/agents/${encodeURIComponent(id)}/abort`, { method: 'POST' });
   }
 
+  async setAgentModel(id: string, model: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/model`, { method: 'POST', body: JSON.stringify({ model }) });
+  }
+
+  async setAgentThinking(id: string, level: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/thinking`, { method: 'POST', body: JSON.stringify({ level }) });
+  }
+
+  async setModel(agentId: string, model: string): Promise<void> {
+    return this.setAgentModel(agentId, model);
+  }
+
+  async setThinking(agentId: string, level: string): Promise<void> {
+    return this.setAgentThinking(agentId, level);
+  }
+
   async runtimeSnapshot(): Promise<RuntimeSnapshot> {
     return this.request('/v1/runtime/snapshot');
   }

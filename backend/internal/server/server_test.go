@@ -42,6 +42,8 @@ func (replayOverflowAgents) GetAgent(string) (*protocol.AgentSession, error) { r
 func (replayOverflowAgents) ListAgents() []protocol.AgentSession             { return nil }
 func (replayOverflowAgents) SubmitPrompt(string, string) error               { return nil }
 func (replayOverflowAgents) Abort(string) error                              { return nil }
+func (replayOverflowAgents) SetModel(string, string) error                   { return nil }
+func (replayOverflowAgents) SetThinking(string, string) error                { return nil }
 func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (func(), error) {
 	for i := range maxReplayLiveEvents + 1 {
 		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
@@ -1375,3 +1377,70 @@ func TestAgentHistoryEndpoint(t *testing.T) {
 }
 
 var _ = tls.VersionTLS12
+func TestServerSessionCapacityExceeded429(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	if mc, ok := srv.sessions.(interface{ SetMaxSessions(int) }); ok {
+		mc.SetMaxSessions(1)
+	}
+
+	token := testBearerToken(t, srv, pairings)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"name":"sess1","command":"sleep","args":["10"]}`))
+	req1.Header.Set("Authorization", "Bearer "+token)
+	resp1 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp1, req1)
+	if resp1.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp1.Code, resp1.Body.String())
+	}
+
+	var sum1 protocol.SessionSummary
+	_ = json.Unmarshal(resp1.Body.Bytes(), &sum1)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"name":"sess2","command":"sleep","args":["10"]}`))
+	req2.Header.Set("Authorization", "Bearer "+token)
+	resp2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", resp2.Code, resp2.Body.String())
+	}
+
+	reqClose := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sum1.ID+"/close", nil)
+	reqClose.Header.Set("Authorization", "Bearer "+token)
+	respClose := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(respClose, reqClose)
+	if respClose.Code != http.StatusOK {
+		t.Fatalf("expected 200 on close, got %d", respClose.Code)
+	}
+
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"name":"sess3","command":"sh","args":["-c","echo ok"]}`))
+	req3.Header.Set("Authorization", "Bearer "+token)
+	resp3 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp3, req3)
+	if resp3.Code != http.StatusCreated {
+		t.Fatalf("expected 201 after close, got %d: %s", resp3.Code, resp3.Body.String())
+	}
+	var sum3 protocol.SessionSummary
+	_ = json.Unmarshal(resp3.Body.Bytes(), &sum3)
+	_ = srv.sessions.Close(sum3.ID)
+}
+
+func TestServerAgentModelAndThinking(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	srv.agents = replayOverflowAgents{}
+	token := testBearerToken(t, srv, pairings)
+	reqModel := httptest.NewRequest(http.MethodPost, "/v1/agents/agent-123/model", strings.NewReader(`{"model":"gpt-4o"}`))
+	reqModel.Header.Set("Authorization", "Bearer "+token)
+	respModel := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(respModel, reqModel)
+	if respModel.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /model, got %d: %s", respModel.Code, respModel.Body.String())
+	}
+
+	reqThinking := httptest.NewRequest(http.MethodPost, "/v1/agents/agent-123/thinking", strings.NewReader(`{"level":"high"}`))
+	reqThinking.Header.Set("Authorization", "Bearer "+token)
+	respThinking := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(respThinking, reqThinking)
+	if respThinking.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /thinking, got %d: %s", respThinking.Code, respThinking.Body.String())
+	}
+}

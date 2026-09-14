@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/detect"
@@ -22,6 +23,8 @@ import (
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 )
+
+var ErrTooManySessions = errors.New("too many sessions")
 
 type State string
 
@@ -62,19 +65,19 @@ type subscriber struct {
 }
 
 type TerminalRuntime struct {
-	meta         Session
-	detector     detect.Detector
-	subs         []*subscriber
-	seq          int64
-	scrollback   string
-	scrollbackMu sync.Mutex
-	plain        string
-	outbound     chan outboundMessage
-	backend      TerminalBackend
-	exitOnce     sync.Once
-	enqueueMu    sync.Mutex
+	meta             Session
+	detector         detect.Detector
+	subs             []*subscriber
+	seq              int64
+	scrollback       string
+	scrollbackMu     sync.Mutex
+	plain            string
+	outbound         chan outboundMessage
+	backend          TerminalBackend
+	exitOnce         sync.Once
+	releaseAdmission sync.Once
+	enqueueMu        sync.Mutex
 }
-
 type outboundMessage struct {
 	output  *protocol.PTYOutputEnvelope
 	state   *protocol.SessionStateEnvelope
@@ -98,6 +101,12 @@ type Manager struct {
 	tmuxClient         *tmux.ControlClient // nil if tmux unavailable
 	useTmux            bool                // true to route Create through tmux panes
 	recordTopology     func() error
+	maxSessions        int64
+	activeSessions     atomic.Int64
+}
+
+func (m *Manager) SetMaxSessions(max int) {
+	m.maxSessions = int64(max)
 }
 
 func (m *Manager) RuntimeStore() *runtimestore.Store {
@@ -120,7 +129,7 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store}
+	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store, maxSessions: 16}
 	m.recordTopology = m.recordTmuxTopology
 	if err := m.restore(); err != nil {
 		_ = store.Close()
@@ -240,6 +249,22 @@ func (m *Manager) ReconcileTmux(ctx context.Context) error {
 }
 
 func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
+	for {
+		current := m.activeSessions.Load()
+		if m.maxSessions > 0 && current >= m.maxSessions {
+			return nil, ErrTooManySessions
+		}
+		if m.activeSessions.CompareAndSwap(current, current+1) {
+			break
+		}
+	}
+	admitted := true
+	defer func() {
+		if admitted {
+			m.activeSessions.Add(-1)
+		}
+	}()
+
 	id, err := randomID()
 	if err != nil {
 		return nil, err
@@ -340,6 +365,7 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 		}
 		return nil, err
 	}
+	admitted = false
 	m.mu.Lock()
 	m.forwardWorkers.Add(1)
 	m.outputWorkers.Add(1)
@@ -408,6 +434,9 @@ func (m *Manager) Shutdown() error {
 		}
 		m.mu.Unlock()
 		for _, runtime := range sessions {
+			runtime.releaseAdmission.Do(func() {
+				m.activeSessions.Add(-1)
+			})
 			if runtime.backend != nil {
 				_ = runtime.backend.Close()
 			}
@@ -532,6 +561,9 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
+	runtime.releaseAdmission.Do(func() {
+		m.activeSessions.Add(-1)
+	})
 	if runtime.backend != nil {
 		_ = runtime.backend.Close()
 	}
@@ -612,6 +644,9 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 }
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {
+	runtime.releaseAdmission.Do(func() {
+		m.activeSessions.Add(-1)
+	})
 	runtime.exitOnce.Do(func() {
 		m.mu.Lock()
 		wait := runtime.detector.Exited()
