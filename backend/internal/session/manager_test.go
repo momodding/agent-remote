@@ -683,4 +683,9 @@ func TestManagerTmuxAvailable(t *testing.T) {
 	if !manager.TmuxAvailable() {
 		t.Fatal("expected TmuxAvailable true after SetTmux with a live control client")
 	}
+
+	manager.markTmuxRuntimesLost()
+	if manager.TmuxAvailable() {
+		t.Fatal("expected TmuxAvailable false after control client loss")
+	}
 }

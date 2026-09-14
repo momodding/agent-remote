@@ -109,7 +109,7 @@ func (m *Manager) RuntimeStore() *runtimestore.Store {
 func (m *Manager) TmuxAvailable() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.tmuxClient != nil
+	return m.useTmux && m.tmuxClient != nil
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
