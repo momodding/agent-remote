@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ type mockTermMgr struct {
 	createdReq  protocol.CreateSessionRequest
 	inputs      map[string][][]byte
 	closed      map[string]bool
+	terminated  map[string]bool
 	subscribers map[string]func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)
 	sessions    map[string]*protocol.SessionSummary
 }
@@ -25,6 +27,7 @@ func newMockTermMgr() *mockTermMgr {
 	return &mockTermMgr{
 		inputs:      make(map[string][][]byte),
 		closed:      make(map[string]bool),
+		terminated:  make(map[string]bool),
 		subscribers: make(map[string]func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)),
 		sessions:    make(map[string]*protocol.SessionSummary),
 	}
@@ -58,12 +61,15 @@ func (m *mockTermMgr) Input(id string, b []byte) error {
 	m.inputs[id] = append(m.inputs[id], b)
 	return nil
 }
-
 func (m *mockTermMgr) Close(id string) error {
 	m.closed[id] = true
 	return nil
 }
 
+func (m *mockTermMgr) Terminate(_ context.Context, id string) error {
+	m.terminated[id] = true
+	return nil
+}
 func (m *mockTermMgr) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error) {
 	m.subscribers[id] = fn
 	return func() { delete(m.subscribers, id) }, nil
@@ -259,8 +265,8 @@ func TestCreateAgentClosesTerminalWhenShutdownWins(t *testing.T) {
 	if err := <-result; err == nil || err.Error() != "service closing" {
 		t.Fatalf("CreateAgent error = %v", err)
 	}
-	if !termMgr.closed["term-123"] {
-		t.Fatal("terminal was not closed after shutdown won")
+	if !termMgr.terminated["term-123"] {
+		t.Fatal("terminal was not terminated after shutdown won")
 	}
 	if agents := svc.ListAgents(); len(agents) != 0 {
 		t.Fatalf("agents = %+v, want none", agents)
@@ -631,5 +637,71 @@ func TestAgentSetModelAndThinking(t *testing.T) {
 	}
 	if err := svc.SetThinking(agent.ID, "high"); err == nil {
 		t.Fatal("expected error when thinking capability disabled or not connected")
+	}
+}
+
+func TestAgentServiceTerminate(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := runtimestore.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, tmpDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), tmpDir, "Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	if agent.State != "idle" {
+		t.Fatalf("expected state idle, got %s", agent.State)
+	}
+	if termMgr.closed[agent.TerminalSessionID] {
+		t.Fatal("expected terminal not closed yet")
+	}
+	if termMgr.terminated[agent.TerminalSessionID] {
+		t.Fatal("expected terminal not terminated yet")
+	}
+
+	// Terminate agent
+	if err := svc.Terminate(agent.ID); err != nil {
+		t.Fatalf("Terminate failed: %v", err)
+	}
+
+	if !termMgr.terminated[agent.TerminalSessionID] {
+		t.Fatal("expected terminal terminated on agent termination")
+	}
+	if termMgr.closed[agent.TerminalSessionID] {
+		t.Fatal("expected terminal Close not called on agent termination (only Terminate)")
+	}
+
+	ag, err := svc.GetAgent(agent.ID)
+	if err != nil {
+	}
+	if ag.State != "exited" {
+		t.Fatalf("expected state exited, got %s", ag.State)
+	}
+
+	for _, cap := range ag.Capabilities {
+		if cap.Name == "chat" && !cap.Enabled {
+			t.Fatal("chat capability should remain enabled")
+		}
+		if cap.Name != "chat" && cap.Enabled {
+			t.Fatalf("capability %s should be disabled", cap.Name)
+		}
+	}
+
+	// Idempotent terminate
+	if err := svc.Terminate(agent.ID); err != nil {
+		t.Fatalf("second Terminate failed: %v", err)
+	}
+
+	// Non-existent agent
+	if err := svc.Terminate("nonexistent"); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("expected ErrAgentNotFound, got %v", err)
 	}
 }

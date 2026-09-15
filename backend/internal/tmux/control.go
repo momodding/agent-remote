@@ -612,6 +612,40 @@ func (c *ControlClient) ResizePane(ctx context.Context, paneID string, cols, row
 	}
 }
 
+// KillSession terminates a tmux session and its child processes.
+func (c *ControlClient) KillSession(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session id required")
+	}
+	errCh, err := c.SendCommand(ctx, fmt.Sprintf("kill-session -t %s", strconv.Quote(sessionID)))
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
+}
+
+// KillPane terminates a specific tmux pane.
+func (c *ControlClient) KillPane(ctx context.Context, paneID string) error {
+	if paneID == "" {
+		return fmt.Errorf("pane id required")
+	}
+	errCh, err := c.SendCommand(ctx, fmt.Sprintf("kill-pane -t %s", strconv.Quote(paneID)))
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
+}
+
 // Close shuts down client
 func (c *ControlClient) Close() error {
 	c.mu.Lock()

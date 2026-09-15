@@ -13,6 +13,7 @@ import type { PairingPayload } from '../src/protocol';
 import { buildSessionSurfaces, type SessionSurface } from '../src/lib/session-surface';
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
+import { NewAgentSheet } from '../src/components/NewAgentSheet';
 import { useTabStore } from '../src/lib/tabs/tab-store';
 import { createDaemonChannel, disposeDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
@@ -34,6 +35,8 @@ export default function TabDeckScreen() {
 	const [pairingOpen, setPairingOpen] = useState(false);
 	const [daemonsOpen, setDaemonsOpen] = useState(false);
 	const [diagnostics, setDiagnostics] = useState<string[]>([]);
+	const [newAgentOpen, setNewAgentOpen] = useState(false);
+	const [agentSpawnHostId, setAgentSpawnHostId] = useState<string | null>(null);
 	const { width } = useWindowDimensions();
 	const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
 
@@ -165,23 +168,38 @@ export default function TabDeckScreen() {
         // ponytail: router format change per native/web divergence isn't strictly necessary for deck state
         router.push({ pathname: '/desktop', params: { tabId } });
       } else if (kind === 'agent') {
-        const api = new AgenticRemoteAPI(connection);
-        const agentSession = await api.createAgent({ name: 'OMP Agent', args: [], cwd: '' });
-        dispatch(prev => {
-          const tabs = [...prev.tabs];
-          tabs.push({
-            tabId, daemonId: hostId, kind: 'agent', title: agentSession.adapter || 'OMP Agent',
-            createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-            agentSessionId: agentSession.id, terminalSessionId: agentSession.terminalSessionId,
-            state: agentSession.state, view: 'chat'
-          });
-          return { ...prev, tabs, activeId: tabId };
-        });
-        router.push({ pathname: '/agent/[id]', params: { id: tabId } });
+        setAgentSpawnHostId(hostId);
+        setNewAgentOpen(true);
+        return;
       }
 	} catch (error) {
 		Alert.alert('Could not open tab', error instanceof Error ? error.message : 'Daemon rejected the session request.');
 	}
+  };
+
+  const handleCreateAgent = async ({ cwd, backend }: { cwd: string; backend: 'auto' | 'tmux' | 'pty' }) => {
+    if (!agentSpawnHostId) return;
+    const connection = getConnection(store, agentSpawnHostId);
+    if (!connection) {
+      Alert.alert('Cannot create agent', 'Daemon connection not found in store.');
+      return;
+    }
+    const api = new AgenticRemoteAPI(connection);
+    const agentSession = await api.createAgent({ name: 'OMP Agent', args: [], cwd, backend });
+    const tabId = Crypto.randomUUID();
+    dispatch(prev => {
+      const tabs = [...prev.tabs];
+      tabs.push({
+        tabId, daemonId: agentSpawnHostId, kind: 'agent', title: agentSession.adapter || 'OMP Agent',
+        createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
+        agentSessionId: agentSession.id, terminalSessionId: agentSession.terminalSessionId,
+        state: agentSession.state, view: 'chat'
+      });
+      return { ...prev, tabs, activeId: tabId };
+    });
+    setNewAgentOpen(false);
+    setAgentSpawnHostId(null);
+    router.push({ pathname: '/agent/[id]', params: { id: tabId } });
   };
 
 	const openSurface = (daemonId: string, surface: SessionSurface) => {
@@ -303,6 +321,11 @@ export default function TabDeckScreen() {
       {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
       <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
       <ConnectionSheet visible={daemonsOpen} store={store} selectedHostId={selectedHostId} onDismiss={() => setDaemonsOpen(false)} onSelect={async (id) => { setSelectedHostId(id); setDaemonsOpen(false); }} onSave={saveEdit} onDelete={removeDaemon} onAdd={() => { setDaemonsOpen(false); setPairingOpen(true); }} />
+      <NewAgentSheet
+        visible={newAgentOpen}
+        onDismiss={() => { setNewAgentOpen(false); setAgentSpawnHostId(null); }}
+        onSubmit={handleCreateAgent}
+      />
     </SafeAreaView>
   );
 }

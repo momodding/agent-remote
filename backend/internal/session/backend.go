@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strconv"
@@ -17,6 +18,12 @@ type TerminalBackend interface {
 	Close() error
 	Alive() bool
 	Identity() string
+}
+
+// Terminator is an optional interface implemented by backends that support
+// terminating the underlying process/session (distinct from detaching/closing the handle).
+type Terminator interface {
+	Terminate(ctx context.Context) error
 }
 
 type PtyBackend struct {
@@ -106,6 +113,11 @@ func (b *PtyBackend) Close() error {
 		return nil
 	}
 	return file.Close()
+}
+
+// Terminate kills the underlying process and closes the PTY.
+func (b *PtyBackend) Terminate(ctx context.Context) error {
+	return b.Close()
 }
 
 func (b *PtyBackend) Alive() bool {

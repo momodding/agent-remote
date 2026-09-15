@@ -26,6 +26,7 @@ import (
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
+	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 	"github.com/coder/websocket"
 )
 
@@ -44,6 +45,7 @@ func (replayOverflowAgents) SubmitPrompt(string, string) error               { r
 func (replayOverflowAgents) Abort(string) error                              { return nil }
 func (replayOverflowAgents) SetModel(string, string) error                   { return nil }
 func (replayOverflowAgents) SetThinking(string, string) error                { return nil }
+func (replayOverflowAgents) Terminate(string) error                          { return nil }
 func (replayOverflowAgents) Subscribe(_ string, fn func(protocol.AgentEvent)) (func(), error) {
 	for i := range maxReplayLiveEvents + 1 {
 		fn(protocol.AgentEvent{Type: "state", Cursor: int64(i + 1), State: "working"})
@@ -70,11 +72,17 @@ func (replayOverflowAgents) History(agentID string) (*protocol.AgentHistoryRespo
 type recordingAgents struct {
 	replayOverflowAgents
 	req protocol.CreateSessionRequest
+	terminated []string
 }
 
 func (a *recordingAgents) CreateAgentRequest(_ context.Context, req protocol.CreateSessionRequest) (*protocol.AgentSession, error) {
 	a.req = req
 	return &protocol.AgentSession{}, nil
+}
+
+func (a *recordingAgents) Terminate(id string) error {
+	a.terminated = append(a.terminated, id)
+	return nil
 }
 
 type silentAgents struct{ replayOverflowAgents }
@@ -1424,6 +1432,25 @@ func TestServerSessionCapacityExceeded429(t *testing.T) {
 	_ = srv.sessions.Close(sum3.ID)
 }
 
+func TestServerWorkspaceEscape400(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"name":"esc","command":"sh","args":["-c","pwd"],"cwd":"/etc"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for workspace escape, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var env protocol.ErrorEnvelope
+	if err := json.Unmarshal(resp.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Code != "workspace_escape" {
+		t.Fatalf("expected code workspace_escape, got %q", env.Code)
+	}
+}
+
 func TestServerAgentModelAndThinking(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	srv.agents = replayOverflowAgents{}
@@ -1442,5 +1469,152 @@ func TestServerAgentModelAndThinking(t *testing.T) {
 	srv.Handler().ServeHTTP(respThinking, reqThinking)
 	if respThinking.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /thinking, got %d: %s", respThinking.Code, respThinking.Body.String())
+	}
+}
+
+func TestServerAgentTerminateRESTAndWS(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	agents := &recordingAgents{}
+	srv.agents = agents
+	token := testBearerToken(t, srv, pairings)
+
+	// REST POST /v1/agents/:id/terminate
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/agent-abc/terminate", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /terminate, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if len(agents.terminated) != 1 || agents.terminated[0] != "agent-abc" {
+		t.Fatalf("expected agent-abc terminated via REST, got %v", agents.terminated)
+	}
+
+	// WS agent.terminate command
+	var wsResults []protocol.CommandResultEnvelope
+	srv.executeCommand(context.Background(), protocol.CommandEnvelope{
+		Command:  "agent.terminate",
+		TargetID: "agent-xyz",
+	}, func(v any) error {
+		if res, ok := v.(protocol.CommandResultEnvelope); ok {
+			wsResults = append(wsResults, res)
+		}
+		return nil
+	})
+	if len(wsResults) != 1 || !wsResults[0].OK {
+		t.Fatalf("expected successful WS result, got %+v", wsResults)
+	}
+	if len(agents.terminated) != 2 || agents.terminated[1] != "agent-xyz" {
+		t.Fatalf("expected agent-xyz terminated via WS, got %v", agents.terminated)
+	}
+}
+
+func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not found, skipping tmux raw session test")
+	}
+
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+
+	mgr, ok := srv.sessions.(*session.Manager)
+	if !ok {
+		t.Fatal("sessions is not *session.Manager")
+	}
+
+	tmuxStateDir := filepath.Join(t.TempDir(), "tmux")
+	client := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	mgr.SetTmux(client)
+
+	// 1. Create a tmux-backed raw terminal session to test REST POST /v1/sessions/:id/close
+	s1, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "raw-tmux-rest", Command: "sh", Args: []string{"-c", "sleep 100"}, Backend: "tmux"})
+	if err != nil {
+		t.Fatalf("create s1: %v", err)
+	}
+
+	// Verify s1 is in tmux server topology
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var s1Found bool
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s1.ID {
+			s1Found = true
+		}
+	}
+	if !s1Found {
+		t.Fatalf("session %s not found in tmux topology before close", s1.ID)
+	}
+
+	// Hit REST POST /v1/sessions/:id/close
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+s1.ID+"/close", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /close, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	// Verify s1 is KILLED in tmux server topology
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s1.ID {
+			t.Fatalf("session %s still exists in tmux server after REST /close (should be killed)", s1.ID)
+		}
+	}
+
+	// 2. Create another tmux-backed raw terminal session to test WS terminal.close
+	s2, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "raw-tmux-ws", Command: "sh", Args: []string{"-c", "sleep 100"}, Backend: "tmux"})
+	if err != nil {
+		t.Fatalf("create s2: %v", err)
+	}
+
+	// Verify s2 is in tmux server topology
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var s2Found bool
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s2.ID {
+			s2Found = true
+		}
+	}
+	if !s2Found {
+		t.Fatalf("session %s not found in tmux topology before close", s2.ID)
+	}
+
+	// Execute WS terminal.close
+	var wsResults []protocol.CommandResultEnvelope
+	srv.executeCommand(ctx, protocol.CommandEnvelope{
+		Command:  "terminal.close",
+		TargetID: s2.ID,
+	}, func(v any) error {
+		if res, ok := v.(protocol.CommandResultEnvelope); ok {
+			wsResults = append(wsResults, res)
+		}
+		return nil
+	})
+	if len(wsResults) != 1 || !wsResults[0].OK {
+		t.Fatalf("expected successful WS result, got %+v", wsResults)
+	}
+
+	// Verify s2 is KILLED in tmux server topology
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s2.ID {
+			t.Fatalf("session %s still exists in tmux server after WS terminal.close (should be killed)", s2.ID)
+		}
 	}
 }

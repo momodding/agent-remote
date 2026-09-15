@@ -4,7 +4,7 @@ Baseline: `plans/recover-agent-architecture.md`; main at `b3d1abeffc84f89f3983a3
 
 ## RAR-001 — Real OMP semantic bridge missing
 Severity: P0
-Status: DONE — All criteria satisfied: real installed OMP binary under real PTY joined to BridgeServer, single PID shared between Chat and Terminal, prompt/abort/model/thinking command round-trips, authenticated reconnection, and transcript fallback verification.
+Status: DONE — All criteria satisfied: real installed OMP binary under real PTY joined to BridgeServer, single PID shared between Chat and Terminal, prompt/abort/model/thinking command round-trips, authenticated reconnection, and transcript fallback verification. Reworked bridge.ts to use public extension API and sessionManager without internal type bypass.
 Source: external-code-review
 Plan requirement: one OMP TUI process exposes verified extension semantic commands and events.
 Required change: investigate the installed OMP API; add only supported same-process bridge operations.
@@ -207,3 +207,56 @@ Source: production code review (RAR-AUDIT-07 / Oracle finding 7)
 Plan requirement: tmux notification subscribers must be unregisterable without leaking channels; transcript tool call/result events must consistently use raw JSON messages for tool inputs.
 Required change: return cleanup closure from notification subscription; serialize execution commands into `json.RawMessage`.
 Required tests: tmux integration unsubscribe test, transcript special message execution tests.
+
+## RAR-028 — Explicit Agent/Terminal termination detaches without killing tmux pane/session
+Severity: P0/P1
+Status: DONE — `KillPane` and `KillSession` added to `tmux.ControlClient`; `Terminate(ctx)` added to `tmux.TmuxBackend` and `session.PtyBackend` through `session.Terminator` interface; `session.Manager.Terminate` and `agent.Service.Terminate` kill underlying process/tmux session while `Close()` retains detach semantics; `POST /v1/agents/:id/terminate` and WS `agent.terminate` added to server. Unit and integration tests added and passing in `tmux`, `session`, `agent`, and `server`.
+Source: explicit termination review
+Plan requirement: explicit termination must kill the underlying process or private tmux session/pane, while presentation Close/disconnect preserves detach-only semantics.
+Required change: `KillSession`/`KillPane` on tmux `ControlClient`, `Terminate(ctx)` on `TmuxBackend` and `PtyBackend`, `Terminator` interface on `session.Manager`, `Service.Terminate` in agent package, REST `POST /v1/agents/:id/terminate` and WS `agent.terminate` in server.
+Required tests: `TestRealTmuxTerminateKillsSessionVsCloseDetaches` in `internal/tmux`, `TestManagerTerminateKillsTmuxVsCloseDetaches` and `TestManagerTerminatePty` in `internal/session`, `TestAgentServiceTerminate` in `internal/agent`, `TestServerAgentTerminateRESTAndWS` in `internal/server`.
+
+## RAR-029 — Explicit Agent terminate never killed tmux session (double Close+Terminate bug)
+Severity: P0
+Status: DONE
+Source: GF-PHASE-1-4 Golden Flow real end-to-end test (`TestGoldenFlowPhase1to4`, STEP 12)
+Plan requirement: explicit remote termination must kill the owned tmux pane/process.
+Root cause: `backend/internal/agent/adapter.go` function `terminateAgentRuntime` called both `s.termMgr.Close(termID)` (which deletes the runtime from Manager's session map) followed immediately by `s.termMgr.Terminate(ctx, termID)` (which then found nothing in the map and silently no-op'd, discarding the error via `_ =`), so the actual `Terminator.Terminate()` kill path was never reached and the tmux session/OMP process was left running forever after `POST /v1/agents/:id/terminate`.
+Required change: removed the redundant `Close` call; `terminateAgentRuntime` now calls only `Terminate`.
+Required tests: `TestGoldenFlowPhase1to4` STEP 12 now confirms OMP PID is actually killed after explicit terminate.
+
+## RAR-030 — TmuxBackend.Terminate early-returned without killing session if backend was previously Close()d
+Severity: P1
+Status: DONE
+Source: independent failure-injection verification (`TestRealTmuxTerminateKillsSessionVsCloseDetaches`)
+Plan requirement: explicit terminate must always actually kill the underlying tmux session regardless of prior local detach state.
+Root cause: `TmuxBackend.Terminate` in `backend/internal/tmux/backend.go` checked `if b.closed { return nil }` and skipped the `KillSession`/`KillPane` call entirely if the backend handle had previously been `Close()`d (detached), even though the underlying tmux session was still alive.
+Required change: `Terminate` now always attempts `KillSession`/`KillPane` regardless of the local `closed` flag state, only guarding against a double `close(b.done)` channel panic.
+Required tests: `TestRealTmuxTerminateKillsSessionVsCloseDetaches` passes, proving Terminate always kills regardless of prior Close.
+
+## RAR-031 — Bridge turn_end/message_end ordering race caused empty assistant response at idle transition
+Severity: P1
+Status: DONE
+Source: GF-PHASE-1-4 Golden Flow real end-to-end test (`TestGoldenFlowPhase1to4`, STEP 6)
+Plan requirement: durable history must contain full semantic content by the time state transitions to idle; bridge must be authoritative for live semantics without racing its own lifecycle frames.
+Root cause: `backend/internal/agent/bridge.ts`'s `message_end` handler deferred its semantic-content emission (`emitNewEntries`) via `queueMicrotask`, while `turn_end` synchronously emitted its `idle` lifecycle frame immediately, allowing the `idle` state transition to reach the daemon (and any polling client) before the assistant's actual response text was flushed as a semantic event.
+Required change: `message_end` now emits synchronously; the `idle` state transition moved exclusively to the `agent_end` handler (which fires after all turn entries, including the final assistant message, are committed), removing the premature `idle` transition previously sent by `turn_end`.
+Required tests: `TestGoldenFlowPhase1to4` STEP 6 confirms non-empty assistant response at idle observation, verified across 2 independent runs; `TestRealOMPBridgeLifecycle` (abort scenario) confirms Agent state does not get stuck in "working" after an aborted turn, since `agent_end` reliably fires per OMP's own `pi-agent-core` guarantees (completion, error, or abort all trigger `agent_end`).
+
+## RAR-032 — SetModel cold-start provider latency exceeded 10s bridge command timeout
+Severity: P1
+Status: DONE
+Source: independent Flow-Auditor round 2 real end-to-end review (Angle 2: Model & Thinking Controls End-to-End)
+Plan requirement: model/thinking controls must work end-to-end when the bridge advertises the capability, without spurious failures or bridge instability.
+Root cause: `Service.SetModel` in `backend/internal/agent/adapter.go` used a 10-second bridge command context timeout. Real cold-start model-provider proxy discovery/initialization on the first model switch for a freshly-connected agent genuinely takes ~7-9 seconds (verified via real installed OMP against the configured `omniroute`/`omninext` local model endpoint), leaving too little margin before the 10s deadline, occasionally causing `context deadline exceeded` and destabilizing the bridge connection state for subsequent calls.
+Required change: increased `Service.SetModel`'s bridge command context timeout from 10s to 30s to provide safe headroom for real cold-start provider latency, documented with an inline comment explaining the ~8-9s cold-start rationale. `SubmitPrompt`/`Abort`/`SetThinking` retain their original 10s timeout as they do not incur this cold-start cost.
+Required tests: independent real-OMP verification across 2 fresh agents, 6 total model-switch calls (3 per agent, mixing cold and warm switches), confirming cold switches complete in ~8.86s and warm switches in ~0.5-0.6s, with the bridge remaining connected and `model`/`prompt` capabilities intact after every call.
+
+## RAR-033 — Bridge thinking command silently dropped object-form level argument
+Severity: P1
+Status: DONE
+Source: incidental regression introduced and caught during RAR-032's investigation; independently re-verified
+Plan requirement: model and thinking controls must actually apply the requested value when the bridge reports the capability.
+Root cause: `backend/internal/agent/bridge.ts`'s `"thinking"` command handler had an object-args branch (`else if (args && typeof args === "object" && "level" in args ...)`) whose body was accidentally emptied during an unrelated edit, so `levelStr` was never assigned from `{level: "..."}` object-form arguments — the exact wire format `Service.SetThinking` sends (`map[string]any{"level": level}`) — causing every `POST /v1/agents/:id/thinking` call to fail with `"thinking level missing"`.
+Required change: restored the `levelStr = (args as { level: string }).level` assignment, and added a `thinkingLevel` key alias for compatibility.
+Required tests: `TestAgentSetModelAndThinking` plus independent real-OMP verification (3 real thinking-level switches: cold ~6.95s, warm ~84-113ms) confirming the command succeeds and the bridge capability remains intact.

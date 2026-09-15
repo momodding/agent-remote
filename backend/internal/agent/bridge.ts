@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as net from "node:net";
-
 type ThinkingLevelParam = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
 
 interface BridgeCommandMessage {
@@ -8,6 +7,42 @@ interface BridgeCommandMessage {
 	requestId?: string;
 	command?: string;
 	args?: unknown;
+}
+
+interface ParsedContentItem {
+	type: "text" | "thinking" | "toolCall" | "other";
+	text?: string;
+	thinking?: string;
+	id?: string;
+	toolCallId?: string;
+	name?: string;
+	arguments?: unknown;
+}
+
+interface FileMentionFile {
+	path?: string;
+}
+
+interface SessionEntryMessage {
+	role?: string;
+	content?: unknown;
+	files?: FileMentionFile[];
+	toolCallId?: string;
+	toolName?: string;
+	command?: string;
+	output?: string;
+	isError?: boolean;
+	aborted?: boolean;
+	stopReason?: string;
+	display?: boolean;
+}
+
+interface SessionEntryLike {
+	id?: string;
+	type?: string;
+	display?: boolean;
+	content?: unknown;
+	message?: SessionEntryMessage;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -24,10 +59,11 @@ export default function (pi: ExtensionAPI) {
 	let buffer = "";
 	let isConnected = false;
 	let shuttingDown = false;
-	let retryTimer: ReturnType<typeof setTimeout> | null = null;
+	let retryTimer: NodeJS.Timeout | number | null = null;
 	let retryDelayMs = 100;
 	let initialSessionId: string | null = null;
 	let initialSessionFile: string | null = null;
+	const emittedEntryIds = new Set<string>();
 
 	function sendFrame(frame: unknown) {
 		if (socket && isConnected) {
@@ -38,7 +74,6 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 	}
-
 	function sendResult(requestId: string, ok: boolean, error?: string) {
 		sendFrame({
 			type: "command.result",
@@ -57,8 +92,8 @@ export default function (pi: ExtensionAPI) {
 				let text = "";
 				if (typeof args === "string") {
 					text = args;
-				} else if (args && typeof args === "object" && "prompt" in args && typeof args.prompt === "string") {
-					text = args.prompt;
+				} else if (args && typeof args === "object" && "prompt" in args && typeof (args as { prompt: unknown }).prompt === "string") {
+					text = (args as { prompt: string }).prompt;
 				}
 				pi.sendUserMessage(text);
 				sendResult(requestId, true);
@@ -76,73 +111,284 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (command === "model") {
-				let modelSelector = "";
+				let modelStr = "";
 				if (typeof args === "string") {
-					modelSelector = args;
-				} else if (args && typeof args === "object") {
-					if ("model" in args && typeof args.model === "string") {
-						modelSelector = args.model;
-					} else if ("name" in args && typeof args.name === "string") {
-						modelSelector = args.name;
-					}
+					modelStr = args;
+				} else if (args && typeof args === "object" && "model" in args && typeof (args as { model: unknown }).model === "string") {
+					modelStr = (args as { model: string }).model;
 				}
-				if (!modelSelector) {
-					sendResult(requestId, false, "missing model selector");
+				if (!modelStr) {
+					sendResult(requestId, false, "model argument missing");
 					return;
 				}
 				if (!latestCtx) {
-					sendResult(requestId, false, "no active context");
+					sendResult(requestId, false, "no active context to set model");
 					return;
 				}
-				const resolved = latestCtx.models.resolve(modelSelector);
-				if (!resolved) {
-					sendResult(requestId, false, `failed to resolve model: ${modelSelector}`);
+				const resolved = latestCtx.models.resolve(modelStr);
+				const target =
+					resolved ||
+					latestCtx.models
+						.list()
+						.find(
+							(m) =>
+								`${m.provider}/${m.id}` === modelStr ||
+								m.id === modelStr ||
+								m.name === modelStr,
+						);
+				if (!target) {
+					sendResult(requestId, false, `model ${modelStr} not found in available models`);
 					return;
 				}
-				const ok = await pi.setModel(resolved);
-				if (!ok) {
-					sendResult(requestId, false, `failed to set model: ${modelSelector}`);
-					return;
+				const success = await pi.setModel(target);
+				if (success) {
+					sendResult(requestId, true);
+				} else {
+					sendResult(requestId, false, "setModel returned false");
 				}
-				sendResult(requestId, true);
 				return;
 			}
 
 			if (command === "thinking") {
-				let level = "";
+				let levelStr = "";
 				if (typeof args === "string") {
-					level = args;
-				} else if (args && typeof args === "object") {
-					if ("level" in args && typeof args.level === "string") {
-						level = args.level;
-					} else if ("thinkingLevel" in args && typeof args.thinkingLevel === "string") {
-						level = args.thinkingLevel;
-					}
+					levelStr = args;
+				} else if (args && typeof args === "object" && "level" in args && typeof (args as { level: unknown }).level === "string") {
+					levelStr = (args as { level: string }).level;
+				} else if (args && typeof args === "object" && "thinkingLevel" in args && typeof (args as { thinkingLevel: unknown }).thinkingLevel === "string") {
+					levelStr = (args as { thinkingLevel: string }).thinkingLevel;
 				}
-				const validLevels = new Set([
-					"inherit",
-					"off",
-					"minimal",
-					"low",
-					"medium",
-					"high",
-					"xhigh",
-					"max",
-				]);
-				const normalized = level.toLowerCase();
-				if (!validLevels.has(normalized)) {
-					sendResult(requestId, false, `invalid thinking level: ${level}`);
+				if (!levelStr) {
+					sendResult(requestId, false, "thinking level missing");
 					return;
 				}
-				pi.setThinkingLevel(normalized as ThinkingLevelParam);
+				pi.setThinkingLevel(levelStr as ThinkingLevelParam);
 				sendResult(requestId, true);
 				return;
 			}
 
 			sendResult(requestId, false, `unknown command: ${command}`);
 		} catch (err: unknown) {
-			const errMsg = err instanceof Error ? err.message : String(err);
-			sendResult(requestId, false, errMsg);
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			sendResult(requestId, false, errorMsg);
+		}
+	}
+
+	function extractTextAndContents(content: unknown): { text: string; contents: ParsedContentItem[] } {
+		if (typeof content === "string") {
+			return { text: content, contents: [] };
+		}
+		if (Array.isArray(content)) {
+			let fullText = "";
+			const items: ParsedContentItem[] = [];
+			for (const item of content) {
+				if (!item || typeof item !== "object") continue;
+				const record = item as Record<string, unknown>;
+				const itemType = typeof record.type === "string" ? record.type : "";
+				if (itemType === "text" && typeof record.text === "string") {
+					fullText += record.text;
+					items.push({ type: "text", text: record.text });
+				} else if (itemType === "thinking") {
+					const thinkingText =
+						typeof record.thinking === "string"
+							? record.thinking
+							: typeof record.text === "string"
+								? record.text
+								: "";
+					items.push({ type: "thinking", thinking: thinkingText, text: thinkingText });
+				} else if (itemType === "toolCall") {
+					items.push({
+						type: "toolCall",
+						id: typeof record.id === "string" ? record.id : undefined,
+						toolCallId: typeof record.toolCallId === "string" ? record.toolCallId : undefined,
+						name: typeof record.name === "string" ? record.name : undefined,
+						arguments: record.arguments,
+					});
+				} else if (typeof record.text === "string") {
+					fullText += record.text;
+					items.push({ type: "text", text: record.text });
+				}
+			}
+			return { text: fullText, contents: items };
+		}
+		if (content && typeof content === "object") {
+			const record = content as Record<string, unknown>;
+			if (typeof record.text === "string") {
+				return { text: record.text, contents: [{ type: "text", text: record.text }] };
+			}
+		}
+		return { text: "", contents: [] };
+	}
+
+	function emitSemanticEvents(entry: SessionEntryLike) {
+		if (!entry || !entry.id) return;
+		const id = String(entry.id);
+
+		if (entry.type === "custom_message") {
+			const isDisplayed = Boolean(entry.display || (entry.message && entry.message.display));
+			if (!isDisplayed) return;
+			let text = extractTextAndContents(entry.content).text;
+			if (!text && entry.message) {
+				text = extractTextAndContents(entry.message.content).text;
+			}
+			if (!text) return;
+			sendFrame({
+				type: "semantic",
+				event: "message.system",
+				eventId: `${id}:message`,
+				messageId: id,
+				text,
+			});
+			return;
+		}
+
+		if (entry.type !== "message" || !entry.message) {
+			return;
+		}
+
+		const msg = entry.message;
+		const isDisplayed = Boolean(entry.display || msg.display);
+		if ((msg.role === "custom" || msg.role === "hookMessage") && !isDisplayed) {
+			return;
+		}
+
+		let { text, contents } = extractTextAndContents(msg.content);
+		if (msg.role === "fileMention" && !text && Array.isArray(msg.files)) {
+			text = msg.files
+				.map((f) => (f && typeof f.path === "string" ? f.path : ""))
+				.filter(Boolean)
+				.join("\n");
+		}
+
+		if (msg.role === "toolResult") {
+			if (!msg.toolCallId) return;
+			sendFrame({
+				type: "semantic",
+				event: "tool.result",
+				eventId: `${id}:tool-result:${msg.toolCallId}`,
+				messageId: id,
+				toolCallId: String(msg.toolCallId),
+				text,
+				toolOutput: text,
+				isError: Boolean(msg.isError),
+			});
+			return;
+		}
+
+		if (msg.role === "bashExecution" || msg.role === "pythonExecution") {
+			sendFrame({
+				type: "semantic",
+				event: "tool.call",
+				eventId: `${id}:execution:call`,
+				messageId: id,
+				toolName: msg.role,
+				toolInput: { command: msg.command || "" },
+			});
+			sendFrame({
+				type: "semantic",
+				event: "tool.result",
+				eventId: `${id}:execution:result`,
+				messageId: id,
+				toolName: msg.role,
+				text: msg.output || "",
+				toolOutput: msg.output || "",
+				isError: Boolean(msg.isError),
+			});
+			return;
+		}
+
+		const role =
+			!msg.role || msg.role === "user"
+				? "user"
+				: msg.role === "fileMention" || msg.role === "custom" || msg.role === "hookMessage"
+					? "system"
+					: msg.role;
+
+		const isAborted =
+			Boolean(msg.aborted) ||
+			(typeof msg.stopReason === "string" && msg.stopReason.toLowerCase() === "aborted");
+
+		if (role !== "assistant" || contents.length === 0) {
+			if (!text && !(role === "assistant" && isAborted)) {
+				return;
+			}
+			sendFrame({
+				type: "semantic",
+				event: `message.${role}`,
+				eventId: `${id}:message`,
+				messageId: id,
+				text,
+				isError: Boolean(msg.isError),
+				aborted: isAborted,
+			});
+			return;
+		}
+
+		let hasAssistant = false;
+		for (let index = 0; index < contents.length; index++) {
+			const content = contents[index];
+			if (content.type === "text") {
+				if (content.text || isAborted) {
+					sendFrame({
+						type: "semantic",
+						event: "message.assistant",
+						eventId: `${id}:message:${index}`,
+						messageId: id,
+						text: content.text || "",
+						isError: Boolean(msg.isError),
+						aborted: isAborted,
+					});
+					hasAssistant = true;
+				}
+			} else if (content.type === "thinking") {
+				const thinkingText = content.text || content.thinking || "";
+				if (thinkingText) {
+					sendFrame({
+						type: "semantic",
+						event: "message.thinking",
+						eventId: `${id}:thinking:${index}`,
+						messageId: id,
+						text: thinkingText,
+					});
+				}
+			} else if (content.type === "toolCall") {
+				const toolCallId = content.id || content.toolCallId || "";
+				if (toolCallId) {
+					sendFrame({
+						type: "semantic",
+						event: "tool.call",
+						eventId: `${id}:tool-call:${toolCallId}`,
+						messageId: id,
+						toolCallId: String(toolCallId),
+						toolName: content.name || "",
+						toolInput: content.arguments,
+					});
+				}
+			}
+		}
+
+		if (isAborted && !hasAssistant) {
+			sendFrame({
+				type: "semantic",
+				event: "message.assistant",
+				eventId: `${id}:message`,
+				messageId: id,
+				isError: Boolean(msg.isError),
+				aborted: true,
+			});
+		}
+	}
+	function emitNewEntries(sessionManager?: ExtensionContext["sessionManager"]) {
+		if (!sessionManager || typeof sessionManager.getEntries !== "function") return;
+		const entries = sessionManager.getEntries();
+		if (!Array.isArray(entries)) return;
+		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue;
+			const record = entry as SessionEntryLike;
+			if (!record.id) continue;
+			if (emittedEntryIds.has(record.id)) continue;
+			emittedEntryIds.add(record.id);
+			emitSemanticEvents(record);
 		}
 	}
 
@@ -176,18 +422,18 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function connect() {
-		if (socket) return;
+		if (socket || !socketPath) return;
 		socket = net.createConnection(socketPath);
-
 		socket.on("connect", () => {
 			isConnected = true;
 			retryDelayMs = 100;
 			if (latestCtx) {
 				sendHello(latestCtx);
+				emitNewEntries(latestCtx.sessionManager);
 			}
 		});
 
-		socket.on("data", (chunk: Buffer) => {
+		socket.on("data", (chunk) => {
 			buffer += chunk.toString("utf8");
 			if (buffer.length > 2 * 1024 * 1024) {
 				buffer = "";
@@ -223,6 +469,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		latestCtx = ctx;
+		emittedEntryIds.clear();
+		emitNewEntries(ctx.sessionManager);
 		if (isConnected) {
 			sendHello(ctx);
 		} else {
@@ -240,6 +488,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_switch", async (_event, ctx) => {
 		latestCtx = ctx;
+		emittedEntryIds.clear();
+		emitNewEntries(ctx.sessionManager);
 		const currentSessionId = ctx.sessionManager.getSessionId() || "";
 		const currentSessionFile = ctx.sessionManager.getSessionFile() || "";
 		if (
@@ -259,6 +509,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_branch", async (_event, ctx) => {
 		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
 		const currentSessionId = ctx.sessionManager.getSessionId() || "";
 		const currentSessionFile = ctx.sessionManager.getSessionFile() || "";
 		if (
@@ -276,23 +527,28 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
+		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
 		sendFrame({
 			type: "lifecycle",
 			event: "agent_start",
 			state: "working",
 		});
 	});
-
 	pi.on("turn_start", async (_event, ctx) => {
 		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
 		sendFrame({
 			type: "lifecycle",
 			event: "turn_start",
 			state: "working",
 		});
 	});
-
+	pi.on("message_end", async (_event, ctx) => {
+		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
+	});
 	pi.on("tool_execution_start", async (event) => {
 		sendFrame({
 			type: "lifecycle",
@@ -302,7 +558,6 @@ export default function (pi: ExtensionAPI) {
 			toolName: event.toolName,
 		});
 	});
-
 	pi.on("tool_execution_end", async (event) => {
 		sendFrame({
 			type: "lifecycle",
@@ -313,7 +568,6 @@ export default function (pi: ExtensionAPI) {
 			isError: event.isError,
 		});
 	});
-
 	pi.on("tool_approval_requested", async (event) => {
 		sendFrame({
 			type: "lifecycle",
@@ -325,7 +579,6 @@ export default function (pi: ExtensionAPI) {
 			approvalMode: event.approvalMode,
 		});
 	});
-
 	pi.on("tool_approval_resolved", async (event) => {
 		sendFrame({
 			type: "lifecycle",
@@ -336,30 +589,24 @@ export default function (pi: ExtensionAPI) {
 			reason: event.reason,
 		});
 	});
-
 	pi.on("turn_end", async (_event, ctx) => {
 		latestCtx = ctx;
-		sendFrame({
-			type: "lifecycle",
-			event: "turn_end",
-			state: "idle",
-		});
+		emitNewEntries(ctx.sessionManager);
 	});
-
-	pi.on("agent_end", async () => {
+	pi.on("agent_end", async (_event, ctx) => {
+		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
 		sendFrame({
 			type: "lifecycle",
 			event: "agent_end",
 			state: "idle",
 		});
 	});
-
 	pi.on("session_compact", async (_event, ctx) => {
 		latestCtx = ctx;
+		emitNewEntries(ctx.sessionManager);
 	});
-
 	pi.on("session_shutdown", async () => {
-		shuttingDown = true;
 		sendFrame({
 			type: "lifecycle",
 			event: "session_shutdown",

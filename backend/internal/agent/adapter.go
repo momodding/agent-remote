@@ -34,6 +34,7 @@ type TerminalManager interface {
 	Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error)
 	Input(id string, b []byte) error
 	Close(id string) error
+	Terminate(ctx context.Context, id string) error
 	Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
@@ -91,7 +92,7 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 	}
 
 	socketPath := filepath.Join(agentDir, "bridge.sock")
-	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle); err == nil {
+	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle, s.handleBridgeSemantic); err == nil {
 		s.bridgeServer = bs
 	}
 
@@ -162,10 +163,10 @@ func (s *Service) handleBridgeDisconnect(agentID string) {
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
 	inst.mu.Unlock()
-
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 }
+
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
@@ -179,7 +180,6 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 	ompSessionID := inst.meta.OMPSessionID
 	ompSessionFile := inst.meta.OMPSessionFile
 	inst.mu.RUnlock()
-
 	if curState == "exited" {
 		return
 	}
@@ -190,7 +190,6 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 		s.terminateAgentRuntime(inst, "session identity changed")
 		return
 	}
-
 	targetState := ""
 	switch frame.Event {
 	case "agent_start", "turn_start", "tool_start", "tool_end":
@@ -234,6 +233,98 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 }
+func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame) {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return
+	}
+
+	inst.mu.RLock()
+	curState := inst.meta.State
+	inst.mu.RUnlock()
+	if curState == "exited" {
+		return
+	}
+
+	event := protocol.AgentEvent{
+		Type:       frame.Event,
+		EventID:    frame.EventID,
+		AgentID:    agentID,
+		MessageID:  frame.MessageID,
+		ToolCallID: frame.ToolCallID,
+		Text:       frame.Text,
+		ToolName:   frame.ToolName,
+		IsError:    frame.IsError,
+		Aborted:    frame.Aborted,
+	}
+	if len(frame.ToolInput) > 0 {
+		event.ToolInput = json.RawMessage(frame.ToolInput)
+	}
+	if frame.ToolOutput != nil {
+		event.ToolOutput = frame.ToolOutput
+	}
+	if event.EventID == "" {
+		if event.MessageID != "" {
+			event.EventID = event.MessageID + ":message"
+		} else {
+			event.EventID = fmt.Sprintf("%s:%s:%d", agentID, event.Type, time.Now().UnixNano())
+		}
+	}
+
+	inst.mu.Lock()
+	stateChanged := false
+	switch event.Type {
+	case "message.user", "tool.call":
+		if inst.meta.State != "working" && inst.meta.State != "exited" {
+			inst.meta.State = "working"
+			stateChanged = true
+		}
+	case "message.assistant":
+		if inst.meta.State != "idle" && inst.meta.State != "exited" {
+			inst.meta.State = "idle"
+			stateChanged = true
+		}
+	}
+	if stateChanged {
+		inst.meta.UpdatedAt = time.Now().UTC()
+	}
+
+	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
+	for _, sub := range inst.subscribers {
+		subscribers = append(subscribers, sub.fn)
+	}
+	inst.mu.Unlock()
+
+	if s.store != nil {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		inputs := []runtimestore.AgentTranscriptEvent{
+			{EventID: event.EventID, Kind: event.Type, Payload: payload},
+		}
+		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, inputs, runtimestore.TranscriptState{})
+		if err != nil {
+			return
+		}
+		if len(committed) == 0 {
+			// Deduplicated: event already stored
+			return
+		}
+		event.Cursor = committed[0].Event.Cursor
+	}
+
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
+
+	if stateChanged {
+		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
+	}
+}
 
 func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
 	inst.mu.Lock()
@@ -241,6 +332,7 @@ func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
 		inst.mu.Unlock()
 		return
 	}
+
 	inst.meta.State = "exited"
 	inst.meta.Capabilities = []protocol.AgentCapability{
 		{Name: "chat", Enabled: true},
@@ -267,12 +359,23 @@ func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
 		s.bridgeServer.UnregisterAgent(agentID)
 	}
 	removeBridgeSecret(s.agentDir, agentID)
-	_ = s.termMgr.Close(termID)
-
+	_ = s.termMgr.Terminate(context.Background(), termID)
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 }
 
+
+// Terminate explicitly terminates the running agent instance and its underlying terminal.
+func (s *Service) Terminate(agentID string) error {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotFound
+	}
+	s.terminateAgentRuntime(inst, "explicit termination")
+	return nil
+}
 func (s *Service) restorePersisted() {
 	if s.store == nil {
 		return
@@ -401,6 +504,7 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 			"AGENTIC_REMOTE_BRIDGE_SOCKET":   s.bridgeServer.SocketPath(),
 			"AGENTIC_REMOTE_BRIDGE_AGENT_ID": agentID,
 			"AGENTIC_REMOTE_BRIDGE_SECRET":   secret,
+			"PI_CODING_AGENT_DIR":            s.agentDir,
 		}
 	}
 
@@ -455,7 +559,7 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 			s.bridgeServer.UnregisterAgent(agentID)
 		}
 		removeBridgeSecret(s.agentDir, agentID)
-		_ = s.termMgr.Close(termSummary.ID)
+		_ = s.termMgr.Terminate(context.Background(), termSummary.ID)
 		return nil, errors.New("service closing")
 	}
 	s.agents[agentSession.ID] = inst
@@ -704,7 +808,6 @@ func (s *Service) Abort(agentID string) error {
 	return s.bridgeServer.SendCommand(ctx, agentID, "abort", nil)
 }
 
-// SetModel changes the active model through the verified OMP bridge.
 func (s *Service) SetModel(agentID, model string) error {
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
@@ -724,11 +827,12 @@ func (s *Service) SetModel(agentID, model string) error {
 	if !modelEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Model switching can involve external provider proxy discovery (e.g. omniroute/omninext)
+	// taking ~8-9s on cold initialize; use 30s timeout to provide safe headroom.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return s.bridgeServer.SendCommand(ctx, agentID, "model", map[string]any{"model": model})
 }
-
 // SetThinking changes the thinking level through the verified OMP bridge.
 func (s *Service) SetThinking(agentID, level string) error {
 	s.mu.RLock()

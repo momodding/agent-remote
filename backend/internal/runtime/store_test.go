@@ -306,108 +306,171 @@ func TestEventsExpireCursorsBeforeRetention(t *testing.T) {
 func TestMigrateAgentIDWithMixedHistory(t *testing.T) {
 	s := makeTestDB(t)
 	now := time.Now().UTC()
-	termID := "legacy-terminal-123"
-	agentID := "agent-456"
-	newAgentID := "agent-789"
+	legacyID := "legacy-1"
+	newAgentID := "agent-2"
 
-	// Record a terminal with its events
-	term := TerminalSummary{ID: termID, Name: "shell", CWD: "/home", Seq: 1, CreatedAt: now, UpdatedAt: now}
+	// 1. Record a terminal with its lifecycle events on legacyID (sharing ID pre-separation)
+	term := TerminalSummary{ID: legacyID, Name: "shell", CWD: "/home", Seq: 1, CreatedAt: now, UpdatedAt: now}
 	if err := s.RecordTerminal(term, "terminal.created"); err != nil {
 		t.Fatalf("RecordTerminal: %v", err)
 	}
+	if _, err := s.RecordEvent(legacyID, "terminal.updated", map[string]any{"seq": 2}); err != nil {
+		t.Fatalf("terminal.updated: %v", err)
+	}
+	if _, err := s.RecordEvent(legacyID, "terminal.exited", map[string]any{"exitCode": 0}); err != nil {
+		t.Fatalf("terminal.exited: %v", err)
+	}
 
-	// Record agent as if it reused the terminal ID (legacy behavior)
-	agent := AgentSummary{ID: agentID, Adapter: "omp", TerminalSessionID: termID, CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat"}]`), CreatedAt: now, UpdatedAt: now}
+	// 2. Record Agent-owned data on legacyID
+	agent := AgentSummary{ID: legacyID, Adapter: "omp", TerminalSessionID: legacyID, CWD: "/workspace", State: "idle", Capabilities: []byte(`[{"name":"chat"}]`), CreatedAt: now, UpdatedAt: now}
 	if err := s.RecordAgent(agent, "agent.created"); err != nil {
 		t.Fatalf("RecordAgent: %v", err)
 	}
-
-	// Record mixed events on the old agent ID: terminal, agent, message, tool, canonical state
-	if _, err := s.RecordEvent(agentID, "terminal.output", "some output"); err != nil {
-		t.Fatalf("terminal.output: %v", err)
+	if _, err := s.RecordEvent(legacyID, "agent.updated", map[string]any{"state": "working"}); err != nil {
+		t.Fatalf("agent.updated: %v", err)
 	}
-	if _, err := s.RecordEvent(agentID, "agent.init", "{}"); err != nil {
-		t.Fatalf("agent.init: %v", err)
+	// Canonical state event kind is literally "state"
+	if _, err := s.RecordEvent(legacyID, "state", map[string]any{"type": "state", "agentId": legacyID, "state": "working"}); err != nil {
+		t.Fatalf("state event: %v", err)
 	}
-	if _, err := s.RecordEvent(agentID, "message.created", `{"role":"user"}`); err != nil {
-		t.Fatalf("message.created: %v", err)
+	if _, err := s.RecordEvent(legacyID, "message.user", map[string]any{"role": "user", "text": "hello"}); err != nil {
+		t.Fatalf("message.user: %v", err)
 	}
-	if _, err := s.RecordEvent(agentID, "tool.call", `{"name":"read_file"}`); err != nil {
+	if _, err := s.RecordEvent(legacyID, "message.assistant", map[string]any{"role": "assistant", "text": "hi"}); err != nil {
+		t.Fatalf("message.assistant: %v", err)
+	}
+	if _, err := s.RecordEvent(legacyID, "tool.call", map[string]any{"toolName": "bash"}); err != nil {
 		t.Fatalf("tool.call: %v", err)
 	}
-	if _, err := s.RecordEvent(agentID, "agent.state", `{"state":"working"}`); err != nil {
-		t.Fatalf("agent.state: %v", err)
-	}
-	if _, err := s.RecordEvent(agentID, "message.delta", `{"delta":"text"}`); err != nil {
-		t.Fatalf("message.delta: %v", err)
+	if _, err := s.RecordEvent(legacyID, "tool.result", map[string]any{"toolOutput": "ok"}); err != nil {
+		t.Fatalf("tool.result: %v", err)
 	}
 
-	// Migrate the agent to a new ID
-	if err := s.MigrateAgentID(agentID, newAgentID); err != nil {
+	// Record agent_history and transcript_state via RecordAgentTranscript
+	transcriptState := TranscriptState{
+		AgentID:             legacyID,
+		TranscriptPath:      "/workspace/.remote/sessions/session.jsonl",
+		FileOffset:          1024,
+		FileInode:           54321,
+		FileSize:            4096,
+		FileMtime:           now.Unix(),
+		BoundaryFingerprint: "fingerprint-abc",
+	}
+	_, err := s.RecordAgentTranscript(legacyID, []AgentTranscriptEvent{
+		{EventID: "evt-hist-1", Kind: "message.user", Payload: []byte(`{"eventId":"evt-hist-1"}`)},
+		{EventID: "evt-hist-2", Kind: "message.assistant", Payload: []byte(`{"eventId":"evt-hist-2"}`)},
+	}, transcriptState)
+	if err != nil {
+		t.Fatalf("RecordAgentTranscript: %v", err)
+	}
+
+	// 3. Migrate Agent ID from legacyID to newAgentID
+	if err := s.MigrateAgentID(legacyID, newAgentID); err != nil {
 		t.Fatalf("MigrateAgentID: %v", err)
 	}
 
-	// Check that agent_sessions was updated
+	// 4. Assertions
+	// a. agent_sessions: newAgentID exists, legacyID agent session is gone
 	snapshot, err := s.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	found := false
+	foundNewAgent := false
 	for _, a := range snapshot.Agents {
 		if a.ID == newAgentID {
-			found = true
-			if a.TerminalSessionID != termID {
-				t.Fatalf("agent TerminalSessionID mismatch: %s != %s", a.TerminalSessionID, termID)
+			foundNewAgent = true
+			if a.TerminalSessionID != legacyID {
+				t.Fatalf("agent TerminalSessionID mismatch: %s != %s", a.TerminalSessionID, legacyID)
 			}
-			break
+		}
+		if a.ID == legacyID {
+			t.Fatalf("old agent session ID %s still present in agent_sessions", legacyID)
 		}
 	}
-	if !found {
+	if !foundNewAgent {
 		t.Fatalf("new agent ID %s not found in snapshot", newAgentID)
 	}
 
-	// Verify old agent ID is gone
-	for _, a := range snapshot.Agents {
-		if a.ID == agentID {
-			t.Fatalf("old agent ID %s still present after migrate", agentID)
+	// b. terminal_sessions: legacyID terminal session remains untouched
+	if len(snapshot.Terminals) != 1 || snapshot.Terminals[0].ID != legacyID {
+		t.Fatalf("terminals snapshot unexpected: %+v", snapshot.Terminals)
+	}
+
+	// c. transcript_state: migrated to newAgentID, gone from legacyID
+	oldTS, err := s.LoadTranscriptState(legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldTS != nil {
+		t.Fatalf("transcript_state for legacyID %s should be nil, got %+v", legacyID, oldTS)
+	}
+	newTS, err := s.LoadTranscriptState(newAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newTS == nil || newTS.AgentID != newAgentID || newTS.FileOffset != 1024 || newTS.BoundaryFingerprint != "fingerprint-abc" {
+		t.Fatalf("transcript_state for newAgentID not migrated correctly: %+v", newTS)
+	}
+
+	// d. agent_history: migrated to newAgentID, gone from legacyID
+	oldHist, _, err := s.AgentHistory(legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldHist) != 0 {
+		t.Fatalf("agent_history for legacyID should be empty, got %d entries", len(oldHist))
+	}
+	newHist, _, err := s.AgentHistory(newAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(newHist) != 2 {
+		t.Fatalf("agent_history for newAgentID got %d entries, want 2", len(newHist))
+	}
+	for _, h := range newHist {
+		if h.AgentID != newAgentID {
+			t.Fatalf("agent_history entry agent_id mismatch: %s != %s", h.AgentID, newAgentID)
 		}
 	}
 
-	// Verify events: agent/message/tool/agent.state moved to new ID, terminal.output stayed with old ID
+	// e. runtime_events: agent-owned events (agent.created, agent.updated, state, message.*, tool.*) migrated to newAgentID.
+	// Terminal lifecycle events (terminal.created, terminal.updated, terminal.exited) stayed on legacyID.
 	events, _, err := s.Events(0, 100)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
 
-	oldIDEventCount := 0
-	newIDEventCount := 0
+	legacyEventCount := 0
+	newAgentEventCount := 0
 	for _, e := range events {
-		if e.SurfaceID == agentID {
-			oldIDEventCount++
-			// Only terminal events should still reference old ID
-			if e.Kind != "terminal.output" && e.Kind != "terminal.created" {
-				t.Fatalf("unexpected event kind %s still on old ID %s", e.Kind, agentID)
-			}
-		}
-		if e.SurfaceID == newAgentID {
-			newIDEventCount++
-			// agent.*, message.*, tool.*, agent.state should be on new ID
+		if e.SurfaceID == legacyID {
+			legacyEventCount++
 			switch e.Kind {
-			case "agent.init", "agent.created", "agent.state", "message.created", "message.delta", "tool.call":
-				// expected
+			case "terminal.created", "terminal.updated", "terminal.exited":
+				// expected to stay on legacyID
 			default:
-				t.Fatalf("unexpected event kind %s on new ID %s", e.Kind, newAgentID)
+				t.Fatalf("unexpected event kind %s remained on legacyID %s", e.Kind, legacyID)
 			}
+		} else if e.SurfaceID == newAgentID {
+			newAgentEventCount++
+			switch e.Kind {
+			case "agent.created", "agent.updated", "state", "message.user", "message.assistant", "tool.call", "tool.result":
+				// expected agent-owned kinds
+			default:
+				t.Fatalf("unexpected event kind %s migrated to newAgentID %s", e.Kind, newAgentID)
+			}
+		} else {
+			t.Fatalf("event found on unexpected surface ID: %s (kind %s)", e.SurfaceID, e.Kind)
 		}
 	}
 
-	// Verify counts: 6 agent-owned events moved to new ID (agent.created, agent.init, agent.state, message.created, message.delta, tool.call)
-	// 1 terminal event stayed with old ID (terminal.output)
-	if newIDEventCount != 6 {
-		t.Fatalf("new ID event count: got %d, want 6 (agent.created, agent.init, agent.state, message.created, message.delta, tool.call)", newIDEventCount)
+	// Total events: 3 terminal events (legacyID) + 7 direct agent events + 2 transcript history events = 12 total events.
+	// legacyEventCount should be 3 (terminal.*), newAgentEventCount should be 9 (7 direct + 2 transcript).
+	if legacyEventCount != 3 {
+		t.Fatalf("legacyID event count: got %d, want 3 terminal events", legacyEventCount)
 	}
-	if oldIDEventCount != 1 {
-		t.Fatalf("old ID event count: got %d, want 1 (terminal.output)", oldIDEventCount)
+	if newAgentEventCount != 9 {
+		t.Fatalf("newAgentID event count: got %d, want 9 agent-owned events", newAgentEventCount)
 	}
 }
 

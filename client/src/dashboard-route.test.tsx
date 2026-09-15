@@ -74,6 +74,7 @@ jest.mock('./lib/daemon-channel', () => ({
 jest.mock('./lib/runtime-channel', () => ({
   disposeRuntimeChannel: jest.fn(),
 }));
+const mockCreateAgent = jest.fn();
 jest.mock('./lib/runtime-reconcile', () => ({
   reconcileDaemon: (...args: unknown[]) => mockReconcileDaemon(...args),
 }));
@@ -95,7 +96,9 @@ jest.mock('./lib/api', () => {
     }
   }
   return {
-    AgenticRemoteAPI: jest.fn(function AgenticRemoteAPI(_connection: Connection) { return {}; }),
+    AgenticRemoteAPI: jest.fn(function AgenticRemoteAPI(_connection: Connection) {
+      return { createAgent: mockCreateAgent };
+    }),
     APIError,
     authenticatePairing: (...args: unknown[]) => mockAuthenticatePairing(...args),
   };
@@ -137,6 +140,13 @@ beforeEach(() => {
   mockSaveConnection.mockResolvedValue(storeA);
   mockUpdateConnection.mockResolvedValue(storeA);
   mockDeleteConnection.mockResolvedValue(storeA);
+  mockCreateAgent.mockReset();
+  mockCreateAgent.mockResolvedValue({
+    id: 'agent-1',
+    terminalSessionId: 'term-1',
+    state: 'idle',
+    adapter: 'OMP Agent',
+  });
   mockAuthenticatePairing.mockResolvedValue({
     endpoint: first.endpoint,
     hostId: 'hostA',
@@ -278,6 +288,47 @@ describe('dashboard tab deck actions', () => {
 
     act(() => tree.unmount());
   });
+  it('opens NewAgentSheet and creates agent with user workspace and backend selection', async () => {
+    const tree = await renderDashboard();
+
+    // Press New Agent button
+    await act(async () => {
+      actionFor(tree, `New Agent ${first.endpoint}`)();
+    });
+
+    // Verify createAgent was not called immediately
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+
+    // Workspace path input and backend option are available in the sheet
+    const input = tree.root.findByProps({ accessibilityLabel: 'Workspace Path' });
+    await act(async () => {
+      input.props.onChangeText('packages/app');
+    });
+
+    const tmuxOption = tree.root.findByProps({ accessibilityLabel: 'Backend tmux' });
+    await act(async () => {
+      tmuxOption.props.onPress();
+    });
+
+    const submitBtn = tree.root.findByProps({ accessibilityLabel: 'Create Agent' });
+    await act(async () => {
+      await submitBtn.props.onPress();
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledWith({
+      name: 'OMP Agent',
+      args: [],
+      cwd: 'packages/app',
+      backend: 'tmux',
+    });
+    expect(mockTabStoreState.tabs[0]).toMatchObject({
+      kind: 'agent',
+      daemonId: first.hostId,
+      agentSessionId: 'agent-1',
+    });
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/agent/[id]', params: { id: 'mock-uuid' } });
+  });
+
 });
 
 describe('dashboard capability gating', () => {

@@ -49,40 +49,122 @@ func TestManagerEmptyCWDUsesDefaultCWD(t *testing.T) {
 }
 
 // TestManagerExplicitCWDWins verifies that explicit CWD is used even when defaultCWD is set.
+// TestManagerExplicitCWDWins verifies that explicit relative CWD is resolved against workspaceRoot.
 func TestManagerExplicitCWDWins(t *testing.T) {
 	tmpDir := t.TempDir()
 	defaultHome := filepath.Join(tmpDir, "home")
 	if err := os.MkdirAll(defaultHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	explicitCWD := filepath.Join(tmpDir, "explicit")
-	if err := os.MkdirAll(explicitCWD, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	stateDir := filepath.Join(tmpDir, "state")
 	workspaceRoot := filepath.Join(tmpDir, "workspace")
-
+	subDir := filepath.Join(workspaceRoot, "subdir")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	manager, err := NewManager(defaultHome, stateDir, workspaceRoot, 1<<20, 256, nil)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 	defer manager.Shutdown()
 
+	evalSubDir, err := filepath.EvalSymlinks(subDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
 		Command: "sh",
 		Args:    []string{"-c", "pwd"},
-		CWD:     explicitCWD,
+		CWD:     "subdir",
 	})
 	if err != nil {
 		t.Fatalf("Create with explicit CWD failed: %v", err)
 	}
 	defer manager.Close(summary.ID)
 
-	if summary.CWD != explicitCWD {
-		t.Errorf("expected CWD %s, got %s", explicitCWD, summary.CWD)
+	if summary.CWD != evalSubDir {
+		t.Errorf("expected CWD %s, got %s", evalSubDir, summary.CWD)
+	}
+}
+
+func TestManagerWorkspaceValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	defaultHome := filepath.Join(tmpDir, "home")
+	if err := os.MkdirAll(defaultHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(tmpDir, "state")
+	workspaceRoot := filepath.Join(tmpDir, "workspace")
+	subDir := filepath.Join(workspaceRoot, "nested")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(defaultHome, stateDir, workspaceRoot, 1<<20, 256, nil)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer manager.Shutdown()
+
+	// 1. Absolute path outside workspaceRoot must fail with ErrWorkspaceEscape
+	_, err = manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test-abs",
+		Command: "sh",
+		Args:    []string{"-c", "pwd"},
+		CWD:     "/etc",
+	})
+	if !errors.Is(err, ErrWorkspaceEscape) {
+		t.Fatalf("expected ErrWorkspaceEscape for absolute path /etc, got: %v", err)
+	}
+
+	// 2. Traversal path escaping workspaceRoot must fail with ErrWorkspaceEscape
+	_, err = manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test-traversal",
+		Command: "sh",
+		Args:    []string{"-c", "pwd"},
+		CWD:     "../../etc",
+	})
+	if !errors.Is(err, ErrWorkspaceEscape) {
+		t.Fatalf("expected ErrWorkspaceEscape for ../../etc, got: %v", err)
+	}
+
+	// 3. Valid relative subdir must succeed
+	evalSubDir, err := filepath.EvalSymlinks(subDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test-sub",
+		Command: "sh",
+		Args:    []string{"-c", "pwd"},
+		CWD:     "nested",
+	})
+	if err != nil {
+		t.Fatalf("expected success for nested subdir, got: %v", err)
+	}
+	defer manager.Close(summary.ID)
+	if summary.CWD != evalSubDir {
+		t.Errorf("expected CWD %s, got %s", evalSubDir, summary.CWD)
+	}
+
+	// 4. Empty CWD falls back to defaultHome
+	evalDefaultHome, err := filepath.EvalSymlinks(defaultHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryEmpty, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "test-empty",
+		Command: "sh",
+		Args:    []string{"-c", "pwd"},
+		CWD:     "",
+	})
+	if err != nil {
+		t.Fatalf("expected success for empty CWD, got: %v", err)
+	}
+	defer manager.Close(summaryEmpty.ID)
+	if summaryEmpty.CWD != evalDefaultHome {
+		t.Errorf("expected CWD %s, got %s", evalDefaultHome, summaryEmpty.CWD)
 	}
 }
 
@@ -140,7 +222,7 @@ func TestManagerEmptyCommandUsesDefaultShell(t *testing.T) {
 	summary, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
 		Name:    "test",
 		Command: "",
-		CWD:     defaultHome,
+		CWD:     "",
 	})
 	if err != nil {
 		t.Fatalf("Create with empty Command failed: %v", err)
@@ -188,7 +270,7 @@ func TestManagerCreateSetsTermAndPreservesEnv(t *testing.T) {
 		Name:    "test",
 		Command: "sh",
 		Args:    []string{"-c", "echo TERM=$TERM SENTINEL=$AGENTIC_REMOTE_TEST_SENTINEL"},
-		CWD:     defaultHome,
+		CWD:     "",
 	})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
@@ -227,7 +309,7 @@ func TestManagerRestoresPreviewFromScrollback(t *testing.T) {
 	}
 	defer manager.Shutdown()
 	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{
-		Name: "persisted", Command: "sh", Args: []string{"-c", "printf 'preview survives restart\\n'"}, CWD: defaultHome,
+		Name: "persisted", Command: "sh", Args: []string{"-c", "printf 'preview survives restart\\n'"}, CWD: "",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +353,7 @@ func TestManagerCloseRestoredSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{Name: "restored", Command: "sh", Args: []string{"-c", "true"}, CWD: home})
+	created, err := manager.Create(context.Background(), protocol.CreateSessionRequest{Name: "restored", Command: "sh", Args: []string{"-c", "true"}, CWD: ""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,4 +854,104 @@ func TestManagerNaturalExitReleasesCapacity(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = manager.Close(summary.ID)
+}
+
+func TestManagerTerminateKillsTmuxVsCloseDetaches(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not found, skipping tmux manager test")
+	}
+
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	tmuxStateDir := filepath.Join(stateDir, "tmux")
+
+	manager, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	client := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetTmux(client)
+
+	// Create session 1 (to test Close/detach)
+	s1, err := manager.Create(ctx, protocol.CreateSessionRequest{Name: "term-detach-test", Command: "sh", Args: []string{"-c", "sleep 100"}})
+	if err != nil {
+		t.Fatalf("create s1: %v", err)
+	}
+
+	// Create session 2 (to test Terminate/kill)
+	s2, err := manager.Create(ctx, protocol.CreateSessionRequest{Name: "term-kill-test", Command: "sh", Args: []string{"-c", "sleep 100"}})
+	if err != nil {
+		t.Fatalf("create s2: %v", err)
+	}
+
+	// Close s1 -> detaches from manager, session still alive in tmux
+	if err := manager.Close(s1.ID); err != nil {
+		t.Fatalf("Close s1: %v", err)
+	}
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var foundS1 bool
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s1.ID {
+			foundS1 = true
+		}
+	}
+	if !foundS1 {
+		t.Fatalf("session %s should still exist in tmux server after manager.Close()", s1.ID)
+	}
+
+	// Terminate s2 -> kills session in tmux
+	if err := manager.Terminate(ctx, s2.ID); err != nil {
+		t.Fatalf("Terminate s2: %v", err)
+	}
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var foundS2 bool
+	for _, s := range client.GetTopology().Sessions {
+		if s.Name == s2.ID {
+			foundS2 = true
+		}
+	}
+	if foundS2 {
+		t.Fatalf("session %s should be killed and gone from tmux server after manager.Terminate()", s2.ID)
+	}
+}
+
+func TestManagerTerminatePty(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+
+	manager, err := NewManager(tmpDir, stateDir, tmpDir, 1<<20, 16, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, err := manager.Create(ctx, protocol.CreateSessionRequest{Name: "pty-term-test", Command: "sh", Args: []string{"-c", "sleep 100"}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := manager.Terminate(ctx, s.ID); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+
+	// Terminating again returns session not found
+	if err := manager.Terminate(ctx, s.ID); err == nil {
+		t.Fatalf("expected error terminating already-terminated session")
+	}
 }

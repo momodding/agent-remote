@@ -38,9 +38,10 @@ const maxReplayLiveEvents = 64
 type SessionAPI interface {
 	List(context.Context) []protocol.SessionSummary
 	Create(context.Context, protocol.CreateSessionRequest) (*protocol.SessionSummary, error)
-	Resize(string, int, int) error
 	Input(string, []byte) error
+	Resize(string, int, int) error
 	Close(string) error
+	Terminate(context.Context, string) error
 	Subscribe(string, func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error)
 }
 
@@ -65,6 +66,7 @@ type AgentAPI interface {
 	Abort(agentID string) error
 	SetModel(agentID, model string) error
 	SetThinking(agentID, level string) error
+	Terminate(agentID string) error
 	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
 	History(agentID string) (*protocol.AgentHistoryResponse, error)
 }
@@ -332,8 +334,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		summary, err := s.sessions.Create(r.Context(), req)
 		if err != nil {
-			if errors.Is(err, session.ErrTooManySessions) || errors.Is(err, ErrTooManySessions) {
-				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
+			if errors.Is(err, session.ErrTooManySessions) {
+				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: session.ErrTooManySessions.Error()})
+				return
+			}
+			if errors.Is(err, session.ErrWorkspaceEscape) {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "workspace_escape", Message: err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
@@ -363,7 +369,7 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if err := s.sessions.Close(id); err != nil {
+	if err := s.sessions.Terminate(r.Context(), id); err != nil {
 		writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "session_not_found", Message: err.Error()})
 		return
 	}
@@ -386,8 +392,12 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		summary, err := s.agents.CreateAgentRequest(r.Context(), req)
 		if err != nil {
-			if errors.Is(err, session.ErrTooManySessions) || errors.Is(err, ErrTooManySessions) {
-				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: ErrTooManySessions.Error()})
+			if errors.Is(err, session.ErrTooManySessions) {
+				writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_sessions", Message: session.ErrTooManySessions.Error()})
+				return
+			}
+			if errors.Is(err, session.ErrWorkspaceEscape) {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "workspace_escape", Message: err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "create_failed", Message: err.Error()})
@@ -480,6 +490,13 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 			return
+		case "terminate":
+			if err := s.agents.Terminate(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "terminate_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
 		}
 	}
 	w.WriteHeader(http.StatusNotFound)
@@ -504,7 +521,16 @@ func (s *Server) handleFSSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFSRead(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.fs.ReadText(r.URL.Query().Get("path"))
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" && r.Body != nil {
+		var body struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.Path != "" {
+			filePath = body.Path
+		}
+	}
+	resp, err := s.fs.ReadText(filePath)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_read_failed", Message: err.Error()})
 		return
@@ -1364,6 +1390,17 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 			return
 		}
 		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
+	case "agent.terminate":
+		if s.agents == nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: "agent service unavailable"})
+			return
+		}
+		err := s.agents.Terminate(cmd.TargetID)
+		if err != nil {
+			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
+			return
+		}
+		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
 	case "terminal.create":
 		var req protocol.CreateSessionRequest
 		if cmd.Args != nil {
@@ -1394,7 +1431,7 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 		}
 		_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: true})
 	case "terminal.close":
-		err := s.sessions.Close(cmd.TargetID)
+		err := s.sessions.Terminate(ctx, cmd.TargetID)
 		if err != nil {
 			_ = write(protocol.CommandResultEnvelope{Type: "command.result", RequestID: cmd.RequestID, OK: false, Error: err.Error()})
 			return

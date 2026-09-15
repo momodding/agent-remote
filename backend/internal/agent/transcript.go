@@ -217,11 +217,12 @@ type transcriptMessage struct {
 type transcriptContent struct {
 	Type       string          `json:"type"`
 	Text       string          `json:"text"`
-	ToolCallID string          `json:"toolCallId"`
+	Thinking   string          `json:"thinking,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	ToolCallID string          `json:"toolCallId,omitempty"`
 	Name       string          `json:"name"`
 	Arguments  json.RawMessage `json:"arguments"`
 }
-
 func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if e.ID == "" {
 		return nil
@@ -294,12 +295,20 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 				events = append(events, protocol.AgentEvent{Type: "message.assistant", EventID: e.ID + ":message:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text, IsError: message.IsError, Aborted: isAborted})
 			}
 		case "thinking":
-			if content.Text != "" {
-				events = append(events, protocol.AgentEvent{Type: "message.thinking", EventID: e.ID + ":thinking:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: content.Text})
+			thinkingText := content.Text
+			if thinkingText == "" {
+				thinkingText = content.Thinking
+			}
+			if thinkingText != "" {
+				events = append(events, protocol.AgentEvent{Type: "message.thinking", EventID: e.ID + ":thinking:" + strconv.Itoa(index), AgentID: agentID, MessageID: e.ID, Text: thinkingText})
 			}
 		case "toolCall":
-			if content.ToolCallID != "" {
-				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: e.ID + ":tool-call:" + content.ToolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: content.ToolCallID, ToolName: content.Name, ToolInput: json.RawMessage(content.Arguments)})
+			toolCallID := content.ToolCallID
+			if toolCallID == "" {
+				toolCallID = content.ID
+			}
+			if toolCallID != "" {
+				events = append(events, protocol.AgentEvent{Type: "tool.call", EventID: e.ID + ":tool-call:" + toolCallID, AgentID: agentID, MessageID: e.ID, ToolCallID: toolCallID, ToolName: content.Name, ToolInput: json.RawMessage(content.Arguments)})
 			}
 		}
 	}

@@ -18,13 +18,17 @@ import (
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/detect"
+	"github.com/agenticremote/agenticremote/backend/internal/fs"
 	"github.com/agenticremote/agenticremote/backend/internal/notify"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/tmux"
 )
 
-var ErrTooManySessions = errors.New("too many sessions")
+var (
+	ErrTooManySessions = errors.New("too many sessions")
+	ErrWorkspaceEscape = fs.ErrWorkspaceEscape
+)
 
 type State string
 
@@ -129,7 +133,21 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceRoot, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store, maxSessions: 16}
+	workspaceAbs, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := os.MkdirAll(workspaceAbs, 0o755); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	workspaceAbs, err = filepath.EvalSymlinks(workspaceAbs)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceAbs, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store, maxSessions: 16}
 	m.recordTopology = m.recordTmuxTopology
 	if err := m.restore(); err != nil {
 		_ = store.Close()
@@ -273,8 +291,22 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 	if command == "" {
 		command = defaultShell()
 	}
-	cwd := req.CWD
-	if cwd == "" {
+	var cwd string
+	if req.CWD != "" {
+		relCWD := req.CWD
+		if filepath.IsAbs(relCWD) {
+			rel, err := filepath.Rel(m.workspaceRoot, relCWD)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return nil, fmt.Errorf("%w: %s", ErrWorkspaceEscape, req.CWD)
+			}
+			relCWD = rel
+		}
+		resolved, err := fs.ResolvePath(m.workspaceRoot, relCWD)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWorkspaceEscape, err)
+		}
+		cwd = resolved
+	} else {
 		cwd = m.defaultCWD
 	}
 	cols, rows := req.Cols, req.Rows
@@ -551,6 +583,17 @@ func (m *Manager) TerminalTTY(id string) string {
 	return ""
 }
 
+func (m *Manager) cleanupRuntime(runtime *TerminalRuntime, closeBackend func() error) {
+	runtime.releaseAdmission.Do(func() {
+		m.activeSessions.Add(-1)
+	})
+	if runtime.backend != nil && closeBackend != nil {
+		_ = closeBackend()
+	}
+	m.markExited(runtime)
+	_ = os.Remove(runtime.scrollback)
+}
+
 func (m *Manager) Close(id string) error {
 	m.mu.Lock()
 	runtime, ok := m.sessions[id]
@@ -561,14 +604,32 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	runtime.releaseAdmission.Do(func() {
-		m.activeSessions.Add(-1)
-	})
+	var closeFn func() error
 	if runtime.backend != nil {
-		_ = runtime.backend.Close()
+		closeFn = runtime.backend.Close
 	}
-	m.markExited(runtime)
-	_ = os.Remove(runtime.scrollback)
+	m.cleanupRuntime(runtime, closeFn)
+	return nil
+}
+
+func (m *Manager) Terminate(ctx context.Context, id string) error {
+	m.mu.Lock()
+	runtime, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return errors.New("session not found")
+	}
+	var closeFn func() error
+	if runtime.backend != nil {
+		closeFn = runtime.backend.Close
+		if term, ok := runtime.backend.(Terminator); ok {
+			closeFn = func() error { return term.Terminate(ctx) }
+		}
+	}
+	m.cleanupRuntime(runtime, closeFn)
 	return nil
 }
 

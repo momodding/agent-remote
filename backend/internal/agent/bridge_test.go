@@ -377,7 +377,7 @@ func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {
 
 func TestBridgeReplacementDoesNotDisconnectLiveConnection(t *testing.T) {
 	var disconnected atomic.Uint32
-	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) }, nil)
+	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

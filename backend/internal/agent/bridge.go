@@ -139,6 +139,19 @@ type BridgeLifecycleFrame struct {
 	IsError      bool   `json:"isError,omitempty"`
 	StopReason   string `json:"stopReason,omitempty"`
 }
+type BridgeSemanticFrame struct {
+	Type       string          `json:"type"`
+	Event      string          `json:"event"`
+	EventID    string          `json:"eventId"`
+	MessageID  string          `json:"messageId,omitempty"`
+	ToolCallID string          `json:"toolCallId,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
+	ToolInput  json.RawMessage `json:"toolInput,omitempty"`
+	ToolOutput any             `json:"toolOutput,omitempty"`
+	IsError    bool            `json:"isError,omitempty"`
+	Aborted    bool            `json:"aborted,omitempty"`
+}
 
 type bridgeAgentState struct {
 	mu            sync.Mutex
@@ -163,13 +176,14 @@ type BridgeServer struct {
 	onHello      func(agentID string, hello BridgeHello) bool
 	onDisconnect func(agentID string)
 	onLifecycle  func(agentID string, frame BridgeLifecycleFrame)
+	onSemantic   func(agentID string, frame BridgeSemanticFrame)
 }
-
 func NewBridgeServer(
 	socketPath string,
 	onHello func(agentID string, hello BridgeHello) bool,
 	onDisconnect func(agentID string),
 	onLifecycle func(agentID string, frame BridgeLifecycleFrame),
+	onSemantic func(agentID string, frame BridgeSemanticFrame),
 ) (*BridgeServer, error) {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -181,16 +195,17 @@ func NewBridgeServer(
 		return nil, fmt.Errorf("failed to listen on bridge socket: %w", err)
 	}
 	_ = os.Chmod(socketPath, 0o600)
-	bs := &BridgeServer{
+	b := &BridgeServer{
 		socketPath:   socketPath,
 		listener:     l,
 		agents:       make(map[string]*bridgeAgentState),
 		onHello:      onHello,
 		onDisconnect: onDisconnect,
 		onLifecycle:  onLifecycle,
+		onSemantic:   onSemantic,
 	}
-	go bs.acceptLoop()
-	return bs, nil
+	go b.acceptLoop()
+	return b, nil
 }
 
 func (b *BridgeServer) acceptLoop() {
@@ -364,6 +379,13 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 				}
 				b.onLifecycle(agentID, frame)
 			}
+		} else if raw.Type == "semantic" {
+			if b.onSemantic != nil {
+				var semFrame BridgeSemanticFrame
+				if err := json.Unmarshal(line, &semFrame); err == nil {
+					b.onSemantic(agentID, semFrame)
+				}
+			}
 		}
 	}
 }
@@ -468,6 +490,7 @@ func (b *BridgeServer) SendCommand(ctx context.Context, agentID, command string,
 	state.writerMu.Lock()
 	_, err = conn.Write(data)
 	state.writerMu.Unlock()
+
 	if err != nil {
 		state.mu.Lock()
 		delete(state.pending, reqID)

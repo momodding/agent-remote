@@ -305,8 +305,14 @@ func (s *Store) MigrateAgentID(oldID, newID string) error {
 	if _, err = tx.Exec(`UPDATE agent_sessions SET id = ? WHERE id = ?`, newID, oldID); err != nil {
 		return err
 	}
-	// ponytail: one OR condition covers agent.*, message.*, tool.* prefixes + exact canonical-state match
-	if _, err = tx.Exec(`UPDATE runtime_events SET surface_id = ? WHERE surface_id = ? AND (kind LIKE 'agent.%' OR kind LIKE 'message.%' OR kind LIKE 'tool.%' OR kind = 'agent.state')`, newID, oldID); err != nil {
+	if _, err = tx.Exec(`UPDATE agent_history SET agent_id = ? WHERE agent_id = ?`, newID, oldID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE transcript_state SET agent_id = ? WHERE agent_id = ?`, newID, oldID); err != nil {
+		return err
+	}
+	// ponytail: one OR condition covers agent.*, message.*, tool.* prefixes + exact canonical state event kind 'state'
+	if _, err = tx.Exec(`UPDATE runtime_events SET surface_id = ? WHERE surface_id = ? AND (kind LIKE 'agent.%' OR kind LIKE 'message.%' OR kind LIKE 'tool.%' OR kind = 'state')`, newID, oldID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -437,9 +443,11 @@ func (s *Store) RecordAgentTranscript(agentID string, events []AgentTranscriptEv
 		}
 		committed = append(committed, AgentTranscriptCommit{EventID: input.EventID, Event: Event{Cursor: cursor, SurfaceID: agentID, Kind: input.Kind, Payload: input.Payload, CreatedAt: time.Now().UTC()}})
 	}
-	_, err = tx.Exec(`INSERT INTO transcript_state (agent_id,transcript_path,file_offset,file_inode,file_size,file_mtime,boundary_fingerprint,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET transcript_path=excluded.transcript_path,file_offset=excluded.file_offset,file_inode=excluded.file_inode,file_size=excluded.file_size,file_mtime=excluded.file_mtime,boundary_fingerprint=excluded.boundary_fingerprint,updated_at=excluded.updated_at`, state.AgentID, state.TranscriptPath, state.FileOffset, state.FileInode, state.FileSize, state.FileMtime, state.BoundaryFingerprint, time.Now().Unix())
-	if err != nil {
-		return nil, err
+	if state.AgentID != "" && state.TranscriptPath != "" {
+		_, err = tx.Exec(`INSERT INTO transcript_state (agent_id,transcript_path,file_offset,file_inode,file_size,file_mtime,boundary_fingerprint,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET transcript_path=excluded.transcript_path,file_offset=excluded.file_offset,file_inode=excluded.file_inode,file_size=excluded.file_size,file_mtime=excluded.file_mtime,boundary_fingerprint=excluded.boundary_fingerprint,updated_at=excluded.updated_at`, state.AgentID, state.TranscriptPath, state.FileOffset, state.FileInode, state.FileSize, state.FileMtime, state.BoundaryFingerprint, time.Now().Unix())
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err

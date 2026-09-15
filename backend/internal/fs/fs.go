@@ -20,6 +20,7 @@ import (
 var (
 	ErrDestructiveDisabled = errors.New("destructive filesystem actions disabled")
 	ErrDestinationExists   = errors.New("destination exists")
+	ErrWorkspaceEscape     = errors.New("path escapes workspaceRoot")
 )
 
 type Service struct {
@@ -44,21 +45,35 @@ func NewService(workspaceRoot, uploadRoot string, allowDestructive bool) (*Servi
 	return &Service{WorkspaceRoot: workspaceAbs, UploadRoot: uploadAbs, AllowDestructiveFiles: allowDestructive}, nil
 }
 
-func (s *Service) Resolve(rel string) (string, string, error) {
+// ResolvePath validates that rel is a workspace-relative path that does not escape workspaceRoot,
+// resolving any symlinks against existing ancestors.
+func ResolvePath(workspaceRoot, rel string) (string, error) {
 	cleaned := filepath.Clean(filepath.FromSlash(rel))
 	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", "", errors.New("path escapes workspaceRoot")
+		return "", ErrWorkspaceEscape
 	}
 	if cleaned == "." {
 		cleaned = ""
 	}
-	candidate := filepath.Join(s.WorkspaceRoot, cleaned)
+	candidate := filepath.Join(workspaceRoot, cleaned)
 	resolved, err := resolveExistingPath(candidate)
+	if err != nil {
+		return "", err
+	}
+	if resolved != workspaceRoot && !strings.HasPrefix(resolved, workspaceRoot+string(filepath.Separator)) {
+		return "", ErrWorkspaceEscape
+	}
+	return resolved, nil
+}
+
+func (s *Service) Resolve(rel string) (string, string, error) {
+	resolved, err := ResolvePath(s.WorkspaceRoot, rel)
 	if err != nil {
 		return "", "", err
 	}
-	if resolved != s.WorkspaceRoot && !strings.HasPrefix(resolved, s.WorkspaceRoot+string(filepath.Separator)) {
-		return "", "", errors.New("path escapes workspaceRoot")
+	cleaned := filepath.Clean(filepath.FromSlash(rel))
+	if cleaned == "." {
+		cleaned = ""
 	}
 	return resolved, filepath.ToSlash(cleaned), nil
 }

@@ -374,3 +374,106 @@ func TestSameSocketGenerationRegression(t *testing.T) {
 		t.Fatalf("expected new generation after server recreation: gen1=%q, gen3=%q", gen1, gen3)
 	}
 }
+
+func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not found in PATH, skipping real tmux integration test")
+	}
+
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "tmux_state")
+	svc := NewControlClient(stateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("failed to start control client: %v", err)
+	}
+	defer svc.Close()
+
+	backendDetach, err := svc.CreatePane(ctx, "session-detach", "sh", []string{"-c", "sleep 100"}, stateDir, 80, 24)
+	if err != nil {
+		t.Fatalf("failed to create detach pane: %v", err)
+	}
+
+	backendTerm, err := svc.CreatePane(ctx, "session-term", "sh", []string{"-c", "sleep 100"}, stateDir, 80, 24)
+	if err != nil {
+		t.Fatalf("failed to create term pane: %v", err)
+	}
+
+	if err := svc.RefreshTopology(ctx); err != nil {
+		t.Fatalf("refresh topology failed: %v", err)
+	}
+	topo := svc.GetTopology()
+	var detachFound, termFound bool
+	for _, s := range topo.Sessions {
+		if s.Name == "session-detach" {
+			detachFound = true
+		}
+		if s.Name == "session-term" {
+			termFound = true
+		}
+	}
+	if !detachFound || !termFound {
+		t.Fatalf("expected both sessions created, detach=%v term=%v", detachFound, termFound)
+	}
+
+	// Close backendDetach (presentation detach)
+	if err := backendDetach.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if backendDetach.Alive() {
+		t.Fatalf("expected backendDetach.Alive() == false after Close()")
+	}
+
+	// Tmux server still has session-detach
+	if err := svc.RefreshTopology(ctx); err != nil {
+		t.Fatalf("refresh topology failed: %v", err)
+	}
+	topo = svc.GetTopology()
+	detachFound = false
+	for _, s := range topo.Sessions {
+		if s.Name == "session-detach" {
+			detachFound = true
+		}
+	}
+	if !detachFound {
+		t.Fatalf("session-detach should still exist in tmux after Close()")
+	}
+
+	// Terminate backendTerm (explicit kill)
+	if err := backendTerm.Terminate(ctx); err != nil {
+		t.Fatalf("Terminate failed: %v", err)
+	}
+	if backendTerm.Alive() {
+		t.Fatalf("expected backendTerm.Alive() == false after Terminate()")
+	}
+
+	// Tmux server must NOT have session-term
+	topo = svc.GetTopology()
+	termFound = false
+	for _, s := range topo.Sessions {
+		if s.Name == "session-term" {
+			termFound = true
+		}
+	}
+	if termFound {
+		t.Fatalf("session-term should be killed and gone from tmux after Terminate()")
+	}
+
+	// Now Terminate backendDetach to clean it up too
+	if err := backendDetach.Terminate(ctx); err != nil {
+		t.Fatalf("Terminate backendDetach failed: %v", err)
+	}
+	topo = svc.GetTopology()
+	detachFound = false
+	for _, s := range topo.Sessions {
+		if s.Name == "session-detach" {
+			detachFound = true
+		}
+	}
+	if detachFound {
+		t.Fatalf("session-detach should be killed and gone after Terminate()")
+	}
+}

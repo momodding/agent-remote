@@ -162,6 +162,32 @@ func (b *TmuxBackend) Close() error {
 	return nil
 }
 
+// Terminate explicitly kills the tmux session/pane and marks the backend closed.
+func (b *TmuxBackend) Terminate(ctx context.Context) error {
+	b.mu.Lock()
+	alreadyClosed := b.closed
+	b.closed = true
+	if !alreadyClosed {
+		close(b.done)
+	}
+	client := b.client
+	sessionID := b.sessionID
+	paneID := b.paneID
+	b.mu.Unlock()
+
+	if client == nil {
+		return nil
+	}
+	var killErr error
+	if sessionID != "" {
+		killErr = client.KillSession(ctx, sessionID)
+	} else if paneID != "" {
+		killErr = client.KillPane(ctx, paneID)
+	}
+	_ = client.RefreshTopology(ctx)
+	return killErr
+}
+
 // Alive reports if pane is still active.
 func (b *TmuxBackend) Alive() bool {
 	b.mu.RLock()
