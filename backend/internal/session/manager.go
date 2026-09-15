@@ -69,24 +69,26 @@ type subscriber struct {
 }
 
 type TerminalRuntime struct {
-	meta             Session
-	detector         detect.Detector
-	subs             []*subscriber
-	seq              int64
-	scrollback       string
-	scrollbackMu     sync.Mutex
-	plain            string
-	outbound         chan outboundMessage
-	backend          TerminalBackend
-	exitOnce         sync.Once
-	releaseAdmission sync.Once
-	enqueueMu        sync.Mutex
+	meta         Session
+	detector     detect.Detector
+	subs         []*subscriber
+	seq          int64
+	scrollback   string
+	scrollbackMu sync.Mutex
+	plain        string
+	outbound     chan outboundMessage
+	backend      TerminalBackend
+	exitOnce     sync.Once
+	hasAdmission atomic.Bool
+	enqueueMu    sync.Mutex
 }
+
 type outboundMessage struct {
 	output  *protocol.PTYOutputEnvelope
 	state   *protocol.SessionStateEnvelope
 	control bool
 }
+
 type Manager struct {
 	mu                 sync.Mutex
 	sessions           map[string]*TerminalRuntime
@@ -111,6 +113,62 @@ type Manager struct {
 
 func (m *Manager) SetMaxSessions(max int) {
 	m.maxSessions = int64(max)
+}
+
+func (m *Manager) claimAdmission(r *TerminalRuntime) error {
+	if r == nil {
+		return nil
+	}
+	if r.hasAdmission.Load() {
+		return nil
+	}
+	for {
+		current := m.activeSessions.Load()
+		if current < 0 {
+			m.activeSessions.Store(0)
+			current = 0
+		}
+		if m.maxSessions > 0 && current >= m.maxSessions {
+			return ErrTooManySessions
+		}
+		if m.activeSessions.CompareAndSwap(current, current+1) {
+			if r.hasAdmission.CompareAndSwap(false, true) {
+				return nil
+			}
+			m.decrementActiveSessions()
+			return nil
+		}
+	}
+}
+
+func (m *Manager) releaseAdmission(r *TerminalRuntime) {
+	if r == nil {
+		return
+	}
+	if r.hasAdmission.CompareAndSwap(true, false) {
+		m.decrementActiveSessions()
+	}
+}
+
+func (m *Manager) decrementActiveSessions() {
+	for {
+		current := m.activeSessions.Load()
+		if current <= 0 {
+			m.activeSessions.Store(0)
+			return
+		}
+		if m.activeSessions.CompareAndSwap(current, current-1) {
+			return
+		}
+	}
+}
+
+func (m *Manager) ActiveSessions() int64 {
+	val := m.activeSessions.Load()
+	if val < 0 {
+		return 0
+	}
+	return val
 }
 
 func (m *Manager) RuntimeStore() *runtimestore.Store {
@@ -147,7 +205,17 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 		_ = store.Close()
 		return nil, err
 	}
-	m := &Manager{sessions: map[string]*TerminalRuntime{}, defaultCWD: defaultCWD, stateDir: stateDir, workspaceRoot: workspaceAbs, maxScrollbackBytes: maxScrollbackBytes, channelBufferSize: channelBufferSize, notifier: notifier, runtime: store, maxSessions: 16}
+	m := &Manager{
+		sessions:           map[string]*TerminalRuntime{},
+		defaultCWD:         defaultCWD,
+		stateDir:           stateDir,
+		workspaceRoot:      workspaceAbs,
+		maxScrollbackBytes: maxScrollbackBytes,
+		channelBufferSize:  channelBufferSize,
+		notifier:           notifier,
+		runtime:            store,
+		maxSessions:        16,
+	}
 	m.recordTopology = m.recordTmuxTopology
 	if err := m.restore(); err != nil {
 		_ = store.Close()
@@ -155,6 +223,7 @@ func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes i
 	}
 	return m, nil
 }
+
 func commandWithEnv(command string, args []string, env map[string]string) (string, []string) {
 	if len(env) == 0 {
 		return command, args
@@ -236,6 +305,10 @@ func (m *Manager) ReconcileTmux(ctx context.Context) error {
 		if err != nil {
 			continue // pane no longer present; terminal stays exited
 		}
+		if err := m.claimAdmission(runtime); err != nil {
+			_ = backend.Close()
+			continue
+		}
 		var baseline []byte
 		if tb, ok := any(backend).(interface{ TakeBaseline() []byte }); ok {
 			baseline = tb.TakeBaseline()
@@ -267,22 +340,6 @@ func (m *Manager) ReconcileTmux(ctx context.Context) error {
 }
 
 func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest) (*protocol.SessionSummary, error) {
-	for {
-		current := m.activeSessions.Load()
-		if m.maxSessions > 0 && current >= m.maxSessions {
-			return nil, ErrTooManySessions
-		}
-		if m.activeSessions.CompareAndSwap(current, current+1) {
-			break
-		}
-	}
-	admitted := true
-	defer func() {
-		if admitted {
-			m.activeSessions.Add(-1)
-		}
-	}()
-
 	id, err := randomID()
 	if err != nil {
 		return nil, err
@@ -316,6 +373,33 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 	if rows <= 0 {
 		rows = 24
 	}
+
+	now := time.Now().UTC()
+	runtime := &TerminalRuntime{
+		meta: Session{
+			ID:        id,
+			Name:      req.Name,
+			Command:   command,
+			CWD:       cwd,
+			State:     StateRunning,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Preview:   []string{"> session created"},
+		},
+		scrollback: filepath.Join(m.stateDir, "sessions", id+".scrollback"),
+		outbound:   make(chan outboundMessage, m.channelBufferSize),
+	}
+
+	if err := m.claimAdmission(runtime); err != nil {
+		return nil, err
+	}
+	admitted := true
+	defer func() {
+		if admitted {
+			m.releaseAdmission(runtime)
+		}
+	}()
+
 	var backend TerminalBackend
 	switch req.Backend {
 	case "", "auto":
@@ -354,22 +438,7 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 	if tb, ok := any(backend).(interface{ TakeBaseline() []byte }); ok {
 		_ = tb.TakeBaseline()
 	}
-	now := time.Now().UTC()
-	runtime := &TerminalRuntime{
-		meta: Session{
-			ID:        id,
-			Name:      req.Name,
-			Command:   command,
-			CWD:       cwd,
-			State:     StateRunning,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Preview:   []string{"> session created"},
-		},
-		scrollback: filepath.Join(m.stateDir, "sessions", id+".scrollback"),
-		outbound:   make(chan outboundMessage, m.channelBufferSize),
-		backend:    backend,
-	}
+	runtime.backend = backend
 	if err := appendScrollback(runtime.scrollback, []byte("> session created\n"), m.maxScrollbackBytes); err != nil {
 		_ = backend.Close()
 		return nil, err
@@ -452,6 +521,7 @@ func (m *Manager) RuntimeSnapshot() (*runtimestore.Snapshot, error) { return m.r
 func (m *Manager) RuntimeEvents(after int64, limit int) ([]runtimestore.Event, int64, error) {
 	return m.runtime.Events(after, limit)
 }
+
 func (m *Manager) SubscribeRuntime(fn func(runtimestore.Event)) func() {
 	return m.runtime.Subscribe(fn)
 }
@@ -466,9 +536,7 @@ func (m *Manager) Shutdown() error {
 		}
 		m.mu.Unlock()
 		for _, runtime := range sessions {
-			runtime.releaseAdmission.Do(func() {
-				m.activeSessions.Add(-1)
-			})
+			m.releaseAdmission(runtime)
 			if runtime.backend != nil {
 				_ = runtime.backend.Close()
 			}
@@ -489,6 +557,7 @@ func (m *Manager) List(_ context.Context) []protocol.SessionSummary {
 	}
 	return out
 }
+
 func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error) {
 	m.mu.Lock()
 	runtime, ok := m.sessions[id]
@@ -503,7 +572,6 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 	sub := &subscriber{fn: fn, active: true, replaySeq: runtime.seq}
 	runtime.subs = append(runtime.subs, sub)
 	m.mu.Unlock()
-
 	// Holding the individual subscriber lock makes replay complete before a
 	// concurrent forward can deliver newer frames to this subscriber.
 	sub.mu.Lock()
@@ -513,7 +581,6 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 	}
 	sub.mu.Unlock()
 	runtime.scrollbackMu.Unlock()
-
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -525,7 +592,6 @@ func (m *Manager) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, proto
 				}
 			}
 			m.mu.Unlock()
-
 			sub.mu.Lock()
 			sub.active = false
 			sub.mu.Unlock()
@@ -584,9 +650,7 @@ func (m *Manager) TerminalTTY(id string) string {
 }
 
 func (m *Manager) cleanupRuntime(runtime *TerminalRuntime, closeBackend func() error) {
-	runtime.releaseAdmission.Do(func() {
-		m.activeSessions.Add(-1)
-	})
+	m.releaseAdmission(runtime)
 	if runtime.backend != nil && closeBackend != nil {
 		_ = closeBackend()
 	}
@@ -636,7 +700,8 @@ func (m *Manager) Terminate(ctx context.Context, id string) error {
 func (m *Manager) forward(runtime *TerminalRuntime) {
 	for msg := range runtime.outbound {
 		m.mu.Lock()
-		subs := append([]*subscriber(nil), runtime.subs...)
+		subs := make([]*subscriber, len(runtime.subs))
+		copy(subs, runtime.subs)
 		m.mu.Unlock()
 		for _, sub := range subs {
 			sub.mu.Lock()
@@ -675,7 +740,6 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 	defer runtime.scrollbackMu.Unlock()
 	_ = appendScrollback(runtime.scrollback, chunk, m.maxScrollbackBytes)
 	plain := detect.StripANSI(string(chunk))
-
 	stateChanged := false
 	m.mu.Lock()
 	runtime.seq++
@@ -693,7 +757,6 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 		stateChanged = true
 	}
 	m.mu.Unlock()
-
 	if wait != nil {
 		m.notify(runtime, wait)
 		m.emitState(runtime)
@@ -705,9 +768,7 @@ func (m *Manager) recordOutput(runtime *TerminalRuntime, chunk []byte) {
 }
 
 func (m *Manager) markExited(runtime *TerminalRuntime) {
-	runtime.releaseAdmission.Do(func() {
-		m.activeSessions.Add(-1)
-	})
+	m.releaseAdmission(runtime)
 	runtime.exitOnce.Do(func() {
 		m.mu.Lock()
 		wait := runtime.detector.Exited()
@@ -823,20 +884,9 @@ func (m *Manager) saveMetadata() error {
 }
 
 func appendScrollback(path string, chunk []byte, limit int64) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(chunk); err != nil {
-		file.Close()
-		return err
-	}
-	file.Close()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	trimmed := truncateFront(data, limit)
+	data, _ := os.ReadFile(path)
+	combined := append(data, chunk...)
+	trimmed := truncateFront(combined, limit)
 	if len(trimmed) == len(data) {
 		return nil
 	}
@@ -923,7 +973,7 @@ func AvailableShells() []string {
 		shells = append(shells, line)
 	}
 	if len(shells) == 0 {
-		// ponytail: /etc/shells missing entries on minimal containers — fall back rather than return empty.
+		// ponytail: /etc/shells missing entries on minimal containers — fall back rather than error
 		return []string{defaultShell()}
 	}
 	return shells

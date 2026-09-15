@@ -937,3 +937,329 @@ func TestGoldenFlowPhase1to4(t *testing.T) {
 	t.Log("ALL 19 STEPS OF GF-PHASE-1-4 GOLDEN FLOW COMPLETED SUCCESSFULLY!")
 	t.Log("========================================================================")
 }
+
+// TestRealDaemonRestartTmuxCapacityOwnership proves RAR-034:
+// With max_sessions: 1, creating Agent A, killing daemon (SIGTERM), and restarting daemon
+// reattaches Agent A into running state and claims the 1 admission slot.
+// Attempting to create Agent B while Agent A is restored/running MUST fail with HTTP 429 / max_sessions.
+// Explicitly terminating Agent A releases the slot, and creating Agent B succeeds (HTTP 201).
+func TestRealDaemonRestartTmuxCapacityOwnership(t *testing.T) {
+	modelsFile := os.Getenv("AGENTICREMOTE_OMP_MODELS_FILE")
+	if modelsFile == "" {
+		modelsFile = filepath.Join(os.Getenv("HOME"), ".omp", "agent", "models.yml")
+	}
+	if _, err := os.Stat(modelsFile); err != nil {
+		t.Skipf("models file %s not found: %v", modelsFile, err)
+	}
+	if _, err := exec.LookPath("omp"); err != nil {
+		t.Skip("installed omp binary required")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("installed tmux binary required")
+	}
+
+	modelsData, err := os.ReadFile(modelsFile)
+	if err != nil {
+		t.Fatalf("read models file: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	piDir := filepath.Join(tempDir, "omp_home")
+	if err := os.MkdirAll(piDir, 0o700); err != nil {
+		t.Fatalf("mkdir piDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "models.yml"), modelsData, 0o600); err != nil {
+		t.Fatalf("write models.yml: %v", err)
+	}
+
+	workspaceRoot := filepath.Join(tempDir, "workspace")
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "project1"), 0o755); err != nil {
+		t.Fatalf("mkdir project1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "project1", "sample.txt"), []byte("sample project file"), 0o644); err != nil {
+		t.Fatalf("write sample.txt: %v", err)
+	}
+
+	stateDir := filepath.Join(tempDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("mkdir stateDir: %v", err)
+	}
+
+	pairingStore, err := security.LoadPairingStore(stateDir)
+	if err != nil {
+		t.Fatalf("load pairing store: %v", err)
+	}
+	port := getFreePort(t)
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	endpoint := fmt.Sprintf("https://%s", listenAddr)
+
+	pairingPayload, err := pairingStore.Create(endpoint, "AA:BB", true, 2*time.Hour, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create pairing: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.ListenAddr = listenAddr
+	cfg.ListenScheme = "https"
+	cfg.PublicEndpoint = endpoint
+	cfg.StateDir = "state"
+	cfg.WorkspaceRoot = "workspace"
+	cfg.UploadDir = "uploads"
+	cfg.MaxSessions = 1 // Enforce capacity limit = 1
+	cfg.TerminalBackend = "tmux"
+	cfg.SkipFingerprintVerification = true
+	cfg.PairingRotationSeconds = 300
+
+	configPath := filepath.Join(tempDir, "config.json")
+	cfgData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(configPath, cfgData, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmdBuild := exec.Command("go", "build", "-o", filepath.Join(tempDir, "agenticRemote"), "../../cmd/agenticRemote")
+	buildOut, err := cmdBuild.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build agenticRemote failed: %v, output: %s", err, string(buildOut))
+	}
+	binPath := filepath.Join(tempDir, "agenticRemote")
+
+	var daemonCmd *exec.Cmd
+	startDaemon := func() *exec.Cmd {
+		cmd := exec.Command(binPath, "serve", "-config", configPath)
+		cmd.Dir = tempDir
+		cmd.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+piDir)
+		logPath := filepath.Join(tempDir, fmt.Sprintf("daemon_%d.log", time.Now().UnixNano()))
+		logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("failed to start daemon: %v", err)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			conn, err := net.DialTimeout("tcp", listenAddr, 100*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return cmd
+	}
+
+	t.Cleanup(func() {
+		if daemonCmd != nil && daemonCmd.Process != nil {
+			_ = daemonCmd.Process.Kill()
+		}
+		if t.Failed() {
+			logs, _ := filepath.Glob(filepath.Join(tempDir, "daemon_*.log"))
+			for _, logFile := range logs {
+				data, _ := os.ReadFile(logFile)
+				t.Logf("=== DAEMON LOG (%s) ===\n%s\n", filepath.Base(logFile), string(data))
+			}
+		}
+	})
+
+	daemonCmd = startDaemon()
+	daemonPID := daemonCmd.Process.Pid
+	t.Logf("Daemon 1 running with PID %d (MaxSessions=1)", daemonPID)
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Timeout: 15 * time.Second,
+	}
+
+	// Authenticate client
+	wsURL := fmt.Sprintf("wss://%s/v1/ws/sessions/bootstrap", listenAddr)
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer wsCancel()
+	wsConn, _, err := websocket.Dial(wsCtx, wsURL, &websocket.DialOptions{
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("websocket dial bootstrap: %v", err)
+	}
+
+	clientNonce := strings.Repeat("B", 43)
+	if err := wsWriteJSONHelper(wsCtx, wsConn, map[string]any{
+		"type":        "auth.hello",
+		"pairingId":   pairingPayload.PairingID,
+		"clientNonce": clientNonce,
+		"clientName":  "GF-Auditor",
+	}); err != nil {
+		t.Fatalf("ws write auth.hello: %v", err)
+	}
+	var challenge map[string]any
+	if err := wsReadJSONHelper(wsCtx, wsConn, &challenge); err != nil {
+		t.Fatalf("ws read challenge: %v", err)
+	}
+	proof, err := security.ClientProof(
+		pairingPayload.Token,
+		pairingPayload.PairingID,
+		challenge["salt"].(string),
+		clientNonce,
+		challenge["serverNonce"].(string),
+		challenge["challengeId"].(string),
+	)
+	if err != nil {
+		t.Fatalf("compute proof: %v", err)
+	}
+	if err := wsWriteJSONHelper(wsCtx, wsConn, map[string]any{
+		"type":        "auth.proof",
+		"pairingId":   pairingPayload.PairingID,
+		"challengeId": challenge["challengeId"],
+		"proof":       proof,
+	}); err != nil {
+		t.Fatalf("ws write auth.proof: %v", err)
+	}
+	var authOk map[string]any
+	if err := wsReadJSONHelper(wsCtx, wsConn, &authOk); err != nil {
+		t.Fatalf("ws read auth.ok: %v", err)
+	}
+	sessionToken, ok := authOk["sessionToken"].(string)
+	if !ok || sessionToken == "" {
+		t.Fatalf("expected sessionToken in auth.ok: %+v", authOk)
+	}
+	_ = wsConn.Close(websocket.StatusNormalClosure, "")
+	// Step 1: Create Agent A with tmux backend -> verify 1 OMP PID
+	createBodyA, _ := json.Marshal(protocol.CreateSessionRequest{
+		CWD:     "project1",
+		Name:    "Agent A",
+		Backend: "tmux",
+	})
+	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/agents", endpoint), bytes.NewReader(createBodyA))
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create Agent A failed: %v", err)
+	}
+	var agentA protocol.AgentSession
+	_ = json.NewDecoder(resp.Body).Decode(&agentA)
+	resp.Body.Close()
+	agentIDA := agentA.ID
+
+	time.Sleep(1 * time.Second)
+	ompPIDA := findOMPPIDForAgent(t, agentIDA)
+	t.Logf("Agent A created: %s, OMP PID: %d", agentIDA, ompPIDA)
+
+	// Step 2: Kill ONLY daemon PID (SIGTERM), verify OMP/tmux process survives
+	if err := daemonCmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("kill daemon 1: %v", err)
+	}
+	_ = daemonCmd.Wait()
+	t.Logf("Daemon 1 (PID %d) stopped", daemonPID)
+
+	if !isPIDAlive(ompPIDA) {
+		t.Fatalf("OMP PID %d died when daemon stopped! Persistent tmux pane failed.", ompPIDA)
+	}
+	t.Logf("OMP PID %d verified alive during daemon downtime", ompPIDA)
+
+	// Step 3: Restart daemon, wait for reconciliation -> Agent A restored/running
+	daemonCmd = startDaemon()
+	daemonPID2 := daemonCmd.Process.Pid
+	t.Logf("Daemon 2 restarted with PID %d", daemonPID2)
+
+	// Wait for Agent A to be restored and active
+	deadline := time.Now().Add(15 * time.Second)
+	var restoredActive bool
+	for time.Now().Before(deadline) {
+		req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/agents/%s", endpoint, agentIDA), nil)
+		req.Header.Set("Authorization", "Bearer "+sessionToken)
+		resp, err = httpClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var ag protocol.AgentSession
+			_ = json.NewDecoder(resp.Body).Decode(&ag)
+			resp.Body.Close()
+			if ag.State != "exited" && ag.State != "" {
+				restoredActive = true
+				break
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !restoredActive {
+		t.Fatalf("Agent A not restored to active state within deadline")
+	}
+	t.Logf("Agent A %s restored to active state", agentIDA)
+	// Step 4: Attempt to create Agent B -> MUST receive HTTP 429 / max_sessions error
+	createBodyB, _ := json.Marshal(protocol.CreateSessionRequest{
+		CWD:     "project1",
+		Name:    "Agent B",
+		Backend: "tmux",
+	})
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/agents", endpoint), bytes.NewReader(createBodyB))
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("create Agent B request error: %v", err)
+	}
+	bData, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected HTTP 429 Too Many Requests when max_sessions=1 and restored agent running, got %d (body: %s)", resp.StatusCode, string(bData))
+	}
+	var errEnv protocol.ErrorEnvelope
+	if err := json.Unmarshal(bData, &errEnv); err != nil {
+		t.Fatalf("unmarshal error envelope: %v", err)
+	}
+	if errEnv.Code != "max_sessions" {
+		t.Fatalf("expected error code 'max_sessions', got %q", errEnv.Code)
+	}
+	t.Logf("Create Agent B correctly rejected with HTTP 429 (code: %s)", errEnv.Code)
+
+	// Step 5: Explicitly terminate Agent A -> verify old OMP PID exits
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/agents/%s/terminate", endpoint, agentIDA), nil)
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	resp, err = httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("terminate Agent A failed: %v", err)
+	}
+	resp.Body.Close()
+
+	killDeadline := time.Now().Add(10 * time.Second)
+	var ompDead bool
+	for time.Now().Before(killDeadline) {
+		if !isPIDAlive(ompPIDA) {
+			ompDead = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ompDead {
+		t.Fatalf("OMP PID %d still alive after terminating Agent A", ompPIDA)
+	}
+	t.Logf("Agent A terminated and OMP PID %d exited", ompPIDA)
+
+	// Step 6: Create Agent B -> MUST succeed (201 Created)
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/agents", endpoint), bytes.NewReader(createBodyB))
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create Agent B after terminating Agent A failed: %v (status: %d)", err, resp.StatusCode)
+	}
+	var agentB protocol.AgentSession
+	_ = json.NewDecoder(resp.Body).Decode(&agentB)
+	resp.Body.Close()
+	agentIDB := agentB.ID
+
+	time.Sleep(1 * time.Second)
+	ompPIDB := findOMPPIDForAgent(t, agentIDB)
+	t.Logf("Agent B created: %s, OMP PID: %d", agentIDB, ompPIDB)
+
+	// Cleanup Agent B
+	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v1/agents/%s/terminate", endpoint, agentIDB), nil)
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	resp, _ = httpClient.Do(req)
+	resp.Body.Close()
+}

@@ -108,7 +108,7 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 	size := info.Size()
 	mtime := info.ModTime().UnixNano()
 	if t.lastInode != 0 && (stat.Ino != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime != t.lastMtime && size == t.lastSize)) {
-		t.offset, t.pending, t.seen = 0, nil, map[string]struct{}{}
+		t.offset, t.pending, t.seen, t.fingerprint = 0, nil, map[string]struct{}{}, ""
 	}
 	t.lastInode = stat.Ino
 	t.lastSize = size
@@ -134,16 +134,13 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	oldPendingLen := int64(len(t.pending))
-	data = append(t.pending, data...)
 	lastNewline := bytes.LastIndexByte(data, '\n')
 	if lastNewline < 0 {
 		t.pending = data
 		return nil, nil
 	}
 	lines := bytes.Split(data[:lastNewline], []byte("\n"))
-	t.offset += int64(len(data)) - oldPendingLen
+	t.offset += int64(lastNewline + 1)
 	t.pending = append(t.pending[:0], data[lastNewline+1:]...)
 	events := make([]protocol.AgentEvent, 0, len(lines))
 	for _, line := range lines {

@@ -440,6 +440,13 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(piDir, "models.yml"), models, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	agentState := filepath.Join(t.TempDir(), "agent-state")
+	if err := os.MkdirAll(agentState, 0o700); err != nil {
+		t.Fatalf("mkdir agentState: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentState, "models.yml"), models, 0o600); err != nil {
+		t.Fatalf("write models.yml to agentState: %v", err)
+	}
 	t.Setenv("PI_CODING_AGENT_DIR", piDir)
 	ompPID := func() string {
 		output, err := exec.Command("ps", "-o", "pid=,ppid=,comm=", "-e").Output()
@@ -461,7 +468,6 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentState := t.TempDir()
 	store, err := runtimestore.Open(agentState)
 	if err != nil {
 		t.Fatal(err)

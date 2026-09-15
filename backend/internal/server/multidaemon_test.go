@@ -77,13 +77,16 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 	port := getFreePort(t)
 	cfg := config.Default()
 	cfg.ListenAddr = fmt.Sprintf("127.0.0.1:%d", port)
-	cfg.PublicEndpoint = fmt.Sprintf("https://127.0.0.1:%d", port)
+	cfg.PublicEndpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
 	cfg.StateDir = "state"
 	cfg.WorkspaceRoot = "workspace"
-	cfg.SkipFingerprintVerification = true
 	cfg.PairingPageUsername = "admin"
 	cfg.PairingPagePassword = "password"
-	cfg.TerminalBackend = "pty"
+	terminalBackend := "pty"
+	if _, err := exec.LookPath("tmux"); err == nil {
+		terminalBackend = "tmux"
+	}
+	cfg.TerminalBackend = terminalBackend
 	cfgPath := filepath.Join(dir, "config.json")
 	cfgData, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -94,14 +97,17 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 	}
 
 	cmd := exec.Command(binPath, "serve", "--config", cfgPath)
+	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var logBuf bytes.Buffer
-	cmd.Stdout = &logBuf
-	cmd.Stderr = &logBuf
-
+	logPath := filepath.Join(dir, fmt.Sprintf("daemon_%s.log", name))
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		t.Fatalf("start daemon %s failed: %v", name, err)
 	}
+	_ = logFile.Close()
 
 	d := &testDaemon{
 		cmd:      cmd,
@@ -117,6 +123,7 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 	deadline := time.Now().Add(10 * time.Second)
 	ready := false
 	client := &http.Client{Timeout: 1 * time.Second}
+	var lastErr error
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, d.baseURL+"/pairing", nil)
 		req.SetBasicAuth("admin", "password")
@@ -128,13 +135,15 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 				ready = true
 				break
 			}
+		} else {
+			lastErr = err
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
 	if !ready {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		t.Fatalf("daemon %s did not become ready in 10s. Logs:\n%s", name, logBuf.String())
+		logData, _ := os.ReadFile(logPath)
+		t.Fatalf("daemon %s did not become ready in 10s (last probe err: %v). Logs:\n%s", name, lastErr, string(logData))
 	}
 	t.Cleanup(func() {
 		if d.cmd != nil && d.cmd.Process != nil {
@@ -143,6 +152,41 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 		}
 	})
 	return d
+}
+
+func restartTestDaemon(t *testing.T, binPath string, d *testDaemon) {
+	t.Helper()
+	cmd := exec.Command(binPath, "serve", "--config", d.cfgPath)
+	cmd.Dir = d.dir
+	logPath := filepath.Join(d.dir, fmt.Sprintf("daemon_restart_%d.log", time.Now().UnixNano()))
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("restart daemon failed: %v", err)
+	}
+	d.cmd = cmd
+	deadline := time.Now().Add(10 * time.Second)
+	ready := false
+	client := &http.Client{Timeout: 1 * time.Second}
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, d.baseURL+"/v1/agents", nil)
+		req.Header.Set("Authorization", "Bearer "+d.token)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		logData, _ := os.ReadFile(logPath)
+		t.Fatalf("daemon did not restart in 10s. Logs:\n%s", string(logData))
+	}
 }
 
 func pairDaemon(t *testing.T, d *testDaemon) {
@@ -283,12 +327,17 @@ func TestMultiDaemonIsolation(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
+	terminalBackend := "pty"
+	if _, err := exec.LookPath("tmux"); err == nil {
+		terminalBackend = "tmux"
+	}
+
 	// Step 3: Create an Agent session on Daemon A and an Agent session on Daemon B
 	createAgent := func(d *testDaemon, name string) *protocol.AgentSession {
 		reqBody, _ := json.Marshal(protocol.CreateSessionRequest{
 			Name:    name,
 			CWD:     d.workDir,
-			Backend: "pty",
+			Backend: terminalBackend,
 		})
 		req, _ := http.NewRequest(http.MethodPost, d.baseURL+"/v1/agents", bytes.NewReader(reqBody))
 		req.Header.Set("Authorization", "Bearer "+d.token)
@@ -559,6 +608,123 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		t.Logf("PASS 4f: SQLite stores are isolated files (%s and %s) with 0 shared rows", dbPathA, dbPathB)
 	}
 
+	// 4g: Independent tmux private sockets
+	if terminalBackend == "tmux" {
+		sockA := filepath.Join(dA.stateDir, "tmux", "tmux.sock")
+		sockB := filepath.Join(dB.stateDir, "tmux", "tmux.sock")
+		if sockA == sockB {
+			t.Fatalf("tmux sockets must be distinct: %s vs %s", sockA, sockB)
+		}
+		if _, err := os.Stat(sockA); err != nil {
+			t.Fatalf("Daemon A tmux socket not found: %v", err)
+		}
+		if _, err := os.Stat(sockB); err != nil {
+			t.Fatalf("Daemon B tmux socket not found: %v", err)
+		}
+		tmuxPath, _ := exec.LookPath("tmux")
+		outA, errA := exec.Command(tmuxPath, "-S", sockA, "list-panes", "-a").CombinedOutput()
+		outB, errB := exec.Command(tmuxPath, "-S", sockB, "list-panes", "-a").CombinedOutput()
+		if errA != nil {
+			t.Fatalf("tmux list-panes on sockA failed: %v, out: %s", errA, string(outA))
+		}
+		if errB != nil {
+			t.Fatalf("tmux list-panes on sockB failed: %v, out: %s", errB, string(outB))
+		}
+		t.Logf("PASS 4g: Independent tmux private sockets verified (%s vs %s)", sockA, sockB)
+	}
+
+	// 4h: Cross-daemon WebSocket runtime event channel isolation
+	{
+		ctxWS, cancelWS := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelWS()
+
+		// Dial WS on Daemon A
+		wsA, _, err := websocket.Dial(ctxWS, fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/runtime", dA.port), nil)
+		if err != nil {
+			t.Fatalf("failed to dial runtime WS on A: %v", err)
+		}
+		defer wsA.Close(websocket.StatusNormalClosure, "")
+		if err := wsjson.Write(ctxWS, wsA, protocol.AuthToken{Type: "auth.token", Token: dA.token}); err != nil {
+			t.Fatal(err)
+		}
+		if err := wsjson.Write(ctxWS, wsA, protocol.ChannelOpenEnvelope{
+			Type:      "channel.open",
+			RequestID: "req-ws-a",
+			ChannelID: "ch-ws-a",
+			Kind:      "runtime",
+			TargetID:  "runtime",
+			After:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Dial WS on Daemon B
+		wsB, _, err := websocket.Dial(ctxWS, fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/runtime", dB.port), nil)
+		if err != nil {
+			t.Fatalf("failed to dial runtime WS on B: %v", err)
+		}
+		defer wsB.Close(websocket.StatusNormalClosure, "")
+		if err := wsjson.Write(ctxWS, wsB, protocol.AuthToken{Type: "auth.token", Token: dB.token}); err != nil {
+			t.Fatal(err)
+		}
+		if err := wsjson.Write(ctxWS, wsB, protocol.ChannelOpenEnvelope{
+			Type:      "channel.open",
+			RequestID: "req-ws-b",
+			ChannelID: "ch-ws-b",
+			Kind:      "runtime",
+			TargetID:  "runtime",
+			After:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Read events on WS A and ensure no Agent B leakage
+		for range 5 {
+			var evA map[string]any
+			readCtx, rCancel := context.WithTimeout(ctxWS, 300*time.Millisecond)
+			err := wsjson.Read(readCtx, wsA, &evA)
+			rCancel()
+			if err != nil {
+				break
+			}
+			evBytes, _ := json.Marshal(evA)
+			if strings.Contains(string(evBytes), agentB.ID) {
+				t.Fatalf("LEAK: WS A received event referencing Agent B: %s", string(evBytes))
+			}
+		}
+
+		// Read events on WS B and ensure no Agent A leakage
+		for range 5 {
+			var evB map[string]any
+			readCtx, rCancel := context.WithTimeout(ctxWS, 300*time.Millisecond)
+			err := wsjson.Read(readCtx, wsB, &evB)
+			rCancel()
+			if err != nil {
+				break
+			}
+			evBytes, _ := json.Marshal(evB)
+			if strings.Contains(string(evBytes), agentA.ID) {
+				t.Fatalf("LEAK: WS B received event referencing Agent A: %s", string(evBytes))
+			}
+		}
+		t.Logf("PASS 4h: WebSocket runtime event streams strictly isolated with zero cross-daemon contamination")
+	}
+
+	// 4i: Cross-daemon cursor query scoping
+	{
+		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/runtime/events?after=100", dB.baseURL), nil)
+		req.Header.Set("Authorization", "Bearer "+dB.token)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(bodyBytes), agentA.ID) {
+			t.Fatalf("LEAK: Daemon B returned event containing Agent A ID: %s", string(bodyBytes))
+		}
+		t.Logf("PASS 4i: Cursor scoping strictly isolated within daemon boundaries")
+	}
 	// Step 5: Reconnect to Daemon A and verify Daemon B is completely unaffected
 	{
 		t.Logf("Testing reconnection to Daemon A...")
@@ -649,13 +815,42 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		}
 
 		t.Logf("PASS 6: Daemon B remains fully operational and responsive after Daemon A was killed")
+		// Restart Daemon A and confirm Daemon B state is untouched
+		t.Logf("Restarting Daemon A to verify Daemon B state preservation...")
+		restartTestDaemon(t, binPath, dA)
+		t.Logf("Daemon A restarted with PID %d", dA.cmd.Process.Pid)
+
+		// Verify Daemon B is STILL healthy after Daemon A restart
+		bReq, _ := http.NewRequest(http.MethodGet, dB.baseURL+"/v1/agents/"+agentB.ID, nil)
+		bReq.Header.Set("Authorization", "Bearer "+dB.token)
+		bResp, bErr := client.Do(bReq)
+		if bErr != nil || bResp.StatusCode != http.StatusOK {
+			t.Fatalf("Daemon B agent check failed after Daemon A restart: %v", bErr)
+		}
+		bResp.Body.Close()
+
+		// Verify restarted Daemon A reconciles and responds
+		aReq, _ := http.NewRequest(http.MethodGet, dA.baseURL+"/v1/agents", nil)
+		aReq.Header.Set("Authorization", "Bearer "+dA.token)
+		aResp, aErr := client.Do(aReq)
+		if aErr != nil || aResp.StatusCode != http.StatusOK {
+			t.Fatalf("Daemon A list agents failed after restart: %v", aErr)
+		}
+		aResp.Body.Close()
+		t.Logf("PASS 6b: Daemon A restarted successfully; Daemon B remained completely isolated and healthy throughout")
+
+		t.Logf("PASS 6: Daemon B remains fully operational and responsive after Daemon A was killed and restarted")
 	}
 
 	// Step 7: Cleanup
-	t.Logf("Cleaning up Daemon B (PID %d)...", dB.cmd.Process.Pid)
-	pidBToKill := dB.cmd.Process.Pid
-	_ = syscall.Kill(-pidBToKill, syscall.SIGKILL)
-	_ = dB.cmd.Process.Kill()
-	dB.cmd = nil
+	t.Logf("Cleaning up daemons...")
+	if dA.cmd != nil && dA.cmd.Process != nil {
+		_ = syscall.Kill(-dA.cmd.Process.Pid, syscall.SIGKILL)
+		_ = dA.cmd.Process.Kill()
+	}
+	if dB.cmd != nil && dB.cmd.Process != nil {
+		_ = syscall.Kill(-dB.cmd.Process.Pid, syscall.SIGKILL)
+		_ = dB.cmd.Process.Kill()
+	}
 	t.Logf("PASS 7: Cleaned up all processes successfully")
 }

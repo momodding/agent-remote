@@ -323,6 +323,7 @@ func serve(configPath string) error {
 	if err != nil {
 		return err
 	}
+	manager.SetMaxSessions(cfg.MaxSessions)
 	defer manager.Shutdown()
 	var tmuxClient *tmux.ControlClient
 	if cfg.TerminalBackend != "pty" {
