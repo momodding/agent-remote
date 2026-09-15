@@ -248,6 +248,9 @@ type runtimeEventsPayload struct {
 }
 
 func TestMultiDaemonIsolation(t *testing.T) {
+	if _, err := exec.LookPath("omp"); err != nil {
+		t.Skip("installed omp binary required for agent creation in multi-daemon test")
+	}
 	// Build binary
 	binPath := buildDaemonBinary(t)
 
