@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as net from "node:net";
 type ThinkingLevelParam = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
@@ -49,6 +50,9 @@ export default function (pi: ExtensionAPI) {
 	const socketPath = process.env.AGENTIC_REMOTE_BRIDGE_SOCKET;
 	const agentId = process.env.AGENTIC_REMOTE_BRIDGE_AGENT_ID;
 	const secret = process.env.AGENTIC_REMOTE_BRIDGE_SECRET;
+	try {
+		fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] bridge.ts init: socketPath=${socketPath}, agentId=${agentId}, secret=${secret}\n`);
+	} catch {}
 
 	if (!socketPath || !agentId || !secret) {
 		return;
@@ -143,6 +147,11 @@ export default function (pi: ExtensionAPI) {
 				const success = await pi.setModel(target);
 				if (success) {
 					sendResult(requestId, true);
+					const meta = getModelMetadata(latestCtx);
+					sendFrame({
+						type: "metadata",
+						...meta,
+					});
 				} else {
 					sendResult(requestId, false, "setModel returned false");
 				}
@@ -153,10 +162,12 @@ export default function (pi: ExtensionAPI) {
 				let levelStr = "";
 				if (typeof args === "string") {
 					levelStr = args;
-				} else if (args && typeof args === "object" && "level" in args && typeof (args as { level: unknown }).level === "string") {
-					levelStr = (args as { level: string }).level;
-				} else if (args && typeof args === "object" && "thinkingLevel" in args && typeof (args as { thinkingLevel: unknown }).thinkingLevel === "string") {
-					levelStr = (args as { thinkingLevel: string }).thinkingLevel;
+				} else if (args && typeof args === "object") {
+					if ("level" in args && typeof args.level === "string") {
+						levelStr = args.level;
+					} else if ("thinkingLevel" in args && typeof args.thinkingLevel === "string") {
+						levelStr = args.thinkingLevel;
+					}
 				}
 				if (!levelStr) {
 					sendResult(requestId, false, "thinking level missing");
@@ -164,9 +175,13 @@ export default function (pi: ExtensionAPI) {
 				}
 				pi.setThinkingLevel(levelStr as ThinkingLevelParam);
 				sendResult(requestId, true);
+				const meta = getModelMetadata(latestCtx);
+				sendFrame({
+					type: "metadata",
+					...meta,
+				});
 				return;
 			}
-
 			sendResult(requestId, false, `unknown command: ${command}`);
 		} catch (err: unknown) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
@@ -392,16 +407,61 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function getModelMetadata(ctx?: ExtensionContext) {
+		const context = ctx || latestCtx;
+		let currentModel: { id: string; name: string; provider: string } | undefined;
+		let availableModels: Array<{ id: string; name: string; provider: string }> = [];
+
+		if (context?.models) {
+			if (typeof context.models.current === "function") {
+				const curr = context.models.current();
+				if (curr) {
+					currentModel = {
+						id: curr.id,
+						name: curr.name || curr.id,
+						provider: curr.provider || "",
+					};
+				}
+			}
+			if (typeof context.models.list === "function") {
+				const list = context.models.list() || [];
+				availableModels = list.map((m) => ({
+					id: m.id,
+					name: m.name || m.id,
+					provider: m.provider || "",
+				}));
+			}
+		}
+
+		let thinking: string | undefined;
+		if (typeof pi.getThinkingLevel === "function") {
+			thinking = pi.getThinkingLevel();
+		}
+
+		const availableThinking = ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+		return {
+			model: currentModel,
+			thinking,
+			availableModels,
+			availableThinking,
+		};
+	}
+
 	function sendHello(ctx: ExtensionContext) {
 		if (!socket || !isConnected) return;
-		const sessionId = ctx.sessionManager.getSessionId() || "";
-		const sessionFile = ctx.sessionManager.getSessionFile() || "";
+		const sessionId = ctx.sessionManager?.getSessionId?.() || "";
+		const sessionFile = ctx.sessionManager?.getSessionFile?.() || "";
 		if (!initialSessionId && sessionId) {
 			initialSessionId = sessionId;
 		}
 		if (!initialSessionFile && sessionFile) {
 			initialSessionFile = sessionFile;
 		}
+		const meta = getModelMetadata(ctx);
+		try {
+			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] sendHello: sessionId=${sessionId}, sessionFile=${sessionFile}\n`);
+		} catch {}
 		sendFrame({
 			type: "hello",
 			agentId,
@@ -409,6 +469,7 @@ export default function (pi: ExtensionAPI) {
 			sessionId,
 			sessionFile,
 			capabilities: ["prompt", "abort", "model", "thinking"],
+			...meta,
 		});
 	}
 
@@ -423,8 +484,14 @@ export default function (pi: ExtensionAPI) {
 
 	function connect() {
 		if (socket || !socketPath) return;
-		socket = net.createConnection(socketPath);
+		try {
+			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] connect() starting to ${socketPath}\n`);
+		} catch {}
+		socket = net.createConnection({ path: socketPath });
 		socket.on("connect", () => {
+			try {
+				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket onConnect, latestCtx=${!!latestCtx}\n`);
+			} catch {}
 			isConnected = true;
 			retryDelayMs = 100;
 			if (latestCtx) {
@@ -456,11 +523,17 @@ export default function (pi: ExtensionAPI) {
 			}
 		});
 
-		socket.on("error", () => {
+		socket.on("error", (err) => {
+			try {
+				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket error: ${err}\n`);
+			} catch {}
 			socket?.destroy();
 		});
 
 		socket.on("close", () => {
+			try {
+				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket close\n`);
+			} catch {}
 			isConnected = false;
 			socket = null;
 			scheduleReconnect();
@@ -468,6 +541,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		try {
+			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] session_start event fired\n`);
+		} catch {}
 		latestCtx = ctx;
 		emittedEntryIds.clear();
 		emitNewEntries(ctx.sessionManager);

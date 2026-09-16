@@ -81,6 +81,7 @@ type TerminalRuntime struct {
 	exitOnce     sync.Once
 	hasAdmission atomic.Bool
 	enqueueMu    sync.Mutex
+	termMu       sync.Mutex
 }
 
 type outboundMessage struct {
@@ -181,6 +182,24 @@ func (m *Manager) TmuxAvailable() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.useTmux && m.tmuxClient != nil
+}
+
+// WorkspaceRoot returns the absolute, symlink-resolved workspace root directory.
+func (m *Manager) WorkspaceRoot() string {
+	return m.workspaceRoot
+}
+
+// ToWorkspaceRelative converts an absolute path inside workspaceRoot to a relative path.
+// Root path returns "". Paths outside workspaceRoot return "".
+func (m *Manager) ToWorkspaceRelative(absPath string) string {
+	if absPath == "" || m.workspaceRoot == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(m.workspaceRoot, absPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func NewManager(defaultCWD, stateDir, workspaceRoot string, maxScrollbackBytes int64, channelBufferSize int, notifier notify.Notifier) (*Manager, error) {
@@ -364,7 +383,7 @@ func (m *Manager) Create(ctx context.Context, req protocol.CreateSessionRequest)
 		}
 		cwd = resolved
 	} else {
-		cwd = m.defaultCWD
+		cwd = m.workspaceRoot
 	}
 	cols, rows := req.Cols, req.Rows
 	if cols <= 0 {
@@ -649,13 +668,16 @@ func (m *Manager) TerminalTTY(id string) string {
 	return ""
 }
 
-func (m *Manager) cleanupRuntime(runtime *TerminalRuntime, closeBackend func() error) {
-	m.releaseAdmission(runtime)
+func (m *Manager) cleanupRuntime(runtime *TerminalRuntime, closeBackend func() error) error {
 	if runtime.backend != nil && closeBackend != nil {
-		_ = closeBackend()
+		if err := closeBackend(); err != nil {
+			return err
+		}
 	}
+	m.releaseAdmission(runtime)
 	m.markExited(runtime)
 	_ = os.Remove(runtime.scrollback)
+	return nil
 }
 
 func (m *Manager) Close(id string) error {
@@ -668,24 +690,33 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	var closeFn func() error
+	m.releaseAdmission(runtime)
 	if runtime.backend != nil {
-		closeFn = runtime.backend.Close
+		_ = runtime.backend.Close()
 	}
-	m.cleanupRuntime(runtime, closeFn)
+	m.markExited(runtime)
+	_ = os.Remove(runtime.scrollback)
 	return nil
 }
 
 func (m *Manager) Terminate(ctx context.Context, id string) error {
 	m.mu.Lock()
 	runtime, ok := m.sessions[id]
-	if ok {
-		delete(m.sessions, id)
-	}
 	m.mu.Unlock()
 	if !ok {
 		return errors.New("session not found")
 	}
+
+	runtime.termMu.Lock()
+	defer runtime.termMu.Unlock()
+
+	m.mu.Lock()
+	_, stillPresent := m.sessions[id]
+	m.mu.Unlock()
+	if !stillPresent {
+		return errors.New("session not found")
+	}
+
 	var closeFn func() error
 	if runtime.backend != nil {
 		closeFn = runtime.backend.Close
@@ -693,7 +724,12 @@ func (m *Manager) Terminate(ctx context.Context, id string) error {
 			closeFn = func() error { return term.Terminate(ctx) }
 		}
 	}
-	m.cleanupRuntime(runtime, closeFn)
+	if err := m.cleanupRuntime(runtime, closeFn); err != nil {
+		return fmt.Errorf("terminate: %w", err)
+	}
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
 	return nil
 }
 

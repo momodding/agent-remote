@@ -41,6 +41,7 @@ export interface AgentWorkspaceTab extends BaseTab {
   state: 'working' | 'idle' | 'needsYou' | 'exited';
   view: 'chat' | 'terminal'; // which surface is focused for this tab
   tmuxPaneId?: string;
+  cwd?: string;
 }
 
 export type WorkspaceTab = TerminalWorkspaceTab | FilesWorkspaceTab | DesktopWorkspaceTab | AgentWorkspaceTab;

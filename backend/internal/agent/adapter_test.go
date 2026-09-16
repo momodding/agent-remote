@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"strings"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
@@ -73,6 +74,16 @@ func (m *mockTermMgr) Terminate(_ context.Context, id string) error {
 func (m *mockTermMgr) Subscribe(id string, fn func(protocol.PTYOutputEnvelope, protocol.SessionStateEnvelope)) (func(), error) {
 	m.subscribers[id] = fn
 	return func() { delete(m.subscribers, id) }, nil
+}
+func (m *mockTermMgr) ToWorkspaceRelative(p string) string {
+	ws := "/workspace"
+	if p == ws || p == "" {
+		return ""
+	}
+	if strings.HasPrefix(p, ws+"/") {
+		return strings.TrimPrefix(p, ws+"/")
+	}
+	return p
 }
 
 type blockingTermMgr struct {
@@ -703,5 +714,275 @@ func TestAgentServiceTerminate(t *testing.T) {
 	// Non-existent agent
 	if err := svc.Terminate("nonexistent"); !errors.Is(err, ErrAgentNotFound) {
 		t.Fatalf("expected ErrAgentNotFound, got %v", err)
+	}
+}
+
+// Test RAR-037-A: handleBridgeSemantic does not mutate state on message events
+func TestHandleBridgeSemanticNoStateOnMessage(t *testing.T) {
+	svc := &Service{
+		agents: make(map[string]*agentInstance),
+	}
+
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:    "agent-1",
+			State: "idle",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+	svc.agents["agent-1"] = inst
+
+	frame := BridgeSemanticFrame{
+		Event: "message.user",
+		Type:  "message",
+		Text:  "test message",
+	}
+
+	svc.handleBridgeSemantic("agent-1", frame)
+
+	// State should NOT change to "working"
+	inst.mu.RLock()
+	state := inst.meta.State
+	inst.mu.RUnlock()
+
+	if state != "idle" {
+		t.Errorf("handleBridgeSemantic should not mutate state, expected idle got %s", state)
+	}
+}
+
+// Test RAR-037-B: handleBridgeLifecycle mutates state for lifecycle events only
+func TestHandleBridgeLifecycleStateChange(t *testing.T) {
+	svc := &Service{
+		agents: make(map[string]*agentInstance),
+	}
+
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:    "agent-2",
+			State: "idle",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+	}
+	svc.agents["agent-2"] = inst
+
+	frame := BridgeLifecycleFrame{
+		Event: "agent_start",
+	}
+
+	svc.handleBridgeLifecycle("agent-2", frame)
+
+	inst.mu.RLock()
+	state := inst.meta.State
+	inst.mu.RUnlock()
+
+	if state != "working" {
+		t.Errorf("handleBridgeLifecycle should change state to working, got %s", state)
+	}
+}
+
+// Test RAR-037-C: terminateAgentRuntime kills backend before mutating state
+func TestTerminateAgentRuntimeOrderOfOperations(t *testing.T) {
+	termMgr := newMockTermMgr()
+	svc := &Service{
+		agents:  make(map[string]*agentInstance),
+		termMgr: termMgr,
+	}
+
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:                "agent-3",
+			State:             "working",
+			TerminalSessionID: "term-3",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+	svc.agents["agent-3"] = inst
+
+	err := svc.terminateAgentRuntime(context.Background(), inst, "test termination")
+	if err != nil {
+		t.Errorf("terminateAgentRuntime returned unexpected error: %v", err)
+	}
+
+	if !termMgr.terminated["term-3"] {
+		t.Error("terminateAgentRuntime should call termMgr.Terminate")
+	}
+
+	inst.mu.RLock()
+	state := inst.meta.State
+	inst.mu.RUnlock()
+
+	if state != "exited" {
+		t.Errorf("state should be exited after terminateAgentRuntime, got %s", state)
+	}
+}
+
+type failingTermMgr struct {
+	*mockTermMgr
+}
+
+func (f *failingTermMgr) Terminate(_ context.Context, _ string) error {
+	return errors.New("backend kill failed")
+}
+
+// Test terminateAgentRuntime aborts state change on termMgr error
+func TestTerminateAgentRuntimeErrorHandling(t *testing.T) {
+	termMgr := &failingTermMgr{mockTermMgr: newMockTermMgr()}
+	svc := &Service{
+		agents:  make(map[string]*agentInstance),
+		termMgr: termMgr,
+	}
+
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:                "agent-6",
+			State:             "working",
+			TerminalSessionID: "term-6",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+
+	err := svc.terminateAgentRuntime(context.Background(), inst, "test")
+	if err == nil {
+		t.Error("terminateAgentRuntime should return error when termMgr fails")
+	}
+
+	inst.mu.RLock()
+	state := inst.meta.State
+	inst.mu.RUnlock()
+
+	if state == "exited" {
+		t.Errorf("state should NOT be exited on termMgr error, got %s", state)
+	}
+}
+
+func TestHandleBridgeHelloModelAndThinking(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Model Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	events := make(chan protocol.AgentEvent, 5)
+	unsub, err := svc.Subscribe(agent.ID, func(ev protocol.AgentEvent) {
+		if ev.Type == "state" {
+			events <- ev
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+
+	sessionFile := filepath.Join(stateDir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	hello := BridgeHello{
+		AgentID:     agent.ID,
+		Secret:      "test-secret",
+		SessionID:   "session-123",
+		SessionFile: sessionFile,
+		Capabilities: []string{"prompt", "abort", "model", "thinking"},
+		Model: &protocol.AgentModelInfo{
+			ID:       "claude-3-7-sonnet",
+			Name:     "Claude 3.7 Sonnet",
+			Provider: "anthropic",
+		},
+		Thinking: "high",
+		AvailableModels: []protocol.AgentModelInfo{
+			{ID: "claude-3-7-sonnet", Name: "Claude 3.7 Sonnet", Provider: "anthropic"},
+			{ID: "gpt-4o", Name: "GPT-4o", Provider: "openai"},
+		},
+		AvailableThinking: []string{"off", "low", "medium", "high", "max"},
+	}
+
+	svc.handleBridgeHello(agent.ID, hello)
+
+	select {
+	case ev := <-events:
+		if ev.Model == nil || ev.Model.ID != "claude-3-7-sonnet" {
+			t.Fatalf("expected model claude-3-7-sonnet, got %+v", ev.Model)
+		}
+		if ev.Thinking != "high" {
+			t.Fatalf("expected thinking high, got %s", ev.Thinking)
+		}
+		if len(ev.AvailableModels) != 2 {
+			t.Fatalf("expected 2 available models, got %d", len(ev.AvailableModels))
+		}
+		if len(ev.AvailableThinking) != 5 {
+			t.Fatalf("expected 5 available thinking levels, got %d", len(ev.AvailableThinking))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for state event after hello")
+	}
+
+	updated, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Model == nil || updated.Model.ID != "claude-3-7-sonnet" {
+		t.Fatalf("GetAgent model = %+v", updated.Model)
+	}
+	if updated.Thinking != "high" {
+		t.Fatalf("GetAgent thinking = %s", updated.Thinking)
+	}
+
+	// Test disconnect preserves metadata
+	svc.handleBridgeDisconnect(agent.ID)
+
+	select {
+	case ev := <-events:
+		if ev.Model == nil || ev.Model.ID != "claude-3-7-sonnet" {
+			t.Fatalf("expected model to be preserved after disconnect, got %+v", ev.Model)
+		}
+		if ev.Thinking != "high" {
+			t.Fatalf("expected thinking to be preserved after disconnect, got %s", ev.Thinking)
+		}
+		for _, c := range ev.Capabilities {
+			if c.Name == "model" && c.Enabled {
+				t.Fatal("expected model capability to be disabled on disconnect")
+			}
+			if c.Name == "thinking" && c.Enabled {
+				t.Fatal("expected thinking capability to be disabled on disconnect")
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for state event after disconnect")
+	}
+
+	// Test handleBridgeMetadata updates fields
+	svc.handleBridgeMetadata(agent.ID, BridgeMetadataFrame{
+		Type: "metadata",
+		Model: &protocol.AgentModelInfo{
+			ID:       "gpt-4o",
+			Name:     "GPT-4o",
+			Provider: "openai",
+		},
+		Thinking: "low",
+	})
+
+	select {
+	case ev := <-events:
+		if ev.Model == nil || ev.Model.ID != "gpt-4o" {
+			t.Fatalf("expected model gpt-4o after metadata frame, got %+v", ev.Model)
+		}
+		if ev.Thinking != "low" {
+			t.Fatalf("expected thinking low after metadata frame, got %s", ev.Thinking)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for state event after metadata frame")
 	}
 }

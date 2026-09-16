@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 )
 
 //go:embed bridge.ts
@@ -104,12 +106,24 @@ func validateUserArgs(args []string) error {
 }
 
 type BridgeHello struct {
-	Type         string   `json:"type"`
-	AgentID      string   `json:"agentId"`
-	Secret       string   `json:"secret"`
-	SessionID    string   `json:"sessionId"`
-	SessionFile  string   `json:"sessionFile"`
-	Capabilities []string `json:"capabilities"`
+	Type              string                    `json:"type"`
+	AgentID           string                    `json:"agentId"`
+	Secret            string                    `json:"secret"`
+	SessionID         string                    `json:"sessionId"`
+	SessionFile       string                    `json:"sessionFile"`
+	Capabilities      []string                  `json:"capabilities"`
+	Model             *protocol.AgentModelInfo   `json:"model,omitempty"`
+	Thinking          string                    `json:"thinking,omitempty"`
+	AvailableModels   []protocol.AgentModelInfo `json:"availableModels,omitempty"`
+	AvailableThinking []string                  `json:"availableThinking,omitempty"`
+}
+
+type BridgeMetadataFrame struct {
+	Type              string                    `json:"type"`
+	Model             *protocol.AgentModelInfo   `json:"model,omitempty"`
+	Thinking          string                    `json:"thinking,omitempty"`
+	AvailableModels   []protocol.AgentModelInfo `json:"availableModels,omitempty"`
+	AvailableThinking []string                  `json:"availableThinking,omitempty"`
 }
 
 type BridgeCommand struct {
@@ -171,19 +185,24 @@ type BridgeServer struct {
 	socketPath   string
 	listener     net.Listener
 	agents       map[string]*bridgeAgentState // agentID -> state
+	conns        map[net.Conn]struct{}
 	closing      bool
 	reqCounter   uint64
+	wg           sync.WaitGroup
 	onHello      func(agentID string, hello BridgeHello) bool
 	onDisconnect func(agentID string)
 	onLifecycle  func(agentID string, frame BridgeLifecycleFrame)
 	onSemantic   func(agentID string, frame BridgeSemanticFrame)
+	onMetadata   func(agentID string, frame BridgeMetadataFrame)
 }
+
 func NewBridgeServer(
 	socketPath string,
 	onHello func(agentID string, hello BridgeHello) bool,
 	onDisconnect func(agentID string),
 	onLifecycle func(agentID string, frame BridgeLifecycleFrame),
 	onSemantic func(agentID string, frame BridgeSemanticFrame),
+	onMetadata func(agentID string, frame BridgeMetadataFrame),
 ) (*BridgeServer, error) {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -199,16 +218,20 @@ func NewBridgeServer(
 		socketPath:   socketPath,
 		listener:     l,
 		agents:       make(map[string]*bridgeAgentState),
+		conns:        make(map[net.Conn]struct{}),
 		onHello:      onHello,
 		onDisconnect: onDisconnect,
 		onLifecycle:  onLifecycle,
 		onSemantic:   onSemantic,
+		onMetadata:   onMetadata,
 	}
+	b.wg.Add(1)
 	go b.acceptLoop()
 	return b, nil
 }
 
 func (b *BridgeServer) acceptLoop() {
+	defer b.wg.Done()
 	for {
 		conn, err := b.listener.Accept()
 		if err != nil {
@@ -221,7 +244,25 @@ func (b *BridgeServer) acceptLoop() {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		go b.handleConn(conn)
+		b.mu.Lock()
+		if b.closing {
+			b.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		b.conns[conn] = struct{}{}
+		b.mu.Unlock()
+
+		b.wg.Add(1)
+		go func(c net.Conn) {
+			defer b.wg.Done()
+			defer func() {
+				b.mu.Lock()
+				delete(b.conns, c)
+				b.mu.Unlock()
+			}()
+			b.handleConn(c)
+		}(conn)
 	}
 }
 
@@ -233,13 +274,16 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 
 	line, err := readBoundedLine(reader, maxFrameSize)
 	if err != nil {
+		log.Printf("[bridgeServer] readBoundedLine err: %v", err)
 		return
 	}
 
 	var hello BridgeHello
 	if err := json.Unmarshal(line, &hello); err != nil || hello.Type != "hello" {
+		log.Printf("[bridgeServer] hello unmarshal err: %v, raw: %s", err, string(line))
 		return
 	}
+	log.Printf("[bridgeServer] received hello: agentID=%s, sessionID=%s, sessionFile=%s", hello.AgentID, hello.SessionID, hello.SessionFile)
 
 	if hello.AgentID == "" || hello.Secret == "" || len(hello.AgentID) > maxAgentIDLen || len(hello.Secret) > maxSecretLen {
 		return
@@ -384,6 +428,13 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 				var semFrame BridgeSemanticFrame
 				if err := json.Unmarshal(line, &semFrame); err == nil {
 					b.onSemantic(agentID, semFrame)
+				}
+			}
+		} else if raw.Type == "metadata" {
+			if b.onMetadata != nil {
+				var metaFrame BridgeMetadataFrame
+				if err := json.Unmarshal(line, &metaFrame); err == nil {
+					b.onMetadata(agentID, metaFrame)
 				}
 			}
 		}
@@ -555,6 +606,10 @@ func (b *BridgeServer) Close() error {
 		agents = append(agents, a)
 	}
 	b.agents = make(map[string]*bridgeAgentState)
+	conns := make([]net.Conn, 0, len(b.conns))
+	for c := range b.conns {
+		conns = append(conns, c)
+	}
 	l := b.listener
 	b.mu.Unlock()
 
@@ -562,7 +617,9 @@ func (b *BridgeServer) Close() error {
 	if l != nil {
 		err = l.Close()
 	}
-
+	for _, c := range conns {
+		_ = c.Close()
+	}
 	for _, a := range agents {
 		a.mu.Lock()
 		if a.conn != nil {
@@ -578,5 +635,8 @@ func (b *BridgeServer) Close() error {
 		}
 		a.mu.Unlock()
 	}
+	b.wg.Wait()
+	_ = os.Remove(b.socketPath)
 	return err
 }
+

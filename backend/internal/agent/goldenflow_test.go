@@ -134,6 +134,9 @@ func wsReadJSONHelper(ctx context.Context, conn *websocket.Conn, v any) error {
 // TestGoldenFlowPhase1to4 exercises the full GF-PHASE-1-4 flow against
 // real daemon binary, real OMP binary, real tmux, and real deterministic model endpoint.
 func TestGoldenFlowPhase1to4(t *testing.T) {
+	if os.Getenv("AGENTICREMOTE_RUN_LIVE_TESTS") != "1" {
+		t.Skip("skipping non-hermetic live test (use TestGoldenFlowHermeticPhase1to4 or set AGENTICREMOTE_RUN_LIVE_TESTS=1)")
+	}
 	modelsFile := os.Getenv("AGENTICREMOTE_OMP_MODELS_FILE")
 	if modelsFile == "" {
 		modelsFile = filepath.Join(os.Getenv("HOME"), ".omp", "agent", "models.yml")
@@ -944,6 +947,9 @@ func TestGoldenFlowPhase1to4(t *testing.T) {
 // Attempting to create Agent B while Agent A is restored/running MUST fail with HTTP 429 / max_sessions.
 // Explicitly terminating Agent A releases the slot, and creating Agent B succeeds (HTTP 201).
 func TestRealDaemonRestartTmuxCapacityOwnership(t *testing.T) {
+	if os.Getenv("AGENTICREMOTE_RUN_LIVE_TESTS") != "1" {
+		t.Skip("skipping non-hermetic live test (use TestGoldenFlowHermeticPhase1to4 or set AGENTICREMOTE_RUN_LIVE_TESTS=1)")
+	}
 	modelsFile := os.Getenv("AGENTICREMOTE_OMP_MODELS_FILE")
 	if modelsFile == "" {
 		modelsFile = filepath.Join(os.Getenv("HOME"), ".omp", "agent", "models.yml")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,11 +58,13 @@ type agentInstance struct {
 	tailer       *TranscriptTailer
 	sessionFile  string
 	agentDir     string
+	resolvedCWD  string
 	termID       string
 	subscribers  map[int]*AgentSubscriber
 	nextSubID    int
 	stopPoll     chan struct{}
 	stopPollOnce sync.Once
+	pollDone     chan struct{}
 	stopTerminal func()
 	pollInterval time.Duration
 }
@@ -92,12 +95,21 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 	}
 
 	socketPath := filepath.Join(agentDir, "bridge.sock")
-	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle, s.handleBridgeSemantic); err == nil {
+	if bs, err := NewBridgeServer(socketPath, s.handleBridgeHello, s.handleBridgeDisconnect, s.handleBridgeLifecycle, s.handleBridgeSemantic, s.handleBridgeMetadata); err == nil {
 		s.bridgeServer = bs
+		log.Printf("[bridgeServer] Listening successfully at %s", socketPath)
+	} else {
+		log.Printf("[bridgeServer] FAILED to init bridge server at %s: %v", socketPath, err)
 	}
 
 	s.restorePersisted()
 	return s
+}
+func (s *Service) toWorkspaceRelative(p string) string {
+	if relProvider, ok := s.termMgr.(interface{ ToWorkspaceRelative(string) string }); ok {
+		return relProvider.ToWorkspaceRelative(p)
+	}
+	return p
 }
 
 func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
@@ -115,7 +127,11 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 	if (inst.meta.OMPSessionID != "" && inst.meta.OMPSessionID != hello.SessionID) || (inst.meta.OMPSessionFile != "" && inst.meta.OMPSessionFile != hello.SessionFile) {
 		inst.mu.Unlock()
 		if s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
-			s.terminateAgentRuntime(inst, "mismatched session identity on bridge connect")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.terminateAgentRuntime(ctx, inst, "mismatched session identity on bridge connect"); err != nil {
+				// Log but continue; agent will be re-negotiated
+			}
 		}
 		return false
 	}
@@ -133,13 +149,24 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 		{Name: "model", Enabled: capsMap["model"]},
 		{Name: "thinking", Enabled: capsMap["thinking"]},
 	}
+	if hello.Model != nil {
+		inst.meta.Model = hello.Model
+	}
+	if hello.Thinking != "" {
+		inst.meta.Thinking = hello.Thinking
+	}
+	if len(hello.AvailableModels) > 0 {
+		inst.meta.AvailableModels = append([]protocol.AgentModelInfo(nil), hello.AvailableModels...)
+	}
+	if len(hello.AvailableThinking) > 0 {
+		inst.meta.AvailableThinking = append([]string(nil), hello.AvailableThinking...)
+	}
 	inst.meta.UpdatedAt = time.Now().UTC()
 	if inst.tailer == nil || inst.tailer.path != hello.SessionFile {
 		inst.tailer = NewTranscriptTailer(inst.meta.ID, hello.SessionFile, s.store)
 		_ = inst.tailer.RestoreState()
 	}
 	inst.mu.Unlock()
-
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 	return true
@@ -166,6 +193,34 @@ func (s *Service) handleBridgeDisconnect(agentID string) {
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 }
+func (s *Service) handleBridgeMetadata(agentID string, frame BridgeMetadataFrame) {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok || inst == nil {
+		return
+	}
+
+	inst.mu.Lock()
+	if frame.Model != nil {
+		inst.meta.Model = frame.Model
+	}
+	if frame.Thinking != "" {
+		inst.meta.Thinking = frame.Thinking
+	}
+	if len(frame.AvailableModels) > 0 {
+		inst.meta.AvailableModels = append([]protocol.AgentModelInfo(nil), frame.AvailableModels...)
+	}
+	if len(frame.AvailableThinking) > 0 {
+		inst.meta.AvailableThinking = append([]string(nil), frame.AvailableThinking...)
+	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+}
+
 
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
 	s.mu.RLock()
@@ -187,7 +242,9 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 	if frame.Event == "session_changed" ||
 		(frame.SessionID != "" && ompSessionID != "" && frame.SessionID != ompSessionID) ||
 		(frame.SessionFile != "" && ompSessionFile != "" && frame.SessionFile != ompSessionFile) {
-		s.terminateAgentRuntime(inst, "session identity changed")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.terminateAgentRuntime(ctx, inst, "session identity changed")
 		return
 	}
 	targetState := ""
@@ -213,7 +270,9 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 	}
 
 	if targetState == "exited" {
-		s.terminateAgentRuntime(inst, "bridge session shutdown")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.terminateAgentRuntime(ctx, inst, "bridge session shutdown")
 		return
 	}
 
@@ -273,30 +332,12 @@ func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame
 		}
 	}
 
-	inst.mu.Lock()
-	stateChanged := false
-	switch event.Type {
-	case "message.user", "tool.call":
-		if inst.meta.State != "working" && inst.meta.State != "exited" {
-			inst.meta.State = "working"
-			stateChanged = true
-		}
-	case "message.assistant":
-		if inst.meta.State != "idle" && inst.meta.State != "exited" {
-			inst.meta.State = "idle"
-			stateChanged = true
-		}
-	}
-	if stateChanged {
-		inst.meta.UpdatedAt = time.Now().UTC()
-	}
-
+	inst.mu.RLock()
 	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
 	for _, sub := range inst.subscribers {
 		subscribers = append(subscribers, sub.fn)
 	}
-	inst.mu.Unlock()
-
+	inst.mu.RUnlock()
 	if s.store != nil {
 		payload, err := json.Marshal(event)
 		if err != nil {
@@ -316,23 +357,25 @@ func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame
 		event.Cursor = committed[0].Event.Cursor
 	}
 
-	for _, subscriber := range subscribers {
-		subscriber(event)
-	}
-
-	if stateChanged {
-		s.recordAgentSummary(inst, "agent.updated")
-		s.emitState(inst)
-	}
 }
 
-func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
+func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance, reason string) error {
 	inst.mu.Lock()
 	if inst.meta.State == "exited" {
 		inst.mu.Unlock()
-		return
+		return nil
+	}
+	termID := inst.meta.TerminalSessionID
+	inst.mu.Unlock()
+
+	if err := s.termMgr.Terminate(ctx, termID); err != nil {
+		return fmt.Errorf("terminate backend: %w", err)
 	}
 
+	inst.mu.Lock()
+	agentID := inst.meta.ID
+	stop := inst.stopTerminal
+	inst.stopTerminal = nil
 	inst.meta.State = "exited"
 	inst.meta.Capabilities = []protocol.AgentCapability{
 		{Name: "chat", Enabled: true},
@@ -342,26 +385,25 @@ func (s *Service) terminateAgentRuntime(inst *agentInstance, reason string) {
 		{Name: "thinking", Enabled: false},
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
-	termID := inst.meta.TerminalSessionID
-	agentID := inst.meta.ID
-	stop := inst.stopTerminal
-	inst.stopTerminal = nil
 	inst.mu.Unlock()
-
-	inst.stopPollOnce.Do(func() {
-		close(inst.stopPoll)
-	})
-
+	if inst.stopPoll != nil {
+		inst.stopPollOnce.Do(func() {
+			close(inst.stopPoll)
+		})
+	}
 	if stop != nil {
 		stop()
+	}
+	if inst.pollDone != nil {
+		<-inst.pollDone
 	}
 	if s.bridgeServer != nil {
 		s.bridgeServer.UnregisterAgent(agentID)
 	}
 	removeBridgeSecret(s.agentDir, agentID)
-	_ = s.termMgr.Terminate(context.Background(), termID)
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
+	return nil
 }
 
 
@@ -373,8 +415,9 @@ func (s *Service) Terminate(agentID string) error {
 	if !ok {
 		return ErrAgentNotFound
 	}
-	s.terminateAgentRuntime(inst, "explicit termination")
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.terminateAgentRuntime(ctx, inst, "explicit termination")
 }
 func (s *Service) restorePersisted() {
 	if s.store == nil {
@@ -387,6 +430,13 @@ func (s *Service) restorePersisted() {
 	for _, a := range snap.Agents {
 		var caps []protocol.AgentCapability
 		_ = json.Unmarshal(a.Capabilities, &caps)
+		resolved := a.CWD
+		for _, t := range snap.Terminals {
+			if t.ID == a.TerminalSessionID && t.CWD != "" {
+				resolved = t.CWD
+				break
+			}
+		}
 		inst := &agentInstance{
 			meta: protocol.AgentSession{
 				ID:                a.ID,
@@ -394,16 +444,18 @@ func (s *Service) restorePersisted() {
 				TerminalSessionID: a.TerminalSessionID,
 				OMPSessionID:      a.OMPSessionID,
 				OMPSessionFile:    a.OMPSessionFile,
-				CWD:               a.CWD,
+				CWD:               s.toWorkspaceRelative(a.CWD),
 				State:             a.State,
 				Capabilities:      caps,
 				CreatedAt:         a.CreatedAt,
 				UpdatedAt:         a.UpdatedAt,
 			},
+			resolvedCWD:  resolved,
 			sessionFile:  a.OMPSessionFile,
 			agentDir:     s.agentDir,
 			subscribers:  make(map[int]*AgentSubscriber),
 			stopPoll:     make(chan struct{}),
+			pollDone:     make(chan struct{}),
 			pollInterval: 250 * time.Millisecond,
 		}
 		if a.ID == a.TerminalSessionID {
@@ -505,6 +557,7 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 			"AGENTIC_REMOTE_BRIDGE_AGENT_ID": agentID,
 			"AGENTIC_REMOTE_BRIDGE_SECRET":   secret,
 			"PI_CODING_AGENT_DIR":            s.agentDir,
+			"OMP_AGENT_MODELS_FILE":          filepath.Join(s.agentDir, "models.yml"),
 		}
 	}
 
@@ -533,11 +586,12 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 	}
 	now := time.Now().UTC()
 
+	relCWD := s.toWorkspaceRelative(termSummary.CWD)
 	agentSession := protocol.AgentSession{
 		ID:                agentID,
 		Adapter:           "omp",
 		TerminalSessionID: termSummary.ID,
-		CWD:               termSummary.CWD,
+		CWD:               relCWD,
 		State:             "idle",
 		Capabilities:      caps,
 		CreatedAt:         now,
@@ -546,9 +600,11 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 
 	inst := &agentInstance{
 		meta:         agentSession,
+		resolvedCWD:  termSummary.CWD,
 		agentDir:     s.agentDir,
 		subscribers:  make(map[int]*AgentSubscriber),
 		stopPoll:     make(chan struct{}),
+		pollDone:     make(chan struct{}),
 		pollInterval: 200 * time.Millisecond,
 	}
 
@@ -577,7 +633,9 @@ func (s *Service) watchTerminal(inst *agentInstance) {
 		if st.State != "exited" {
 			return
 		}
-		s.terminateAgentRuntime(inst, "terminal exited")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.terminateAgentRuntime(ctx, inst, "terminal exited")
 	})
 	if err == nil {
 		inst.mu.Lock()
@@ -610,12 +668,21 @@ func (s *Service) recordAgentSummary(inst *agentInstance, kind string) {
 
 func (s *Service) emitState(inst *agentInstance) {
 	inst.mu.RLock()
+	var model *protocol.AgentModelInfo
+	if inst.meta.Model != nil {
+		m := *inst.meta.Model
+		model = &m
+	}
 	event := protocol.AgentEvent{
-		Type:         "state",
-		EventID:      fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)),
-		AgentID:      inst.meta.ID,
-		State:        inst.meta.State,
-		Capabilities: append([]protocol.AgentCapability(nil), inst.meta.Capabilities...),
+		Type:              "state",
+		EventID:           fmt.Sprintf("%s:state:%s", inst.meta.ID, inst.meta.UpdatedAt.UTC().Format(time.RFC3339Nano)),
+		AgentID:           inst.meta.ID,
+		State:             inst.meta.State,
+		Capabilities:      append([]protocol.AgentCapability(nil), inst.meta.Capabilities...),
+		Model:             model,
+		Thinking:          inst.meta.Thinking,
+		AvailableModels:   append([]protocol.AgentModelInfo(nil), inst.meta.AvailableModels...),
+		AvailableThinking: append([]string(nil), inst.meta.AvailableThinking...),
 	}
 	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
 	for _, sub := range inst.subscribers {
@@ -633,6 +700,9 @@ func (s *Service) emitState(inst *agentInstance) {
 }
 
 func (s *Service) pollTranscript(inst *agentInstance) {
+	if inst.pollDone != nil {
+		defer close(inst.pollDone)
+	}
 	ticker := time.NewTicker(inst.pollInterval)
 	defer ticker.Stop()
 	for {
@@ -659,7 +729,11 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 				}
 			}
 			if inst.sessionFile == "" {
-				sessionsDir := ComputeDefaultSessionDir(inst.agentDir, inst.meta.CWD)
+				targetCWD := inst.resolvedCWD
+				if targetCWD == "" {
+					targetCWD = inst.meta.CWD
+				}
+				sessionsDir := ComputeDefaultSessionDir(inst.agentDir, targetCWD)
 				if latest, err := FindOnlySessionFile(sessionsDir); err == nil {
 					inst.sessionFile = latest
 				}
@@ -831,7 +905,33 @@ func (s *Service) SetModel(agentID, model string) error {
 	// taking ~8-9s on cold initialize; use 30s timeout to provide safe headroom.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return s.bridgeServer.SendCommand(ctx, agentID, "model", map[string]any{"model": model})
+	if err := s.bridgeServer.SendCommand(ctx, agentID, "model", map[string]any{"model": model}); err != nil {
+		return err
+	}
+	inst.mu.Lock()
+	var updatedModel *protocol.AgentModelInfo
+	for _, m := range inst.meta.AvailableModels {
+		if m.ID == model || fmt.Sprintf("%s/%s", m.Provider, m.ID) == model || m.Name == model {
+			updatedModel = &protocol.AgentModelInfo{
+				ID:       m.ID,
+				Name:     m.Name,
+				Provider: m.Provider,
+			}
+			break
+		}
+	}
+	if updatedModel == nil {
+		updatedModel = &protocol.AgentModelInfo{
+			ID:   model,
+			Name: model,
+		}
+	}
+	inst.meta.Model = updatedModel
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+	s.recordAgentSummary(inst, "agent.updated")
+	s.emitState(inst)
+	return nil
 }
 // SetThinking changes the thinking level through the verified OMP bridge.
 func (s *Service) SetThinking(agentID, level string) error {
@@ -855,7 +955,15 @@ func (s *Service) SetThinking(agentID, level string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return s.bridgeServer.SendCommand(ctx, agentID, "thinking", map[string]any{"level": level})
+	if err := s.bridgeServer.SendCommand(ctx, agentID, "thinking", map[string]any{"level": level}); err != nil {
+		return err
+	}
+	inst.mu.Lock()
+	inst.meta.Thinking = level
+	inst.meta.UpdatedAt = time.Now().UTC()
+	inst.mu.Unlock()
+	s.recordAgentSummary(inst, "agent.updated")
+	return nil
 }
 
 // GetAgent retrieves agent session summary.
@@ -969,14 +1077,12 @@ func (s *Service) Close() error {
 	s.bridgeServer = nil
 	s.mu.Unlock()
 
-	if bs != nil {
-		_ = bs.Close()
-	}
-
 	for _, inst := range instances {
-		inst.stopPollOnce.Do(func() {
-			close(inst.stopPoll)
-		})
+		if inst.stopPoll != nil {
+			inst.stopPollOnce.Do(func() {
+				close(inst.stopPoll)
+			})
+		}
 		inst.mu.Lock()
 		stop := inst.stopTerminal
 		inst.stopTerminal = nil
@@ -984,7 +1090,15 @@ func (s *Service) Close() error {
 		if stop != nil {
 			stop()
 		}
+		if inst.pollDone != nil {
+			<-inst.pollDone
+		}
 	}
-	time.Sleep(30 * time.Millisecond)
+
+	if bs != nil {
+		_ = bs.Close()
+	}
+
 	return nil
 }
+

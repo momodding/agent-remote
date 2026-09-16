@@ -27,6 +27,12 @@ export type SessionSummary = {
   waitState?: WaitState;
 };
 
+export type AgentModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+};
+
 export type AgentCapability = { name: string; enabled: boolean };
 
 export type AgentSession = {
@@ -36,10 +42,13 @@ export type AgentSession = {
   cwd: string;
   state: 'working' | 'idle' | 'needsYou' | 'exited';
   capabilities: AgentCapability[];
+  model?: AgentModelInfo;
+  thinking?: string;
+  availableModels?: AgentModelInfo[];
+  availableThinking?: string[];
   createdAt: string;
   updatedAt: string;
 };
-
 export type AgentEvent = {
   type: string;
   cursor?: number;
@@ -53,8 +62,11 @@ export type AgentEvent = {
   toolOutput?: unknown;
   state?: string;
   capabilities?: AgentCapability[];
+  model?: AgentModelInfo;
+  thinking?: string;
+  availableModels?: AgentModelInfo[];
+  availableThinking?: string[];
   isError?: boolean;
-  aborted?: boolean;
 };
 
 export type AgentHistoryResponse = {

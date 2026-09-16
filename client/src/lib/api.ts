@@ -61,7 +61,7 @@ export class AgenticRemoteAPI {
   async agentHistory(id: string): Promise<AgentHistoryResponse> {
     return this.request(`/v1/agents/${encodeURIComponent(id)}/history`);
   }
-  async createAgent(request: Pick<CreateSessionRequest, 'name' | 'args' | 'cwd' | 'backend'>): Promise<AgentSession> {
+  async createAgent(request: Partial<Pick<CreateSessionRequest, 'name' | 'args' | 'cwd' | 'backend'>> = {}): Promise<AgentSession> {
     return this.request('/v1/agents', { method: 'POST', body: JSON.stringify(request) });
   }
 
@@ -71,6 +71,9 @@ export class AgenticRemoteAPI {
 
   async abortAgent(id: string): Promise<void> {
     await this.request(`/v1/agents/${encodeURIComponent(id)}/abort`, { method: 'POST' });
+  }
+  async terminateAgent(id: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/terminate`, { method: 'POST' });
   }
 
   async setAgentModel(id: string, model: string): Promise<void> {

@@ -325,6 +325,10 @@ export default function TabDeckScreen() {
         visible={newAgentOpen}
         onDismiss={() => { setNewAgentOpen(false); setAgentSpawnHostId(null); }}
         onSubmit={handleCreateAgent}
+        api={agentSpawnHostId ? (() => {
+          const conn = getConnection(store, agentSpawnHostId);
+          return conn ? new AgenticRemoteAPI(conn) : null;
+        })() : null}
       />
     </SafeAreaView>
   );

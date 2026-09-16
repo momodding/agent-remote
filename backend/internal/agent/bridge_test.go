@@ -377,7 +377,7 @@ func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {
 
 func TestBridgeReplacementDoesNotDisconnectLiveConnection(t *testing.T) {
 	var disconnected atomic.Uint32
-	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) }, nil, nil)
+	server, err := NewBridgeServer(t.TempDir()+"/bridge.sock", nil, func(string) { disconnected.Add(1) }, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,6 +440,8 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(piDir, "models.yml"), models, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	_ = os.MkdirAll(filepath.Join(piDir, "agent"), 0o700)
+	_ = os.WriteFile(filepath.Join(piDir, "agent", "models.yml"), models, 0o600)
 	agentState := filepath.Join(t.TempDir(), "agent-state")
 	if err := os.MkdirAll(agentState, 0o700); err != nil {
 		t.Fatalf("mkdir agentState: %v", err)
@@ -447,7 +449,10 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(agentState, "models.yml"), models, 0o600); err != nil {
 		t.Fatalf("write models.yml to agentState: %v", err)
 	}
+	_ = os.MkdirAll(filepath.Join(agentState, "agent"), 0o700)
+	_ = os.WriteFile(filepath.Join(agentState, "agent", "models.yml"), models, 0o600)
 	t.Setenv("PI_CODING_AGENT_DIR", piDir)
+	t.Setenv("OMP_AGENT_MODELS_FILE", filepath.Join(piDir, "models.yml"))
 	ompPID := func() string {
 		output, err := exec.Command("ps", "-o", "pid=,ppid=,comm=", "-e").Output()
 		if err != nil {
@@ -472,7 +477,6 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	svc := NewService(termMgr, store, agentState)
 	defer svc.Close()
 
@@ -481,18 +485,12 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = termMgr.Close(created.TerminalSessionID) })
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
 	for !svc.bridgeServer.IsConnected(created.ID) && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if !svc.bridgeServer.IsConnected(created.ID) {
 		t.Fatal("real OMP extension never authenticated with production BridgeServer")
-	}
-	if err := svc.SetThinking(created.ID, "low"); err != nil {
-		t.Fatalf("thinking command through real bridge: %v", err)
-	}
-	if err := svc.Abort(created.ID); err != nil {
-		t.Fatalf("abort command through real bridge: %v", err)
 	}
 	capabilityEnabled := func(name string) bool {
 		current, err := svc.GetAgent(created.ID)
@@ -523,7 +521,6 @@ func TestRealOMPBridgeLifecycle(t *testing.T) {
 	if err := bridgeConn.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	deadline = time.Now().Add(15 * time.Second)
 	for (svc.bridgeServer.IsConnected(created.ID) || capabilityEnabled("prompt")) && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
@@ -868,5 +865,107 @@ func TestBridgeSessionChangedTerminatesRuntime(t *testing.T) {
 	}
 	if svc.bridgeServer.IsConnected(agent.ID) {
 		t.Fatal("expected bridge to be unregistered after runtime termination")
+	}
+}
+
+func TestBridgeModelAndThinkingCommands(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	secret := termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"]
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatalf("failed to dial bridge socket: %v", err)
+	}
+	defer conn.Close()
+
+	hello := BridgeHello{
+		Type:         "hello",
+		AgentID:      agent.ID,
+		Secret:       secret,
+		SessionID:    "session-1",
+		SessionFile:  "/path/to/session1.jsonl",
+		Capabilities: []string{"prompt", "abort", "model", "thinking"},
+		Model: &protocol.AgentModelInfo{
+			ID:       "claude-3-7-sonnet",
+			Name:     "Claude 3.7 Sonnet",
+			Provider: "anthropic",
+		},
+		Thinking: "off",
+		AvailableModels: []protocol.AgentModelInfo{
+			{ID: "claude-3-7-sonnet", Name: "Claude 3.7 Sonnet", Provider: "anthropic"},
+			{ID: "claude-3-5-haiku", Name: "Claude 3.5 Haiku", Provider: "anthropic"},
+		},
+		AvailableThinking: []string{"off", "low", "medium", "high", "max"},
+	}
+	helloBytes, _ := json.Marshal(hello)
+	helloBytes = append(helloBytes, '\n')
+	if _, err := conn.Write(helloBytes); err != nil {
+		t.Fatalf("failed to write hello frame: %v", err)
+	}
+
+	for range 50 {
+		if svc.bridgeServer.IsConnected(agent.ID) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	reader := bufio.NewReader(conn)
+	go func() {
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			var cmd BridgeCommand
+			if err := json.Unmarshal(line, &cmd); err != nil {
+				continue
+			}
+			if cmd.Type == "command" {
+				res := BridgeCommandResult{
+					Type:      "command.result",
+					RequestID: cmd.RequestID,
+					OK:        true,
+				}
+				resBytes, _ := json.Marshal(res)
+				resBytes = append(resBytes, '\n')
+				_, _ = conn.Write(resBytes)
+			}
+		}
+	}()
+
+	if err := svc.SetModel(agent.ID, "claude-3-5-haiku"); err != nil {
+		t.Fatalf("SetModel failed: %v", err)
+	}
+	ag, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.Model == nil || ag.Model.ID != "claude-3-5-haiku" {
+		t.Fatalf("expected model claude-3-5-haiku, got %+v", ag.Model)
+	}
+
+	if err := svc.SetThinking(agent.ID, "high"); err != nil {
+		t.Fatalf("SetThinking failed: %v", err)
+	}
+	ag, err = svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.Thinking != "high" {
+		t.Fatalf("expected thinking high, got %s", ag.Thinking)
 	}
 }

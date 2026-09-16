@@ -20,6 +20,7 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
 import { TmuxPaneSheet, type TmuxPaneSheetHandle } from '../../src/components/TmuxPaneSheet';
+import { ModelThinkingSheet, type ModelThinkingSheetHandle } from '../../src/components/ModelThinkingSheet';
 import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
 import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
 import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
@@ -27,8 +28,8 @@ import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-ch
 import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime-channel';
 import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
 import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
-import type { AgentWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
-import type { AgentCapability, AgentEvent, TmuxPane } from '../../src/protocol';
+import type { AgentWorkspaceTab, FilesWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
+import type { AgentCapability, AgentEvent, AgentModelInfo, TmuxPane } from '../../src/protocol';
 
 type MessageItem = {
   id: string;
@@ -81,11 +82,19 @@ export default function AgentScreen() {
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>(tab?.view ?? 'chat');
   const [capabilities, setCapabilities] = useState<AgentCapability[]>([]);
   const [terminalOutput, setTerminalOutput] = useState('');
+  const [agentCwd, setAgentCwd] = useState<string>(tab?.cwd ?? '');
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const [currentModel, setCurrentModel] = useState<AgentModelInfo | undefined>();
+  const [currentThinking, setCurrentThinking] = useState<string | undefined>();
+  const [availableModels, setAvailableModels] = useState<AgentModelInfo[]>([]);
+  const [availableThinking, setAvailableThinking] = useState<string[]>([]);
+  const [loadingModel, setLoadingModel] = useState(false);
+  const [loadingThinking, setLoadingThinking] = useState(false);
 
   const { height: windowHeight } = useWindowDimensions();
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
+  const modelThinkingSheetRef = useRef<ModelThinkingSheetHandle>(null);
   const daemonChannelRef = useRef<DaemonChannel | null>(null);
   const runtimeChannelRef = useRef<RuntimeChannel | null>(null);
   const ptyUnsubRef = useRef<(() => void) | null>(null);
@@ -96,6 +105,23 @@ export default function AgentScreen() {
 
   const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
 
+  const openFiles = useCallback(() => {
+    if (!tab) return;
+    const tabId = Crypto.randomUUID();
+    const targetCwd = agentCwd || tab.cwd || '';
+    const filesTab: FilesWorkspaceTab = {
+      tabId,
+      daemonId: tab.daemonId,
+      kind: 'files',
+      title: 'Files',
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+      pinned: false,
+      cwd: targetCwd,
+    };
+    dispatch((previous) => addTab(previous, filesTab));
+    router.push({ pathname: '/files/[id]', params: { id: tabId } });
+  }, [tab, agentCwd, dispatch]);
   // Load connection
   useEffect(() => {
     if (!tab) {
@@ -127,7 +153,14 @@ export default function AgentScreen() {
     void api.agent(tab.agentSessionId).then((agent) => {
       if (!active) return;
       setCapabilities(agent.capabilities);
-      dispatch((prev) => updateTab(prev, tab.tabId, { state: agent.state }));
+      if (agent.model) setCurrentModel(agent.model);
+      if (agent.thinking) setCurrentThinking(agent.thinking);
+      if (agent.availableModels) setAvailableModels(agent.availableModels);
+      if (agent.availableThinking) setAvailableThinking(agent.availableThinking);
+      if (agent.cwd !== undefined) {
+        setAgentCwd(agent.cwd);
+      }
+      dispatch((prev) => updateTab(prev, tab.tabId, { state: agent.state, cwd: agent.cwd }));
     }).catch(() => {});
 
     const loadAndReplaceHistory = async (): Promise<number> => {
@@ -169,6 +202,10 @@ export default function AgentScreen() {
       if (event.capabilities) {
         setCapabilities(event.capabilities);
       }
+      if (event.model) setCurrentModel(event.model);
+      if (event.thinking) setCurrentThinking(event.thinking);
+      if (event.availableModels) setAvailableModels(event.availableModels);
+      if (event.availableThinking) setAvailableThinking(event.availableThinking);
       if (event.state) {
         dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
       }
@@ -321,7 +358,6 @@ export default function AgentScreen() {
       setSending(false);
     }
   }, [promptText, api, tab, sending, capabilities]);
-
   const abortAgent = useCallback(async () => {
     if (!api || !tab || !capabilities.some((capability) => capability.name === 'abort' && capability.enabled)) return;
     try {
@@ -340,32 +376,105 @@ export default function AgentScreen() {
     }
   }, [api, tab, capabilities]);
 
+  const abortEnabled = capabilities.some((c) => c.name === 'abort' && c.enabled);
+  const modelEnabled = capabilities.some((c) => c.name === 'model' && c.enabled);
+  const thinkingEnabled = capabilities.some((c) => c.name === 'thinking' && c.enabled);
+
+  const handleSelectModel = useCallback(
+    async (modelId: string) => {
+      if (!tab || !api) return;
+      const prevModel = currentModel;
+      const target =
+        availableModels.find((m) => m.id === modelId) ||
+        (prevModel && prevModel.id === modelId
+          ? prevModel
+          : { id: modelId, name: modelId, provider: '' });
+      setCurrentModel(target);
+      setLoadingModel(true);
+      try {
+        await api.setAgentModel(tab.agentSessionId, modelId);
+      } catch (error) {
+        setCurrentModel(prevModel);
+        const msg = error instanceof Error ? error.message : String(error);
+        Alert.alert('Model Change Failed', msg);
+      } finally {
+        setLoadingModel(false);
+      }
+    },
+    [tab, api, currentModel, availableModels],
+  );
+
+  const handleSelectThinking = useCallback(
+    async (level: string) => {
+      if (!tab || !api) return;
+      const prevThinking = currentThinking;
+      setCurrentThinking(level);
+      setLoadingThinking(true);
+      try {
+        await api.setAgentThinking(tab.agentSessionId, level);
+      } catch (error) {
+        setCurrentThinking(prevThinking);
+        const msg = error instanceof Error ? error.message : String(error);
+        Alert.alert('Thinking Level Change Failed', msg);
+      } finally {
+        setLoadingThinking(false);
+      }
+    },
+    [tab, api, currentThinking],
+  );
+
   const close = useCallback(() => {
     if (!tab) return;
-    Alert.alert('Close Agent Session?', 'This will close the agent session and underlying terminal.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Close',
-        style: 'destructive',
-        onPress: async () => {
-          ptyUnsubRef.current?.();
-          if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
-            runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
-            currentAgentChannelIdRef.current = null;
-          }
-          if (api) {
+    ptyUnsubRef.current?.();
+    if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
+      runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
+      currentAgentChannelIdRef.current = null;
+    }
+    closeTab(tab.tabId);
+    if (daemonChannelRef.current) {
+      daemonChannelRef.current.closeChannel(tab.terminalSessionId);
+    }
+    router.replace('/');
+  }, [tab, closeTab]);
+
+  const terminateAgent = useCallback(() => {
+    if (!tab || !api) return;
+    Alert.alert(
+      'Terminate Agent?',
+      'This will kill the agent process and underlying terminal. This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Terminate',
+          style: 'destructive',
+          onPress: async () => {
             try {
-              await api.closeSession(tab.terminalSessionId);
-            } catch {}
-          }
-          if (daemonChannelRef.current) {
-            daemonChannelRef.current.closeChannel(tab.terminalSessionId);
-          }
-          closeTab(tab.tabId);
-          router.replace('/');
+              await api.terminateAgent(tab.agentSessionId);
+              ptyUnsubRef.current?.();
+              if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
+                runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
+                currentAgentChannelIdRef.current = null;
+              }
+              if (daemonChannelRef.current) {
+                daemonChannelRef.current.closeChannel(tab.terminalSessionId);
+              }
+              closeTab(tab.tabId);
+              router.replace('/');
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              Alert.alert(
+                'Termination Failed',
+                `Failed to terminate agent: ${msg}\n\nThe agent may still be running remotely. You can retry.`,
+                [
+                  { text: 'Retry', onPress: () => terminateAgent() },
+                  { text: 'Dismiss', style: 'cancel' },
+                ],
+              );
+            }
+          },
         },
-      },
-    ]);
+      ],
+    );
   }, [tab, api, closeTab]);
 
   const stateColor = useMemo(() => {
@@ -383,8 +492,6 @@ export default function AgentScreen() {
     }
   }, [tab?.state]);
   const promptEnabled = capabilities.some((capability) => capability.name === 'prompt' && capability.enabled);
-  const abortEnabled = capabilities.some((capability) => capability.name === 'abort' && capability.enabled);
-
 
   const renderMessage = ({ item }: { item: MessageItem }) => {
     switch (item.type) {
@@ -479,17 +586,30 @@ export default function AgentScreen() {
             <Feather name="terminal" size={16} color={viewMode === 'terminal' ? '#0A0A0A' : '#A0A0A0'} />
           </Pressable>
         </View>
-
         <Pressable accessibilityLabel="Switch pane" style={styles.headerIcon} onPress={() => void openPaneSwitcher()}>
           <Feather name="columns" size={18} color="#D19A2C" />
         </Pressable>
-
         {abortEnabled && (
           <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
             <Feather name="slash" size={18} color="#EF4444" />
           </Pressable>
         )}
-        <Pressable accessibilityLabel="Close" style={styles.headerIcon} onPress={close}>
+        {(modelEnabled || thinkingEnabled || Boolean(currentModel)) && (
+          <Pressable
+            accessibilityLabel="Model and Thinking"
+            style={styles.headerIcon}
+            onPress={() => modelThinkingSheetRef.current?.present()}
+          >
+            <Feather name="cpu" size={18} color="#818CF8" />
+          </Pressable>
+        )}
+        <Pressable accessibilityLabel="Open Files" style={styles.headerIcon} onPress={openFiles}>
+          <Feather name="folder" size={18} color="#46B8C4" />
+        </Pressable>
+        <Pressable accessibilityLabel="Terminate Agent" style={styles.headerIcon} onPress={terminateAgent}>
+          <Feather name="power" size={18} color="#DC2626" />
+        </Pressable>
+        <Pressable accessibilityLabel="Close View" style={styles.headerIcon} onPress={close}>
           <Feather name="x" size={20} color="#888" />
         </Pressable>
       </View>
@@ -501,6 +621,27 @@ export default function AgentScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
         >
+          {tab?.state === 'needsYou' && (
+            <View style={styles.needsYouBanner} accessibilityLabel="Needs Approval Banner">
+              <View style={styles.needsYouContent}>
+                <Feather name="alert-triangle" size={18} color="#F59E0B" />
+                <View style={styles.needsYouTextCol}>
+                  <Text style={styles.needsYouTitle}>Approval Required</Text>
+                  <Text style={styles.needsYouSubtitle}>
+                    Agent is waiting for terminal input or tool approval.
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                accessibilityLabel="Open Terminal"
+                style={styles.needsYouBtn}
+                onPress={() => setViewMode('terminal')}
+              >
+                <Feather name="terminal" size={14} color="#0A0A0A" />
+                <Text style={styles.needsYouBtnText}>Open Terminal</Text>
+              </Pressable>
+            </View>
+          )}
           <FlatList
             ref={flatListRef}
             data={messages}
@@ -578,6 +719,19 @@ export default function AgentScreen() {
         </View>
       )}
       <TmuxPaneSheet ref={paneSheetRef} panes={panes} currentPaneId={tab?.tmuxPaneId} onSelect={selectPane} />
+      <ModelThinkingSheet
+        ref={modelThinkingSheetRef}
+        currentModel={currentModel}
+        currentThinking={currentThinking}
+        availableModels={availableModels}
+        availableThinking={availableThinking}
+        modelEnabled={modelEnabled}
+        thinkingEnabled={thinkingEnabled}
+        onSelectModel={handleSelectModel}
+        onSelectThinking={handleSelectThinking}
+        loadingModel={loadingModel}
+        loadingThinking={loadingThinking}
+      />
     </SafeAreaView>
   );
 }
@@ -714,4 +868,50 @@ const styles = StyleSheet.create({
   terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
   terminalContainer: { flex: 1 },
   connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
+  needsYouBanner: {
+    backgroundColor: '#2A1F05',
+    borderColor: '#F59E0B',
+    borderWidth: 1,
+    borderRadius: 8,
+    margin: 12,
+    marginBottom: 0,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  needsYouContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  needsYouTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  needsYouTitle: {
+    color: '#F59E0B',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  needsYouSubtitle: {
+    color: '#D1D5DB',
+    fontSize: 11,
+  },
+  needsYouBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  needsYouBtnText: {
+    color: '#0A0A0A',
+    fontSize: 12,
+    fontWeight: '700',
+  },
 });

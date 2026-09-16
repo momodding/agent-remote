@@ -6,6 +6,7 @@ jest.mock('react-native', () => {
     ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, data, renderItem, ...props }: { ListEmptyComponent?: React.ReactNode; data?: unknown[]; renderItem?: (info: { item: unknown; index: number }) => React.ReactNode }) => React.createElement('FlatList', props, data && renderItem ? data.map((item, index) => renderItem({ item, index })) : ListEmptyComponent),
     Keyboard: { addListener: () => ({ remove: jest.fn() }), dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
+    useColorScheme: () => 'dark',
     useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
   };
 });
@@ -14,6 +15,21 @@ jest.mock('expo-crypto', () => ({ randomUUID: () => 'generated-tab' }));
 jest.mock('react-native-safe-area-context', () => {
   const React = require('react');
   return { SafeAreaView: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('SafeAreaView', props, children), useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) };
+});
+jest.mock('expo-blur', () => ({ BlurView: () => null }));
+jest.mock('@gorhom/bottom-sheet', () => {
+  const React = require('react');
+  return {
+    BottomSheetBackdrop: () => null,
+    BottomSheetModal: React.forwardRef(({ children, ...props }: { children?: React.ReactNode }, ref: React.Ref<unknown>) => {
+      React.useImperativeHandle(ref, () => ({ present: () => {}, dismiss: () => {} }));
+      return React.createElement('BottomSheetModal', props, children);
+    }),
+    BottomSheetView: ({ children, ...props }: { children?: React.ReactNode }) =>
+      React.createElement('BottomSheetView', props, children),
+    BottomSheetScrollView: ({ children, ...props }: { children?: React.ReactNode }) =>
+      React.createElement('BottomSheetScrollView', props, children),
+  };
 });
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 
@@ -64,7 +80,7 @@ jest.mock('./lib/runtime-channel', () => ({
     closeChannel: jest.fn(),
   })),
 }));
-const mockDispatch = jest.fn();
+const mockDispatch = jest.fn((fn: unknown) => (typeof fn === 'function' ? fn({ tabs: [mockTab], activeId: mockTab.tabId, layout: {} }) : fn));
 const mockCloseTab = jest.fn();
 jest.mock('./lib/tabs/tab-store', () => ({
   useTabStore: () => ({ state: { tabs: [mockTab], activeId: mockTab.tabId, layout: {} }, dispatch: mockDispatch, closeTab: mockCloseTab }),
@@ -190,5 +206,52 @@ describe('AgentScreen capability gates', () => {
 
     act(() => tree.unmount());
     jest.useRealTimers();
+  });
+  it('renders needsYou banner when state is needsYou and switches to terminal on CTA tap', async () => {
+    mockTab.state = 'needsYou';
+    const tree = await renderScreen();
+
+    const banner = tree.root.findByProps({ accessibilityLabel: 'Needs Approval Banner' });
+    expect(banner).toBeTruthy();
+
+    const openTerminalBtn = tree.root.findByProps({ accessibilityLabel: 'Open Terminal' });
+    expect(openTerminalBtn).toBeTruthy();
+
+    await act(async () => {
+      openTerminalBtn.props.onPress();
+    });
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminal View' })).toBeTruthy();
+    act(() => tree.unmount());
+    mockTab.state = 'working';
+  });
+
+  it('opens Files tab with agent workspace relative cwd on header action', async () => {
+    mockTab.cwd = 'src/components';
+    const tree = await renderScreen();
+
+    const openFilesBtn = tree.root.findByProps({ accessibilityLabel: 'Open Files' });
+    expect(openFilesBtn).toBeTruthy();
+
+    await act(async () => {
+      openFilesBtn.props.onPress();
+    });
+
+    const { addTab } = require('./lib/tabs/tab-store');
+    const { router } = require('expo-router');
+
+    expect(addTab).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: 'files',
+        daemonId: mockTab.daemonId,
+        cwd: 'src/components',
+      })
+    );
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/files/[id]',
+      params: { id: 'generated-tab' },
+    });
+    act(() => tree.unmount());
   });
 });

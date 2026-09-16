@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint run-daemon run-client run-client-web help
+.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint verify-phase1-4 run-daemon run-client run-client-web help
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
@@ -183,6 +183,24 @@ client-build-ios:
 test:
 	$(MAKE) backend-test
 	$(MAKE) client-test
+
+verify-phase1-4:
+	@echo "Building backend..."
+	cd backend && go build ./...
+	@echo "Running vet..."
+	cd backend && go vet ./...
+	@echo "Running hermetic Golden Flow tests..."
+	cd backend && go test -v -count=1 ./internal/agent/... -run 'TestGoldenFlowHermetic.*' -timeout 600s
+	cd backend && go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s
+	@echo "Running full backend test suite..."
+	cd backend && go test -count=1 -timeout 600s ./...
+	@echo "Running race detector on concurrency-sensitive packages..."
+	cd backend && go test -race -count=1 -timeout 600s ./internal/agent/... ./internal/session/...
+	@echo "Running client typecheck..."
+	cd client && bun install && bun run typecheck
+	@echo "Running client test suite..."
+	cd client && bun run test
+	@echo "===== verify-phase1-4 PASSED ====="
 
 lint:
 	cd backend && go vet ./...

@@ -45,6 +45,12 @@ type WaitState struct {
 	Matched    string  `json:"matched"`
 }
 
+type AgentModelInfo struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
 type AgentCapability struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
@@ -59,6 +65,10 @@ type AgentSession struct {
 	CWD               string            `json:"cwd"`
 	State             string            `json:"state"`
 	Capabilities      []AgentCapability `json:"capabilities"`
+	Model             *AgentModelInfo   `json:"model,omitempty"`
+	Thinking          string            `json:"thinking,omitempty"`
+	AvailableModels   []AgentModelInfo  `json:"availableModels,omitempty"`
+	AvailableThinking []string          `json:"availableThinking,omitempty"`
 	CreatedAt         time.Time         `json:"createdAt"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
 }
@@ -75,9 +85,13 @@ type AgentEvent struct {
 	ToolInput    any               `json:"toolInput,omitempty"`
 	ToolOutput   any               `json:"toolOutput,omitempty"`
 	State        string            `json:"state,omitempty"`
-	Capabilities []AgentCapability `json:"capabilities,omitempty"`
-	IsError      bool              `json:"isError,omitempty"`
-	Aborted      bool              `json:"aborted,omitempty"`
+	Capabilities      []AgentCapability `json:"capabilities,omitempty"`
+	Model             *AgentModelInfo   `json:"model,omitempty"`
+	Thinking          string            `json:"thinking,omitempty"`
+	AvailableModels   []AgentModelInfo  `json:"availableModels,omitempty"`
+	AvailableThinking []string          `json:"availableThinking,omitempty"`
+	IsError           bool              `json:"isError,omitempty"`
+	Aborted           bool              `json:"aborted,omitempty"`
 }
 
 type AgentHistoryResponse struct {
