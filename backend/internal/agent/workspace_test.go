@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,10 +13,12 @@ import (
 )
 
 func TestAgentWorkspaceRelativeCWDAndJSONSerialization(t *testing.T) {
+	if _, err := exec.LookPath("omp"); err != nil {
+		t.Skip("omp binary not found in PATH")
+	}
 	daemonHome := t.TempDir()
 	stateDir := t.TempDir()
 	workspaceRoot := t.TempDir()
-
 	nestedDir := filepath.Join(workspaceRoot, "projects", "frontend")
 	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
 		t.Fatalf("failed to create nested dir: %v", err)
