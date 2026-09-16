@@ -33,3 +33,6 @@
 
 ## Unresolved Limitations
 - `Close()` in `backend/internal/session/manager.go` was intentionally NOT refactored to share `cleanupRuntime` with `Terminate()`. This is a deliberate design decision maintaining clean separation between presentation-only tab dismissal (which does not kill running background processes) and destructive process termination (`Terminate()`), representing a minor code-duplication style tradeoff rather than a functional defect.
+
+## Final Push Note
+This document was committed as `4a33bd5322e5b8bdf5dc3f8474c6b1809a5d0f47` (docs-only, no code changes from `bab99c0523ef72b31cb7ebaf785902b335d7b9dd`). CI run 35135149469 confirmed `conclusion: success` for headSha `4a33bd5322e5b8bdf5dc3f8474c6b1809a5d0f47`, matching this document's own commit. The true final HEAD of `origin/main` is `4a33bd5322e5b8bdf5dc3f8474c6b1809a5d0f47`.
