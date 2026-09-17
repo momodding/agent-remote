@@ -388,3 +388,21 @@ Plan requirement: When `AGENTICREMOTE_STRICT_INTEGRATION=1` is set (such as in `
 Root cause: Integration tests previously called `t.Skipf` when `exec.LookPath("omp")` or `exec.LookPath("tmux")` failed, allowing environments without dependencies to report false-positive test passes.
 Fix: Added `requireBinary(t, name)` helper in `backend/internal/agent/hermetic_omp_test.go` that inspects `AGENTICREMOTE_STRICT_INTEGRATION`. If set to `1` or `true`, missing binaries trigger `t.Fatalf`; otherwise `t.Skipf`. Updated all skip guards in `goldenflow_hermetic_test.go` and `hermetic_omp_test.go`. Updated `Makefile` `verify-phase1-4` with environment preflight reporting and `AGENTICREMOTE_STRICT_INTEGRATION=1`. Added `integration-strict` CI job in `.github/workflows/ci.yml`.
 Tests: `TestRequireBinaryExists`, `TestRequireBinaryMissingNonStrict`, `TestRequireBinaryStrictFails` in `backend/internal/agent/hermetic_omp_test.go`; verified `make verify-phase1-4` execution. Commit: `d98b567`.
+
+## RAR-047 — Phase 5 Desktop VNC/RFB WebSocket Direct Proxy & Ticket Authentication
+Severity: P0
+Status: DONE
+Candidate HEAD: `bff4ab31841b81366e2a97a2a5f9cff8fb345f90`
+Date: 2026-09-17
+Source: Phase 5 Architecture & Security Review
+Plan requirement: Replace legacy `/v1/ws/vnc?token=` with single-use, SHA-256 hash-only ticket-gated `/v1/ws/rfb?ticket=` endpoint. Post-upgrade ticket consumption, 32MB read limit, binary-only frames enforcement (`websocket.StatusUnsupportedData` for text frames). Direct noVNC client connection over WebSocket without daemon bridge relay. Real RFB Golden Flow test with Xvfb and x11vnc under `AGENTICREMOTE_STRICT_INTEGRATION=1` / `make verify-phase5-desktop`.
+Root cause: Legacy VNC proxy exposed long-lived bearer tokens in query parameters and relied on daemon bridge relays without strict frame validation or single-use ephemeral ticket gating.
+Fix:
+- Added in-memory `DesktopTicketStore` with SHA-256 hex keys, 60s TTL, single-use `Consume()` post-upgrade, and sweep routine (`backend/internal/security/desktop_ticket.go`).
+- Added `POST /v1/desktop/sessions` endpoint returning base64url ticket and `wss://` WebSocket URL (`protocol.DesktopSessionResponse`).
+- Registered `/v1/ws/rfb` proxy endpoint enforcing two-phase ticket validation (`Valid` before dial, `Consume` after `Accept`), binary-only frames, 32MB read limit, and URL query param redaction in server logs.
+- Updated native (`client/app/desktop.tsx`) and web (`client/app/desktop.web.tsx`) clients to direct noVNC over WebSocket via `createDesktopSession()`.
+- Added strict Golden Flow integration test (`backend/internal/server/desktop_phase5_test.go`) validating real RFB 3.8 handshake, framebuffer transfer (consuming all advertised rectangles with non-Raw rejection), pointer event input, incremental update, and replay rejection (401 Unauthorized via `websocket.Dial`).
+- Updated Makefile with `verify-phase5-desktop` and `verify-all` targets, and `.github/workflows/ci.yml` `integration-strict` with `xvfb` and `x11vnc` packages.
+Scope & Limitations: Test fixture proves connect, authenticate, full framebuffer transfer, pointer input transport, and ticket replay rejection against real Xvfb/x11vnc. It does NOT claim successful dynamic desktop resize because local x11vnc lacks SetDesktopSize support. This is a known fixture capability limit, not a product workaround.
+Tests: `TestGoldenFlowPhase5Desktop`, `TestRequireBinaryDesktopPhase5`, `TestDesktopTicketStore_*`, `TestHandleRFBProxy*`, client Jest unit tests; strict target `make verify-phase5-desktop` and `make verify-all`. Passed independent FLOW, TEST, SECURITY, and ORACLE reviews.

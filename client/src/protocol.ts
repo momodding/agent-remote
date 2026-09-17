@@ -160,3 +160,9 @@ export type GitStatus = {
 export type ListShellsResponse = { shells: string[] };
 
 export type ErrorEnvelope = { type: 'error'; code: string; message: string };
+
+export type DesktopSessionResponse = {
+  ticket: string;
+  wsUrl: string;
+  expiresAt: string;
+};

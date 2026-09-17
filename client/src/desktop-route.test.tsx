@@ -1,4 +1,11 @@
-jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children, ...props }: { children?: React.ReactNode }) => require('react').createElement('SafeAreaView', props, children) }));
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => 'generated-tab',
+  digestStringAsync: jest.fn(),
+  getRandomBytes: () => new Uint8Array(32),
+}));
+jest.mock('react-native-safe-area-context', () => ({
+  SafeAreaView: ({ children, ...props }: { children?: React.ReactNode }) => require('react').createElement('SafeAreaView', props, children),
+}));
 jest.mock('react-native', () => {
   const RN = jest.requireActual('react-native');
   return { Platform: RN.Platform, Pressable: RN.Pressable, StyleSheet: RN.StyleSheet, Text: RN.Text, View: RN.View };
@@ -8,9 +15,9 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Platform } from 'react-native';
 import type { Connection, ConnectionStore } from './lib/connection';
-
 import type { DesktopWorkspaceTab } from './lib/tabs/types';
-import type { ChannelEnvelope, DaemonChannel } from './lib/daemon-channel';
+import type { DesktopSessionResponse } from './protocol';
+import { AgenticRemoteAPI } from './lib/api';
 
 const mockConnection: Connection = {
   name: 'Test daemon',
@@ -29,7 +36,8 @@ const mockTab: DesktopWorkspaceTab = {
   kind: 'desktop',
   remoteSessionId: 'sess-123',
   title: 'Mock Desktop',
-  createdAt: 0, lastActiveAt: 0,
+  createdAt: 0,
+  lastActiveAt: 0,
   pinned: false,
   state: 'connecting',
 };
@@ -37,23 +45,6 @@ const mockTabStore = {
   state: { tabs: [mockTab], activeId: mockTab.tabId, layout: {} },
   dispatch: jest.fn(),
   closeTab: jest.fn(),
-};
-
-const mockChannel: DaemonChannel = {
-  daemonId: mockConnection.hostId,
-  status: 'open',
-  send: jest.fn(),
-  subscribe: jest.fn((_channelId: string, fn: (msg: ChannelEnvelope) => void) => {
-    mockSubscribers.push(fn);
-    return jest.fn();
-  }),
-  openChannel: jest.fn(async () => 'mock-channel-id'),
-  closeChannel: jest.fn(),
-  dispose: jest.fn(),
-};
-let mockSubscribers: Array<(msg: ChannelEnvelope) => void> = [];
-const mockEmit = (msg: ChannelEnvelope) => {
-  act(() => { mockSubscribers.forEach((fn) => fn(msg)); });
 };
 
 const mockInjectJavaScript = jest.fn();
@@ -77,27 +68,21 @@ jest.mock('./lib/connection', () => ({
 jest.mock('./lib/tabs/tab-store', () => ({
   useTabStore: () => mockTabStore,
 }));
-jest.mock('./lib/daemon-channel', () => ({
-  createDaemonChannel: () => mockChannel,
-  channelRegistry: new Map(),
-}));
 jest.mock('./generated/novnc_script', () => ({ __esModule: true, default: '/* novnc */' }));
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 
 const mockIframePostMessage = jest.fn();
 
-let mockMessageListener: ((event: any) => void) | null = null;
-
 beforeEach(() => {
-  mockSubscribers = [];
-  mockMessageListener = null;
   jest.clearAllMocks();
   Object.defineProperty(Platform, 'OS', { value: 'android' });
-  const _addEventListener = jest.fn((type: string, handler: any) => {
-    if (type === 'message') mockMessageListener = handler;
-  });
-  Object.defineProperty(globalThis, 'window', { value: { addEventListener: _addEventListener, removeEventListener: jest.fn(), dispatchEvent: jest.fn() }, writable: true });
+  jest.spyOn(AgenticRemoteAPI.prototype, 'createDesktopSession').mockResolvedValue({
+    ticket: 'test-ticket-123',
+    wsUrl: 'wss://daemon.test:8765/v1/ws/rfb?ticket=test-ticket-123',
+    expiresAt: '2026-09-17T00:00:00Z',
+  } satisfies DesktopSessionResponse);
 });
+
 async function renderScreen(): Promise<ReactTestRenderer> {
   const DesktopScreen = require(Platform.OS === 'web' ? '../app/desktop.web' : '../app/desktop').default;
   let tree!: ReactTestRenderer;
@@ -113,38 +98,13 @@ async function renderScreen(): Promise<ReactTestRenderer> {
 }
 
 describe('native (WebView) desktop', () => {
-  it('embeds the mock BridgeWebSocket and configures RFB against it', async () => {
+  it('acquires a desktop session ticket and configures RFB with the ticket wsUrl', async () => {
     const tree = await renderScreen();
     const html = tree.root.findByType('WebView' as never).props.source.html as string;
-    expect(html).toContain('class BridgeWebSocket');
-    expect(html).toContain('new window.RFB(screen, "ws://bridge")');
-    expect(html).toContain("this.protocol = '';");
-    expect(html).toContain('this.onerror = null;');
-    expect(html).toContain('this.onmessage = null;');
-    expect(html).toContain('this.onopen = null;');
-    expect(html).toContain('window.ReactNativeWebView?.postMessage');
-  });
-
-  it('injects incoming channel vnc.data into the WebView', async () => {
-    await renderScreen();
-    await act(async () => {
-      mockEmit({ channelId: mockTab.remoteSessionId, kind: 'desktop', type: 'vnc.data', data: 'abcd' });
-    });
-    expect(mockInjectJavaScript).toHaveBeenCalledWith(expect.stringContaining("window.__rfb_ws.onmessage({ data: base64ToU8('abcd').buffer })"));
-  });
-
-  it('forwards vnc.data emitted by WebView back to the channel', async () => {
-    const sendSpy = jest.spyOn(mockChannel, 'send');
-    const tree = await renderScreen();
-    const webview = tree.root.findByType('WebView' as never);
-
-    await act(async () => {
-      webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'vnc.data', data: 'hello_b64' }) } });
-    });
-
-    expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'vnc.data', data: 'hello_b64', channelId: mockTab.remoteSessionId
-    }));
+    expect(html).toContain('new window.RFB(screen, "wss://daemon.test:8765/v1/ws/rfb?ticket=test-ticket-123")');
+    expect(html).not.toContain('BridgeWebSocket');
+    expect(html).not.toContain('ws://bridge');
+    expect(html).toContain('/* novnc */');
   });
 
   it('reports transport stages in order', async () => {
@@ -172,7 +132,9 @@ describe('native (WebView) desktop', () => {
   it('falls back to the raw posted body when the WebView message is not JSON', async () => {
     const tree = await renderScreen();
     const webview = tree.root.findByType('WebView' as never);
-    await act(async () => { webview.props.onMessage({ nativeEvent: { data: 'not json' } }); });
+    await act(async () => {
+      webview.props.onMessage({ nativeEvent: { data: 'not json' } });
+    });
     expect(tree.root.findByProps({ children: 'not json' })).toBeTruthy();
   });
 
@@ -180,30 +142,41 @@ describe('native (WebView) desktop', () => {
     const tree = await renderScreen();
     expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
 
-    act(() => { tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress(); });
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress();
+    });
     expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendKey(65307, "Escape");true;');
 
-    act(() => { tree.root.findByProps({ accessibilityLabel: 'Tab' }).props.onPress(); });
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Tab' }).props.onPress();
+    });
     expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendKey(65289, "Tab");true;');
 
-    act(() => { tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress(); });
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress();
+    });
     expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendCtrlAltDel();true;');
+  });
+
+  it('displays error status when createDesktopSession fails', async () => {
+    jest.spyOn(AgenticRemoteAPI.prototype, 'createDesktopSession').mockRejectedValue(new Error('VNC unavailable'));
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ children: 'VNC unavailable' })).toBeTruthy();
   });
 });
 
 describe('web (iframe) desktop', () => {
-  beforeEach(() => { Object.defineProperty(Platform, 'OS', { value: 'web' }); });
+  beforeEach(() => {
+    Object.defineProperty(Platform, 'OS', { value: 'web' });
+  });
 
-  it('renders the local generated noVNC bundle with the embedded BridgeWebSocket', async () => {
+  it('renders the local generated noVNC bundle with the ticket wsUrl in iframe', async () => {
     const tree = await renderScreen();
     const html = tree.root.findByType('iframe' as never).props.srcDoc as string;
     expect(html).toContain('/* novnc */');
     expect(html).not.toContain('cdn.jsdelivr.net');
-    expect(html).toContain('class BridgeWebSocket');
-    expect(html).toContain("this.protocol = '';");
-    expect(html).toContain('this.onerror = null;');
-    expect(html).toContain('this.onmessage = null;');
-    expect(html).toContain('this.onopen = null;');
+    expect(html).not.toContain('BridgeWebSocket');
+    expect(html).toContain('new window.RFB(screen, "wss://daemon.test:8765/v1/ws/rfb?ticket=test-ticket-123")');
     expect(html).toContain('Creating RFB…');
   });
 
@@ -211,33 +184,25 @@ describe('web (iframe) desktop', () => {
     const tree = await renderScreen();
     expect(tree.root.findByProps({ testID: 'vnc-shortcut-dock' })).toBeTruthy();
 
-    act(() => { tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress(); });
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Escape' }).props.onPress();
+    });
     expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'key', keysym: 0xff1b, name: 'Escape' }, '*');
 
-    act(() => { tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress(); });
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Tab' }).props.onPress();
+    });
+    expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'key', keysym: 0xff09, name: 'Tab' }, '*');
+
+    act(() => {
+      tree.root.findByProps({ accessibilityLabel: 'Ctrl Alt Delete' }).props.onPress();
+    });
     expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'ctrl-alt-delete' }, '*');
   });
 
-  it('injects incoming channel vnc.data into the iframe postMessage', async () => {
-    await renderScreen();
-    await act(async () => {
-      mockEmit({ channelId: mockTab.remoteSessionId, kind: 'desktop', type: 'vnc.data', data: 'xyz=' });
-    });
-    expect(mockIframePostMessage).toHaveBeenCalledWith({ type: 'vnc.data', data: 'xyz=' }, '*');
-  });
-
-  it('forwards vnc.data emitted by iframe back to the channel', async () => {
-    const sendSpy = jest.spyOn(mockChannel, 'send');
-    await renderScreen();
-    
-    await act(async () => {
-      if (mockMessageListener) {
-        mockMessageListener({ data: { type: 'vnc.data', data: 'hello_b64_web' } });
-      }
-    });
-
-    expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'vnc.data', data: 'hello_b64_web', channelId: mockTab.remoteSessionId
-    }));
+  it('displays error status when createDesktopSession fails on web', async () => {
+    jest.spyOn(AgenticRemoteAPI.prototype, 'createDesktopSession').mockRejectedValue(new Error('VNC unavailable'));
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ children: 'VNC unavailable' })).toBeTruthy();
   });
 });

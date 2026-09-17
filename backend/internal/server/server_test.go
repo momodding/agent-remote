@@ -1133,72 +1133,252 @@ func TestBootstrapRejectsNonAuthResponseJSON(t *testing.T) {
 		_ = json.NewDecoder(rec.Body)
 	}
 }
-func TestHandleVNCProxyMissingToken(t *testing.T) {
-	srv := newTestServer(t)
+func TestHandleDesktopSessionCreateRequiresAuth(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc", nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 
-func TestHandleVNCProxyInvalidToken(t *testing.T) {
-	srv := newTestServer(t)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token=bogus", nil)
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-}
-
-func TestHandleVNCProxyUnavailable(t *testing.T) {
+func TestHandleDesktopSessionCreateRejectsNonPOST(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
-	// Find an unused port to simulate VNC down
+	token := testBearerToken(t, srv, pairings)
+	req := httptest.NewRequest(http.MethodGet, "/v1/desktop/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleDesktopSessionCreateVNCUnavailable(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
 	srv.cfg.VNCPort = 40001
 	token := testBearerToken(t, srv, pairings)
 
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token="+token, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+
+	var errResp protocol.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Code != "vnc_unavailable" {
+		t.Fatalf("expected code vnc_unavailable, got %s", errResp.Code)
+	}
+}
+
+func TestHandleDesktopSessionCreateSuccess(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp protocol.DesktopSessionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Ticket == "" {
+		t.Fatal("expected non-empty ticket")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(resp.Ticket)
+	if err != nil || len(decoded) != 32 {
+		t.Fatalf("expected 32-byte raw url-encoded ticket, got %v len=%d", err, len(decoded))
+	}
+	if !strings.Contains(resp.WSUrl, "/v1/ws/rfb?ticket=") {
+		t.Fatalf("expected wsUrl to contain /v1/ws/rfb?ticket=, got %s", resp.WSUrl)
+	}
+	if !resp.ExpiresAt.After(time.Now()) {
+		t.Fatalf("expected expiresAt in future, got %v", resp.ExpiresAt)
+	}
+}
+
+func TestHandleRFBProxyMissingTicket(t *testing.T) {
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleRFBProxyInvalidTicket(t *testing.T) {
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket=bogus", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleRFBProxyExpiredTicket(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", -time.Second, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+ticket, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleRFBProxyWrongScope(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	ticket, _, err := srv.desktopTickets.Issue("wrong:scope", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+ticket, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestHandleRFBProxyUnavailable(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	srv.cfg.VNCPort = 40001
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+ticket, nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }
 
-func TestHandleVNCProxyBytesFlow(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	token := testBearerToken(t, srv, pairings)
-
-	// Start dummy VNC server
+func TestHandleRFBProxyReusedTicket(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
 	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer vncListener.Close()
-	port := vncListener.Addr().(*net.TCPAddr).Port
-	srv.cfg.VNCPort = port
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
 
 	go func() {
-		conn, err := vncListener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		buf := make([]byte, 4)
-		_, _ = conn.Read(buf)
-		if string(buf) == "PING" {
-			_, _ = conn.Write([]byte("PONG"))
+		for {
+			conn, err := vncListener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
 		}
 	}()
+
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+	// First connection succeeds
+	conn1, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("first dial failed: %v", err)
+	}
+	_ = conn1.Close(websocket.StatusNormalClosure, "")
+
+	// Second connection with same ticket fails with 401
+	_, resp, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err == nil {
+		t.Fatal("expected second dial with same ticket to fail")
+	}
+	if resp != nil && resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on reused ticket, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleRFBProxyBytesFlow(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	token := testBearerToken(t, srv, pairings)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := vncListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4)
+				n, _ := io.ReadFull(c, buf)
+				if n == 4 && string(buf) == "PING" {
+					_, _ = c.Write([]byte("PONG"))
+				}
+			}(conn)
+		}
+	}()
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+
+	// Obtain ticket via REST endpoint
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/desktop/sessions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("desktop session create status: %d", resp.StatusCode)
+	}
+	var sessResp protocol.DesktopSessionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sessResp); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+sessResp.Ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1217,9 +1397,74 @@ func TestHandleVNCProxyBytesFlow(t *testing.T) {
 	}
 }
 
-func TestHandleVNCProxyHalfClosesUpstreamOnClientClose(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	token := testBearerToken(t, srv, pairings)
+func TestHandleRFBProxyLargeFragmentedPayload(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	// Echo server
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(conn, conn)
+	}()
+
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(32 * 1024 * 1024)
+
+	// 128KB payload (larger than 32KB proxy read buffer)
+	payload := make([]byte, 128*1024)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageBinary, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	received := make([]byte, 0, len(payload))
+	for len(received) < len(payload) {
+		_, chunk, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read failed after %d bytes: %v", len(received), err)
+		}
+		received = append(received, chunk...)
+	}
+
+	if !bytes.Equal(received, payload) {
+		t.Fatalf("payload mismatch: received %d bytes, want %d bytes", len(received), len(payload))
+	}
+}
+
+func TestHandleRFBProxyHalfClosesUpstreamOnClientClose(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1251,7 +1496,8 @@ func TestHandleVNCProxyHalfClosesUpstreamOnClientClose(t *testing.T) {
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1266,9 +1512,12 @@ func TestHandleVNCProxyHalfClosesUpstreamOnClientClose(t *testing.T) {
 	}
 }
 
-func TestHandleVNCProxyCleanCloseOnUpstreamClose(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	token := testBearerToken(t, srv, pairings)
+func TestHandleRFBProxyCleanCloseOnUpstreamClose(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1290,7 +1539,7 @@ func TestHandleVNCProxyCleanCloseOnUpstreamClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/vnc?token="+token, &websocket.DialOptions{HTTPClient: ts.Client()})
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1303,23 +1552,152 @@ func TestHandleVNCProxyCleanCloseOnUpstreamClose(t *testing.T) {
 	}
 }
 
-func TestLogRequestRedactsTokens(t *testing.T) {
+func TestHandleRFBProxyFailedDialDoesNotConsumeTicket(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	srv.cfg.VNCPort = 40001
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Attempt connection while VNC is down -> expect 503
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+ticket, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+
+	// 2. Start VNC listener on new port, update config
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := vncListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4)
+				n, _ := io.ReadFull(c, buf)
+				if n == 4 && string(buf) == "PING" {
+					_, _ = c.Write([]byte("PONG"))
+				}
+			}(conn)
+		}
+	}()
+
+	// 3. Connect using the SAME ticket -> expect successful upgrade and byte flow
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("expected successful connection with unconsumed ticket, got: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("PING")); err != nil {
+		t.Fatal(err)
+	}
+	_, reply, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != "PONG" {
+		t.Fatalf("expected PONG, got %s", reply)
+	}
+}
+
+func TestHandleRFBProxyRejectsTextFrames(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	receivedText := make(chan []byte, 1)
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		receivedText <- buf[:n]
+	}()
+
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	// Send text frame
+	if err := conn.Write(ctx, websocket.MessageText, []byte("TEXT_PAYLOAD")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Expect close frame with StatusUnsupportedData
+	_, _, err = conn.Read(ctx)
+	if err == nil {
+		t.Fatal("expected error / close frame on text message")
+	}
+	status := websocket.CloseStatus(err)
+	if status != websocket.StatusUnsupportedData {
+		t.Fatalf("expected close status %d (StatusUnsupportedData), got %d (err: %v)", websocket.StatusUnsupportedData, status, err)
+	}
+
+	// Verify TCP listener received no text payload
+	select {
+	case data := <-receivedText:
+		if len(data) > 0 && strings.Contains(string(data), "TEXT_PAYLOAD") {
+			t.Fatalf("unexpected data received on upstream TCP: %s", string(data))
+		}
+	case <-time.After(100 * time.Millisecond):
+		// No data received, expected
+	}
+}
+
+func TestLogRequestRedactsTicketAndToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log.SetOutput(buf)
 	defer log.SetOutput(log.Writer())
 
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/ws/vnc?token=mysecrettoken&other=pass", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket=mysecretticket&token=mysecrettoken&other=pass", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	srv.Handler().ServeHTTP(rec, req)
 
 	logOut := buf.String()
-	if strings.Contains(logOut, "mysecrettoken") {
-		t.Fatalf("expected token to be redacted, got logs: %s", logOut)
+	if strings.Contains(logOut, "mysecretticket") || strings.Contains(logOut, "mysecrettoken") {
+		t.Fatalf("expected ticket and token to be redacted, got logs: %s", logOut)
 	}
-	if !strings.Contains(logOut, "token=REDACTED") {
-		t.Fatalf("expected REDACTED marker in logs: %s", logOut)
+	if !strings.Contains(logOut, "ticket=REDACTED") || !strings.Contains(logOut, "token=REDACTED") {
+		t.Fatalf("expected REDACTED markers in logs: %s", logOut)
 	}
 }
 

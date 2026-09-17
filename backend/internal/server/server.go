@@ -16,6 +16,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,7 @@ type Server struct {
 	cfg             config.Config
 	fs              *fsservice.Service
 	auth            *security.AuthService
+	desktopTickets  *security.DesktopTicketStore
 	sessions        SessionAPI
 	runtime         RuntimeAPI
 	agents          AgentAPI
@@ -106,7 +108,7 @@ func NewWithAgents(cfg config.Config, tlsMaterial *security.TLSMaterial, auth *s
 		mc.SetMaxSessions(cfg.MaxSessions)
 	}
 	_, ompErr := exec.LookPath("omp")
-	return &Server{cfg: cfg, fs: fsSvc, auth: auth, sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot, ompAvailable: ompErr == nil}, nil
+	return &Server{cfg: cfg, fs: fsSvc, auth: auth, desktopTickets: security.NewDesktopTicketStore(), sessions: sessions, runtime: runtimeAPI(sessions), agents: agents, notify: notify, limits: NewLimits(cfg.MaxConnections, cfg.MaxSessions), tls: tlsMaterial, pairingSnapshot: pairingSnapshot, ompAvailable: ompErr == nil}, nil
 }
 
 func runtimeAPI(sessions SessionAPI) RuntimeAPI {
@@ -138,12 +140,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/git/status", s.withAuth(s.handleGitStatus))
 	mux.HandleFunc("/v1/notify/register", s.withAuth(s.handleNotifyRegister))
 	mux.HandleFunc("/v1/daemon/identity", s.withAuth(s.handleDaemonIdentity))
+	mux.HandleFunc("/v1/desktop/sessions", s.withAuth(s.handleDesktopSessionCreate))
 	if s.cfg.PairingPageUsername != "" && s.cfg.PairingPagePassword != "" {
 		mux.HandleFunc("/pairing", s.handlePairingPage)
 	}
 	mux.HandleFunc("/v1/ws/sessions/", s.handleSessionWS)
 	mux.HandleFunc("/v1/ws/runtime", s.handleRuntimeWS)
-	mux.HandleFunc("/v1/ws/vnc", s.handleVNCProxy)
+	mux.HandleFunc("/v1/ws/rfb", s.handleRFBProxy)
 	return logRequests(cors(s.allowedCIDR(mux)))
 }
 
@@ -173,8 +176,15 @@ func logRequests(next http.Handler) http.Handler {
 		started := time.Now()
 
 		logURL := *r.URL
-		if q := logURL.Query(); q.Has("token") {
-			q.Set("token", "REDACTED")
+		q := logURL.Query()
+		modified := false
+		for _, key := range []string{"token", "ticket"} {
+			if q.Has(key) {
+				q.Set(key, "REDACTED")
+				modified = true
+			}
+		}
+		if modified {
 			logURL.RawQuery = q.Encode()
 		}
 		uri := logURL.RequestURI()
@@ -1442,10 +1452,47 @@ func (s *Server) executeCommand(ctx context.Context, cmd protocol.CommandEnvelop
 	}
 }
 
-func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
-	// 1. Auth via query token (VNC-only)
-	token := r.URL.Query().Get("token")
-	if token == "" || s.auth == nil || !s.authSession(token) {
+func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, protocol.ErrorEnvelope{Type: "error", Code: "method_not_allowed", Message: "method not allowed"})
+		return
+	}
+
+	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
+	conn, err := net.DialTimeout("tcp", vncAddr, 100*time.Millisecond)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorEnvelope{Type: "error", Code: "vnc_unavailable", Message: "VNC server is not running"})
+		return
+	}
+	_ = conn.Close()
+
+	ticket, expiresAt, err := s.desktopTickets.Issue("desktop:connect", 60*time.Second, time.Now())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "internal_error", Message: "failed to generate ticket"})
+		return
+	}
+
+	wsBase := s.cfg.PublicEndpoint
+	if strings.HasPrefix(wsBase, "https://") {
+		wsBase = "wss://" + strings.TrimPrefix(wsBase, "https://")
+	} else if strings.HasPrefix(wsBase, "http://") {
+		wsBase = "ws://" + strings.TrimPrefix(wsBase, "http://")
+	}
+	wsBase = strings.TrimRight(wsBase, "/")
+	wsUrl := fmt.Sprintf("%s/v1/ws/rfb?ticket=%s", wsBase, url.QueryEscape(ticket))
+
+	writeJSON(w, http.StatusOK, protocol.DesktopSessionResponse{
+		Ticket:    ticket,
+		WSUrl:     wsUrl,
+		ExpiresAt: expiresAt,
+	})
+}
+
+func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
+	// 1. Validate desktop ticket before resource acquisition or backend dial (fail closed)
+	ticketPlain := r.URL.Query().Get("ticket")
+	if ticketPlain == "" || s.desktopTickets == nil || !s.desktopTickets.Valid(ticketPlain, "desktop:connect", time.Now()) {
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorEnvelope{Type: "error", Code: "unauthorized", Message: "authentication failed"})
 		return
 	}
@@ -1486,8 +1533,15 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ERROR] VNC proxy: websocket accept: %v", err)
 		return
 	}
+	wsConn.SetReadLimit(32 * 1024 * 1024)
 
-	// 6. Bridge: keep TCP reads alive after a clean WebSocket close.
+	// 6. Consume ticket atomically after successful WebSocket upgrade
+	if !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
+		_ = wsConn.Close(websocket.StatusPolicyViolation, "ticket already consumed")
+		return
+	}
+
+	// 7. Bridge: keep TCP reads alive after a clean WebSocket close.
 	var wsMux sync.Mutex
 	tcpToWS := make(chan struct{})
 	go func() {
@@ -1518,7 +1572,7 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		_, data, err := wsConn.Read(r.Context())
+		msgType, data, err := wsConn.Read(r.Context())
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
 				if tcpTCP, ok := tcpConn.(*net.TCPConn); ok {
@@ -1528,6 +1582,12 @@ func (s *Server) handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			log.Printf("[DEBUG] VNC proxy: WebSocket read error: %v", err)
+			return
+		}
+		if msgType != websocket.MessageBinary {
+			wsMux.Lock()
+			_ = wsConn.Close(websocket.StatusUnsupportedData, "binary frames required")
+			wsMux.Unlock()
 			return
 		}
 		if len(data) == 0 {
