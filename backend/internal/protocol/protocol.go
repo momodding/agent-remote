@@ -179,14 +179,6 @@ type CreateSessionRequest struct {
 	Env     map[string]string `json:"-"`
 }
 
-type ResizeSessionRequest struct {
-	Cols int `json:"cols"`
-	Rows int `json:"rows"`
-}
-
-type InputRequest struct {
-	Data string `json:"data"`
-}
 
 type WriteFileRequest struct {
 	Path           string `json:"path"`

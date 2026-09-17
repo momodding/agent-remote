@@ -1,5 +1,4 @@
 import { AgenticRemoteAPI } from './api';
-import { base64, decodeBase64 } from './bytes';
 import type { Connection } from './connection';
 import type { SessionSummary, WaitState } from '../protocol';
 import type { DaemonId, TabKind } from './tabs/types';
@@ -27,13 +26,9 @@ export type PTYChannelFrame =
   | { type: 'session.state'; state: SessionSummary['state']; waitState?: WaitState }; // server -> client
 
 
-export type DesktopChannelFrame =
-  | { type: 'vnc.data'; data: string } // base64 raw RFB bytes, bidirectional
-  | { type: 'vnc.resize'; width: number; height: number }; // server -> client
-
 type ErrorChannelFrame = { type: 'error'; code: string; message: string };
 
-export type ChannelFramePayload = PTYChannelFrame | DesktopChannelFrame | ErrorChannelFrame;
+export type ChannelFramePayload = PTYChannelFrame | ErrorChannelFrame;
 
 /**
  * Every PTY/VNC-byte frame gets tagged with the tab's `channelId`
@@ -138,16 +133,6 @@ export class WebSocketDaemonChannel implements DaemonChannel {
           this.ensureSocket(channelId);
         }
       }
-    } else if (kind === 'desktop') {
-      if (envelope.type === 'vnc.data') {
-        const u8 = decodeBase64(envelope.data);
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(u8);
-        } else {
-          this.queuePending(channelId, u8);
-          this.ensureSocket(channelId);
-        }
-      }
     }
   }
 
@@ -166,24 +151,12 @@ export class WebSocketDaemonChannel implements DaemonChannel {
   private ensureSocket(channelId: string): void {
     if (this.sockets.has(channelId)) return;
 
-    const isDesktop = channelId === 'vnc' || channelId.startsWith('desktop');
-    let url: string;
-    if (isDesktop) {
-      url = `${this.connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/vnc?token=${encodeURIComponent(this.connection.token)}`;
-    } else {
-      url = `${this.connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/sessions/${encodeURIComponent(channelId)}`;
-    }
-
+    const url = `${this.connection.endpoint.replace(/^http/, 'ws').replace(/\/$/, '')}/v1/ws/sessions/${encodeURIComponent(channelId)}`;
     const socket = new WebSocket(url);
-    if (isDesktop) {
-      socket.binaryType = 'arraybuffer';
-    }
     this.sockets.set(channelId, socket);
 
     socket.onopen = () => {
-      if (!isDesktop) {
-        socket.send(JSON.stringify({ type: 'auth.token', token: this.connection.token }));
-      }
+      socket.send(JSON.stringify({ type: 'auth.token', token: this.connection.token }));
       this.reconnectAttempts.delete(channelId);
       const pending = this.pendingSends.get(channelId) || [];
       this.pendingSends.delete(channelId);
@@ -199,44 +172,37 @@ export class WebSocketDaemonChannel implements DaemonChannel {
     };
 
     socket.onmessage = (event) => {
-      if (isDesktop) {
-        const u8 = new Uint8Array(event.data as ArrayBuffer);
-        const b64 = base64(u8);
-        this.dispatch(channelId, { channelId, kind: 'desktop', type: 'vnc.data', data: b64 });
-      } else {
-        try {
-          const frame = JSON.parse(String(event.data));
-          if (frame.type === 'pty.baseline') {
-            const seq = Number(frame.seq);
-            if (Number.isFinite(seq)) this.terminalSeq.set(channelId, seq);
-            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.baseline', data: frame.data, seq: frame.seq });
-          } else if (frame.type === 'pty.output') {
-            const seq = Number(frame.seq);
-            const previous = this.terminalSeq.get(channelId);
-            if (!Number.isFinite(seq) || (previous !== undefined && seq <= previous)) return;
-            this.terminalSeq.set(channelId, seq);
-            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.output', data: frame.data, seq: frame.seq });
-          } else if (frame.type === 'session.state') {
-            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'session.state', state: frame.state, waitState: frame.waitState });
-          } else if (frame.type === 'error') {
-            this.dispatch(channelId, { channelId, kind: 'terminal', type: 'error', code: frame.code, message: frame.message });
-          }
-        } catch {}
-      }
+      try {
+        const frame = JSON.parse(String(event.data));
+        if (frame.type === 'pty.baseline') {
+          const seq = Number(frame.seq);
+          if (Number.isFinite(seq)) this.terminalSeq.set(channelId, seq);
+          this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.baseline', data: frame.data, seq: frame.seq });
+        } else if (frame.type === 'pty.output') {
+          const seq = Number(frame.seq);
+          const previous = this.terminalSeq.get(channelId);
+          if (!Number.isFinite(seq) || (previous !== undefined && seq <= previous)) return;
+          this.terminalSeq.set(channelId, seq);
+          this.dispatch(channelId, { channelId, kind: 'terminal', type: 'pty.output', data: frame.data, seq: frame.seq });
+        } else if (frame.type === 'session.state') {
+          this.dispatch(channelId, { channelId, kind: 'terminal', type: 'session.state', state: frame.state, waitState: frame.waitState });
+        } else if (frame.type === 'error') {
+          this.dispatch(channelId, { channelId, kind: 'terminal', type: 'error', code: frame.code, message: frame.message });
+        }
+      } catch {}
     };
 
     socket.onerror = () => {
-      this.dispatch(channelId, { channelId, kind: isDesktop ? 'desktop' : 'terminal', type: 'error', code: 'ws_error', message: 'WebSocket connection error' });
+      this.dispatch(channelId, { channelId, kind: 'terminal', type: 'error', code: 'ws_error', message: 'WebSocket connection error' });
     };
 
     socket.onclose = () => {
       if (this.sockets.get(channelId) !== socket) return;
       this.sockets.delete(channelId);
-      if (!isDesktop && this.status !== 'closed' && this.subscribers.has(channelId)) {
+      if (this.status !== 'closed' && this.subscribers.has(channelId)) {
         this.scheduleReconnect(channelId);
       }
     };
-
   }
 
   private scheduleReconnect(channelId: string): void {

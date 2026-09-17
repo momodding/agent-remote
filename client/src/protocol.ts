@@ -122,6 +122,10 @@ export type Capability = {
   enabled: boolean;
 };
 
+export type CapabilitiesResponse = {
+  capabilities: Capability[];
+};
+
 export type DaemonCapabilities = {
   identity: HostIdentity;
   capabilities: Capability[];
@@ -148,16 +152,33 @@ export type FileEntry = {
 };
 
 export type ReadFileResponse = { path: string; sha256: string; text: string };
+export type ListFilesResponse = {
+  entries: FileEntry[];
+};
 
 export type RenameFileRequest = { path: string; newPath: string };
 export type CopyFileRequest = { path: string; newPath: string };
 
+export type GitEntry = {
+  code: string;
+  path: string;
+};
+
 export type GitStatus = {
   available: boolean;
-  entries: Array<{ code: string; path: string }>;
+  entries: GitEntry[];
+};
+
+export type GitStatusResponse = {
+  available: boolean;
+  entries: GitEntry[];
 };
 
 export type ListShellsResponse = { shells: string[] };
+export type NotifyRegisterRequest = {
+  provider: string;
+  token: string;
+};
 
 export type ErrorEnvelope = { type: 'error'; code: string; message: string };
 
@@ -165,4 +186,31 @@ export type DesktopSessionResponse = {
   ticket: string;
   wsUrl: string;
   expiresAt: string;
+};
+
+export type PTYInputEnvelope = {
+  type: 'pty.input';
+  sessionId: string;
+  data: string;
+};
+
+export type PTYOutputEnvelope = {
+  type: 'pty.output';
+  sessionId: string;
+  data: string;
+  seq: number;
+};
+
+export type PTYResizeEnvelope = {
+  type: 'pty.resize';
+  sessionId: string;
+  cols: number;
+  rows: number;
+};
+
+export type SessionStateEnvelope = {
+  type: 'session.state';
+  sessionId: string;
+  state: string;
+  waitState?: WaitState;
 };
