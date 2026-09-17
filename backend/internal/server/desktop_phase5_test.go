@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -164,6 +165,7 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 
 	ts := httptest.NewTLSServer(srv.Handler())
 	defer ts.Close()
+	srv.cfg.PublicEndpoint = ts.URL
 
 	bearerToken := testBearerToken(t, srv, pairings)
 
@@ -200,20 +202,23 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 	}
 
 	ttlRemaining := time.Until(sessionResp.ExpiresAt)
-	if ttlRemaining < 30*time.Second || ttlRemaining > 10*time.Minute {
-		t.Fatalf("expected reasonable expiration ~5m, got expiresAt=%v (ttl remaining: %v)", sessionResp.ExpiresAt, ttlRemaining)
+	if ttlRemaining < 45*time.Second || ttlRemaining > 65*time.Second {
+		t.Fatalf("expected expiration ~60s, got expiresAt=%v (ttl remaining: %v)", sessionResp.ExpiresAt, ttlRemaining)
 	}
 
-	if !strings.Contains(sessionResp.WSUrl, "/v1/ws/rfb?ticket="+sessionResp.Ticket) {
-		t.Fatalf("expected wsUrl to contain /v1/ws/rfb?ticket=..., got %s", sessionResp.WSUrl)
+	if !strings.HasPrefix(sessionResp.WSUrl, "wss://") {
+		t.Fatalf("expected WSUrl to have wss:// scheme, got %s", sessionResp.WSUrl)
+	}
+	expectedWsURL := fmt.Sprintf("wss://%s/v1/ws/rfb?ticket=%s", strings.TrimPrefix(ts.URL, "https://"), url.QueryEscape(sessionResp.Ticket))
+	if sessionResp.WSUrl != expectedWsURL {
+		t.Fatalf("expected WSUrl prefix and path match (without logging ticket secret), mismatch observed")
 	}
 	if strings.Contains(sessionResp.WSUrl, bearerToken) || strings.Contains(sessionResp.WSUrl, "token=") {
-		t.Fatalf("expected wsUrl to NOT contain bearer token, got %s", sessionResp.WSUrl)
+		t.Fatal("expected WSUrl to NOT contain bearer token")
 	}
 
-	// Step D: Dial WebSocket to /v1/ws/rfb?ticket=<ticket>
-	wsEndpoint := ts.URL + "/v1/ws/rfb?ticket=" + sessionResp.Ticket
-	wsConn, _, err := websocket.Dial(ctx, wsEndpoint, &websocket.DialOptions{
+	// Step D: Dial WebSocket directly to returned sessionResp.WSUrl
+	wsConn, _, err := websocket.Dial(ctx, sessionResp.WSUrl, &websocket.DialOptions{
 		HTTPClient: ts.Client(),
 	})
 	if err != nil {
@@ -375,23 +380,57 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 	if _, err := stream.Write(pointerMsg); err != nil {
 		t.Fatalf("failed to send pointer input event: %v", err)
 	}
+	// 10. Send incremental FramebufferUpdateRequest to verify x11vnc connection remains established after input
+	incrementalReq := []byte{
+		3,                                   // message-type: FramebufferUpdateRequest
+		1,                                   // incremental: 1
+		0, 0,                                // x: 0
+		0, 0,                                // y: 0
+		byte(fbWidth >> 8), byte(fbWidth),   // width
+		byte(fbHeight >> 8), byte(fbHeight), // height
+	}
+	if _, err := stream.Write(incrementalReq); err != nil {
+		t.Fatalf("failed to write incremental FramebufferUpdateRequest: %v", err)
+	}
 
-	// 10. Clean close
+	// Read incremental FramebufferUpdate header (4 bytes; 0 rects is valid for incremental)
+	incUpdateHdr := make([]byte, 4)
+	if _, err := io.ReadFull(stream, incUpdateHdr); err != nil {
+		t.Fatalf("failed to read incremental FramebufferUpdate header: %v", err)
+	}
+	if incUpdateHdr[0] != 0 {
+		t.Fatalf("expected message-type 0 (FramebufferUpdate), got %d", incUpdateHdr[0])
+	}
+	incNumRects := binary.BigEndian.Uint16(incUpdateHdr[2:4])
+	for range incNumRects {
+		rectHdr := make([]byte, 12)
+		if _, err := io.ReadFull(stream, rectHdr); err != nil {
+			t.Fatalf("failed to read incremental rect header: %v", err)
+		}
+		rw := binary.BigEndian.Uint16(rectHdr[4:6])
+		rh := binary.BigEndian.Uint16(rectHdr[6:8])
+		renc := binary.BigEndian.Uint32(rectHdr[8:12])
+		if renc == 0 {
+			pData := make([]byte, int(rw)*int(rh)*bytesPerPixel)
+			if _, err := io.ReadFull(stream, pData); err != nil {
+				t.Fatalf("failed to read incremental rect pixel data: %v", err)
+			}
+		}
+	}
+
+	// 11. Clean close
 	_ = wsConn.Close(websocket.StatusNormalClosure, "test completed")
 
-	// Step E: Verify ticket reuse rejection
-	reuseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, wsEndpoint, nil)
-	if err != nil {
-		t.Fatalf("failed to build reuse request: %v", err)
+	// Step E: Verify ticket reuse rejection via websocket.Dial to same wsUrl
+	reuseConn, reuseResp, dialErr := websocket.Dial(ctx, sessionResp.WSUrl, &websocket.DialOptions{
+		HTTPClient: ts.Client(),
+	})
+	if dialErr == nil {
+		defer reuseConn.CloseNow()
+		t.Fatal("expected websocket.Dial to fail for consumed ticket, but succeeded")
 	}
-	reuseResp, err := ts.Client().Do(reuseReq)
-	if err != nil {
-		// Connection failed/rejected is valid
-	} else {
-		defer reuseResp.Body.Close()
-		if reuseResp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401 Unauthorized for reused ticket, got %d", reuseResp.StatusCode)
-		}
+	if reuseResp != nil && reuseResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected HTTP 401 Unauthorized for reused ticket, got %d", reuseResp.StatusCode)
 	}
 }
 
