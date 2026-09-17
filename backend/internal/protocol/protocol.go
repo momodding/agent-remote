@@ -305,3 +305,9 @@ type NotifyRegisterRequest struct {
 type ListShellsResponse struct {
 	Shells []string `json:"shells"`
 }
+
+type DesktopSessionResponse struct {
+	Ticket    string    `json:"ticket"`
+	WSUrl     string    `json:"wsUrl"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
