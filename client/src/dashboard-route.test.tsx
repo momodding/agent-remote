@@ -111,8 +111,9 @@ jest.mock('./components/PairingSheet', () => ({
 }));
 
 async function flush() {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
 }
 async function renderDashboard() {
   let tree: ReactTestRenderer;
@@ -206,7 +207,7 @@ describe('dashboard saved-daemon lifecycle', () => {
 
     expect(mockSaveConnection).toHaveBeenCalledWith({ ...paired, name: first.name });
     act(() => tree.unmount());
-  }, 10000);
+  });
 
   it('edits and deletes through ConnectionSheet callbacks and cascades tabs deletion', async () => {
     mockTabStoreState.tabs = [

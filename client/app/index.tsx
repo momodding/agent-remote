@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,15 +39,29 @@ export default function TabDeckScreen() {
 	const [agentSpawnHostId, setAgentSpawnHostId] = useState<string | null>(null);
 	const { width } = useWindowDimensions();
 	const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  const diagnosticsTimer = useRef<Parameters<typeof clearTimeout>[0] | undefined>(undefined);
 
   useEffect(() => {
-    void loadConnections()
-      .then(async (loaded) => {
-        setStore(loaded);
-        setSelectedHostId(loaded.connections[0]?.hostId ?? null);
-      })
-      .catch(() => Alert.alert('Could not load daemon connections'))
-      .finally(() => setLoading(false));
+    let active = true;
+    (async () => {
+      try {
+        const loaded = await loadConnections();
+        if (active) {
+          setStore(loaded);
+          setSelectedHostId(loaded.connections[0]?.hostId ?? null);
+        }
+      } catch {
+        if (active) Alert.alert('Could not load daemon connections');
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+      clearTimeout(diagnosticsTimer.current);
+    };
   }, []);
 
 	useEffect(() => {
@@ -70,6 +84,8 @@ export default function TabDeckScreen() {
 	}, [store.connections]);
 
   const connect = async (payload: PairingPayload, clientName: string, onStage?: (message: string) => void) => {
+    clearTimeout(diagnosticsTimer.current);
+    diagnosticsTimer.current = undefined;
     setDiagnostics([]);
     try {
       const paired = await authenticatePairing(payload, clientName, (message) => {
@@ -77,13 +93,16 @@ export default function TabDeckScreen() {
         setDiagnostics((items) => [...items, message]);
         onStage?.(message);
       });
-      const name = getConnection(store, paired.hostId)?.name ?? new URL(paired.endpoint).host;
+      const name = getConnection(storeRef.current, paired.hostId)?.name ?? new URL(paired.endpoint).host;
       disposeDaemonChannel(paired.hostId);
       disposeRuntimeChannel(paired.hostId);
       const nextStore = await saveConnection({ ...paired, name });
       setStore(nextStore);
       setSelectedHostId(paired.hostId);
-      setTimeout(() => setDiagnostics([]), 1500);
+      diagnosticsTimer.current = setTimeout(() => {
+        setDiagnostics([]);
+        diagnosticsTimer.current = undefined;
+      }, 1500);
     } catch (error) {
       setDiagnostics([]);
       throw error;
