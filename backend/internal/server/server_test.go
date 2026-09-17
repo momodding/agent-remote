@@ -1617,6 +1617,70 @@ func TestHandleRFBProxyFailedDialDoesNotConsumeTicket(t *testing.T) {
 	}
 }
 
+func TestHandleRFBProxyRejectsTextFrames(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	receivedText := make(chan []byte, 1)
+	go func() {
+		conn, err := vncListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		receivedText <- buf[:n]
+	}()
+
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	// Send text frame
+	if err := conn.Write(ctx, websocket.MessageText, []byte("TEXT_PAYLOAD")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Expect close frame with StatusUnsupportedData
+	_, _, err = conn.Read(ctx)
+	if err == nil {
+		t.Fatal("expected error / close frame on text message")
+	}
+	status := websocket.CloseStatus(err)
+	if status != websocket.StatusUnsupportedData {
+		t.Fatalf("expected close status %d (StatusUnsupportedData), got %d (err: %v)", websocket.StatusUnsupportedData, status, err)
+	}
+
+	// Verify TCP listener received no text payload
+	select {
+	case data := <-receivedText:
+		if len(data) > 0 && strings.Contains(string(data), "TEXT_PAYLOAD") {
+			t.Fatalf("unexpected data received on upstream TCP: %s", string(data))
+		}
+	case <-time.After(100 * time.Millisecond):
+		// No data received, expected
+	}
+}
+
 func TestLogRequestRedactsTicketAndToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log.SetOutput(buf)

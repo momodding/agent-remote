@@ -1572,7 +1572,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		_, data, err := wsConn.Read(r.Context())
+		msgType, data, err := wsConn.Read(r.Context())
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
 				if tcpTCP, ok := tcpConn.(*net.TCPConn); ok {
@@ -1582,6 +1582,12 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			log.Printf("[DEBUG] VNC proxy: WebSocket read error: %v", err)
+			return
+		}
+		if msgType != websocket.MessageBinary {
+			wsMux.Lock()
+			_ = wsConn.Close(websocket.StatusUnsupportedData, "binary frames required")
+			wsMux.Unlock()
 			return
 		}
 		if len(data) == 0 {
