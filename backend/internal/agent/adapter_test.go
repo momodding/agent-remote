@@ -751,6 +751,142 @@ func TestHandleBridgeSemanticNoStateOnMessage(t *testing.T) {
 	}
 }
 
+func TestHandleBridgeSemanticDeliversToSubscribers(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{
+		ID:        "agent-sub-1",
+		Capabilities: []byte("[]"),
+		State:        "idle",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, "agent.created"); err != nil {
+		t.Fatalf("failed to record agent: %v", err)
+	}
+
+	svc := &Service{
+		store:  store,
+		agents: make(map[string]*agentInstance),
+	}
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:    "agent-sub-1",
+			State: "idle",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+	svc.agents["agent-sub-1"] = inst
+
+	received := make(chan protocol.AgentEvent, 5)
+	unsub, err := svc.Subscribe("agent-sub-1", func(ev protocol.AgentEvent) {
+		received <- ev
+	})
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer unsub()
+
+	frame := BridgeSemanticFrame{
+		Event:   "message.assistant",
+		EventID: "evt-msg-1",
+		Type:    "message",
+		Text:    "hello subscriber",
+	}
+	svc.handleBridgeSemantic("agent-sub-1", frame)
+
+	select {
+	case ev := <-received:
+		if ev.EventID != "evt-msg-1" {
+			t.Fatalf("expected EventID evt-msg-1, got %s", ev.EventID)
+		}
+		if ev.Text != "hello subscriber" {
+			t.Fatalf("expected text 'hello subscriber', got %s", ev.Text)
+		}
+		if ev.Cursor == 0 {
+			t.Fatal("expected non-zero cursor on committed event")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscriber event")
+	}
+}
+
+func TestHandleBridgeSemanticDuplicateDedup(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{
+		ID:        "agent-sub-2",
+		Capabilities: []byte("[]"),
+		State:        "idle",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, "agent.created"); err != nil {
+		t.Fatalf("failed to record agent: %v", err)
+	}
+
+	svc := &Service{
+		store:  store,
+		agents: make(map[string]*agentInstance),
+	}
+	inst := &agentInstance{
+		meta: protocol.AgentSession{
+			ID:    "agent-sub-2",
+			State: "idle",
+		},
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+	svc.agents["agent-sub-2"] = inst
+
+	received := make(chan protocol.AgentEvent, 5)
+	unsub, err := svc.Subscribe("agent-sub-2", func(ev protocol.AgentEvent) {
+		received <- ev
+	})
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer unsub()
+
+	frame := BridgeSemanticFrame{
+		Event:   "message.assistant",
+		EventID: "evt-msg-dup",
+		Type:    "message",
+		Text:    "hello once",
+	}
+	svc.handleBridgeSemantic("agent-sub-2", frame)
+
+	select {
+	case ev := <-received:
+		if ev.EventID != "evt-msg-dup" {
+			t.Fatalf("expected EventID evt-msg-dup, got %s", ev.EventID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first subscriber event")
+	}
+
+	// Duplicate frame with same EventID
+	svc.handleBridgeSemantic("agent-sub-2", frame)
+
+	select {
+	case ev := <-received:
+		t.Fatalf("unexpected duplicate event received: %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+		// Success: duplicate was deduped
+	}
+}
+
 // Test RAR-037-B: handleBridgeLifecycle mutates state for lifecycle events only
 func TestHandleBridgeLifecycleStateChange(t *testing.T) {
 	svc := &Service{

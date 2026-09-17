@@ -356,7 +356,9 @@ func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame
 		}
 		event.Cursor = committed[0].Event.Cursor
 	}
-
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
 }
 
 func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance, reason string) error {
