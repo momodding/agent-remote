@@ -1,6 +1,6 @@
 # Final Project Verification
 
-- Base Commit: `927c3dce9218037104ab421ee9d32cac05872d83`
+- Base Commit: `639213fa42719350d99306e2bc2cb1af40775c2b`
 - Date: 2026-09-17
 - Environment: Linux x86_64, Go 1.26.4, Bun 1.3.14, OMP 18.1.22, tmux 3.4, Xvfb, x11vnc
 
@@ -15,13 +15,13 @@ Full verification command executed: `make verify-all`
   - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run 'TestGoldenFlowHermetic.*' -timeout 600s`:
     - `TestGoldenFlowHermeticPhase1to4`: Steps 0–21 PASS (92.82s)
     - `TestGoldenFlowHermetic_BridgeDegradation`: PASS
-  - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s`: PASS
+  - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s`: PASS (`TestHermeticOMP_CannedText`, `TestHermeticOMP_ErrorAndLatency`, `TestHermeticOMP_DirectRPC`)
   - `go test -count=1 -timeout 600s ./...`: Full backend test suite PASS (10 packages)
   - `go test -race -count=1 -timeout 600s ./internal/agent/... ./internal/session/...`: Concurrency race detector PASS (0 data races)
   - `cd client && bun install && bun run typecheck`: TypeScript typecheck PASS (`tsc --noEmit`)
-  - `cd client && bun run test`: Jest client test suite PASS (26 suites, 175 tests, 44.10s)
+  - `cd client && bun run test`: Jest client test suite PASS (26 suites, 175 tests, 50.42s)
 - `verify-phase5-desktop`:
-  - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/server -run '^TestGoldenFlowPhase5Desktop$' -timeout 180s`: PASS (8.24s)
+  - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/server -run '^TestGoldenFlowPhase5Desktop$' -timeout 180s`: PASS (5.46s)
 
 ### Hermetic Golden Flow Stress Repetitions
 Isolated consecutive runs of `TestGoldenFlowHermeticPhase1to4` under `AGENTICREMOTE_STRICT_INTEGRATION=1`:
@@ -37,27 +37,36 @@ Result: 3/3 clean executions with zero timeouts or flaky failures.
 - Client Implementation: Both Web (`client/app/desktop.web.tsx`) and Native (`client/app/desktop.tsx`) direct noVNC over WebSocket via `createDesktopSession()`, bypassing daemon bridge relays.
 - Real RFB Test Fixture (`TestGoldenFlowPhase5Desktop`): Runs against real headless Xvfb display and x11vnc daemon. Verifies RFB 3.8 protocol negotiation, security handshake (None auth), Client/Server Init, framebuffer rectangle updates with full rectangle stream consumption, pointer event dispatch, and ticket replay rejection (HTTP 401 Unauthorized via `websocket.Dial`).
 
-## 3. Client Flake Fix & Stress Evidence
+## 3. Client Flake Fix, Timeout Hardening, & Security Ledger
 
+### Client Store Ref & Timer Management
 - Target File: `client/app/index.tsx`
 - Root Cause: In `client/app/index.tsx`, `connect()` asynchronously awaits pairing authentication (`await authenticatePairing(...)`). Referencing `store` directly after the asynchronous pause captured a stale closure snapshot of `ConnectionStore`, causing `getConnection(store, paired.hostId)` to miss concurrent updates and fall back to `new URL(paired.endpoint).host`. Additionally, `diagnosticsTimer` was unmanaged across rapid reconnects and unmounts, risking dangling timeouts.
 - Fix:
   - Store Reference Synchronization: Added `storeRef = useRef(store); storeRef.current = store;` so post-await connection lookups consistently access current connection state via `getConnection(storeRef.current, paired.hostId)`.
   - Tracked Diagnostics Timer Cleanup: Added `diagnosticsTimer = useRef<Parameters<typeof clearTimeout>[0] | undefined>(undefined);`, cleared in `useEffect` unmount cleanup (`clearTimeout(diagnosticsTimer.current)`) and reset before each new pairing attempt.
-- Regression & Suite Verification:
-  - Regression coverage in `client/src/dashboard-route.test.tsx` (covering pairing lifecycle, custom daemon names, and teardown).
-  - Exact-head client test suite execution (`make client-test` / `jest --runInBand`): 26 test suites passed, 175 tests passed, 0 failures, duration 44.10s.
+
+### Adapter Command Timeout Alignment
+- Target File: `backend/internal/agent/adapter.go`
+- Root Cause: `SubmitPrompt()` and `Abort()` previously used a 10s context deadline for bridge JSON-RPC calls. Under full multi-package parallel suite execution (`go test ./...`) on heavily loaded CPUs, Bun's single-threaded event loop in `omp` experienced scheduling delays, triggering `context deadline exceeded` in `TestHermeticOMP_ErrorAndLatency`.
+- Fix:
+  - Aligned context timeouts in `SubmitPrompt` and `Abort` to 30s, matching existing 30s timeouts in `SetModel` and `SetThinkingLevel`.
+
+### Auth Challenge Sweep & Atomic Consumption
+- Target File: `backend/internal/security/auth.go`
+- Hardening:
+  - Bound pending challenge map to `maxPendingChallenges = 64`.
+  - `Begin` sweeps expired challenges before checking the 64-item ceiling, avoiding capacity starvation.
+  - `Complete` atomically extracts and deletes challenges upon lookup (`delete(a.challenges, req.ChallengeToken)` under lock), stopping replay and brute-force attempts.
 
 ## 4. Fresh Review Audit Status
 
-Review status recorded at commit `927c3dce`:
-- R1 Oracle Review: PASS at `927c3dce`
-- R1 Flow Review: PASS at `927c3dce`
-- R1 Security Review: PASS at `927c3dce`
-- R1 Test Review: PASS at `927c3dce` (`make client-test` 26/26 suites, 175/175 tests; `make lint` clean)
-- R2 Specialist Reviews: PASS at `927c3dce`
-
-Note: Committing documentation corrections advances Git HEAD from `927c3dce`. Gate sequencing requires final review consideration on the committed documentation HEAD.
+Review status recorded at commit `639213f`:
+- R1 Oracle Review: PASS at `639213f`
+- R1 Flow Review: PASS at `639213f`
+- R1 Security Review: PASS at `639213f`
+- R1 Test Review: PASS at `639213f` (`make verify-all` clean; `make client-test` 26/26 suites, 175/175 tests; `make lint` clean)
+- R2 Specialist Reviews: PASS at `639213f`
 
 ## 5. Residual Limitations & Scope Boundaries
 
