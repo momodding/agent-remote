@@ -14,10 +14,9 @@
 
 ## 2. Authentication & Authorization
 
-All non-bootstrap REST endpoints and control/terminal WebSockets (`/v1/ws/runtime`, `/v1/ws/sessions/:id`) require bearer authentication via `Authorization: Bearer <sessionToken>` (or `?token=<sessionToken>` for browser WebSocket clients).
-
-**Desktop RFB Proxy Exception (`/v1/ws/rfb`)**:
-The desktop RFB proxy WebSocket (`/v1/ws/rfb?ticket=<ticket>`) does NOT accept long-lived bearer tokens. It requires a single-use ephemeral ticket issued via `POST /v1/desktop/sessions` (60-second TTL, SHA-256 hash storage, consumed on connection). Bearer session tokens supplied in query parameters or authorization headers to `/v1/ws/rfb` are rejected.
+- **REST Endpoints**: All non-bootstrap REST endpoints require `Authorization: Bearer <sessionToken>`.
+- **Control & Terminal WebSockets (`/v1/ws/runtime`, `/v1/ws/sessions/:id`)**: Require an initial authentication envelope sent as the first WebSocket frame: `{"type": "auth.token", "token": "<sessionToken>"}` (`AuthTokenEnvelope`). The server validates the token against active sessions and closes the connection with an `auth_failed` error envelope if missing or invalid.
+- **Desktop RFB Proxy Exception (`/v1/ws/rfb`)**: The desktop RFB proxy WebSocket (`/v1/ws/rfb?ticket=<ticket>`) does NOT accept long-lived bearer tokens or `auth.token` frames. It requires a single-use ephemeral ticket issued via `POST /v1/desktop/sessions` passed in the `ticket` query parameter (60-second TTL, SHA-256 hash storage, consumed on connection). Bearer session tokens supplied to `/v1/ws/rfb` are rejected.
 
 Sensitive query parameters (`token` and `ticket`) and authorization headers are automatically redacted in server request logging (`[REDACTED]`).
 
