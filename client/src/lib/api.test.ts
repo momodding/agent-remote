@@ -107,6 +107,33 @@ describe('AgenticRemoteAPI ping', () => {
     await expect(api.ping()).rejects.toThrow('Unexpected ping response');
   });
 });
+describe('AgenticRemoteAPI createDesktopSession', () => {
+  const connection = {
+    name: 'Daemon', endpoint: 'https://daemon.example', fingerprint: '',
+    skipFingerprintVerification: true, token: 'session-token', clientName: 'client',
+  };
+  it('issues POST /v1/desktop/sessions with Bearer token', async () => {
+    const mockSession = {
+      ticket: 'test-ticket',
+      wsUrl: 'wss://daemon.example/v1/ws/rfb?ticket=test-ticket',
+      expiresAt: '2026-09-17T00:00:00Z',
+    };
+    const fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => mockSession,
+    } as Response);
+    Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
+    const { AgenticRemoteAPI } = loadModule();
+    const api = new AgenticRemoteAPI(connection);
+    const res = await api.createDesktopSession();
+    expect(res).toEqual(mockSession);
+    expect(fetch).toHaveBeenCalledWith('https://daemon.example/v1/desktop/sessions', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+    }));
+  });
+});
+
 
 describe('AgenticRemoteAPI agentHistory', () => {
   const connection = { endpoint: 'https://daemon.example', token: 'session-token' };
