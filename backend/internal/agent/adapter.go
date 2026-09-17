@@ -356,7 +356,9 @@ func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame
 		}
 		event.Cursor = committed[0].Event.Cursor
 	}
-
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
 }
 
 func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance, reason string) error {
@@ -428,8 +430,6 @@ func (s *Service) restorePersisted() {
 		return
 	}
 	for _, a := range snap.Agents {
-		var caps []protocol.AgentCapability
-		_ = json.Unmarshal(a.Capabilities, &caps)
 		resolved := a.CWD
 		for _, t := range snap.Terminals {
 			if t.ID == a.TerminalSessionID && t.CWD != "" {
@@ -446,7 +446,13 @@ func (s *Service) restorePersisted() {
 				OMPSessionFile:    a.OMPSessionFile,
 				CWD:               s.toWorkspaceRelative(a.CWD),
 				State:             a.State,
-				Capabilities:      caps,
+				Capabilities: []protocol.AgentCapability{
+					{Name: "chat", Enabled: true},
+					{Name: "prompt", Enabled: false},
+					{Name: "abort", Enabled: false},
+					{Name: "model", Enabled: false},
+					{Name: "thinking", Enabled: false},
+				},
 				CreatedAt:         a.CreatedAt,
 				UpdatedAt:         a.UpdatedAt,
 			},
@@ -470,10 +476,12 @@ func (s *Service) restorePersisted() {
 			if inst.meta.State != "exited" {
 				inst.meta.State = "exited"
 				inst.meta.UpdatedAt = time.Now().UTC()
-				s.recordAgentSummary(inst, "agent.updated")
-				s.emitState(inst)
 			}
+			s.recordAgentSummary(inst, "agent.updated")
+			s.emitState(inst)
 		} else {
+			s.recordAgentSummary(inst, "agent.updated")
+			s.emitState(inst)
 			s.watchTerminal(inst)
 		}
 		go s.pollTranscript(inst)

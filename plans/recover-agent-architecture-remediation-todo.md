@@ -352,3 +352,39 @@ Plan requirement: `BridgeServer.Close()` must safely shut down listener and back
 Root cause: `BridgeServer.Close()` called `s.listener.Close()` while holding `s.mu`, risking deadlock with `acceptLoop` attempting to acquire `s.mu`, and removed `s.socketPath` before `s.wg.Wait()` completed, causing `TempDir RemoveAll: directory not empty` errors in tests.
 Fix: Captured listener reference under `s.mu`, unlocked before calling `listener.Close()`, and invoked `s.wg.Wait()` to ensure all goroutines exited before `os.Remove(s.socketPath)`.
 Tests: `TestBridgeSessionChangedTerminatesRuntime` verified 20/20 clean runs under `go test -race -count=20 ./internal/agent/...`.
+
+## RAR-043 — Subscriber dispatch gap in handleBridgeSemantic
+Severity: P1
+Status: DONE
+Source: Architecture review & verification audit
+Plan requirement: Live bridge semantic events (e.g. `message.assistant`, `message.user`, status updates) must be dispatched directly to all registered agent event subscribers (`agent.subscriber`) in real time, with deduplication for duplicate frames.
+Root cause: `handleBridgeSemantic` in `backend/internal/agent/adapter.go` committed events to durable event store but did not iterate over `agentInstance.subscribers` to dispatch the `protocol.AgentEvent` to live subscribers. Additionally, repeated frames with identical event IDs were not deduplicated before store/subscriber dispatch.
+Fix: Added subscriber notification loop in `handleBridgeSemantic` after store commit (`for _, sub := range inst.subscribers { sub(event) }`), protected by subscriber lock, and ensured duplicate frames are deduplicated.
+Tests: `TestHandleBridgeSemanticDeliversToSubscribers`, `TestHandleBridgeSemanticDuplicateDedup` in `backend/internal/agent/adapter_test.go`. Commit: `6b57d38`.
+
+## RAR-044 — Debug logging and secret leaks in bridge.ts
+Severity: P1
+Status: DONE
+Source: Security & telemetry audit
+Plan requirement: Agent runtime bridge must not log sensitive session tokens, authorization headers, or prompt payloads to unauthenticated world-writable filesystem locations (`/tmp/bridge_debug.log`).
+Root cause: `backend/internal/agent/bridge.ts` contained `fs.appendFileSync('/tmp/bridge_debug.log', ...)` debug logging calls and imported Node `fs` / `path` modules unnecessarily, exposing bridge RPC requests, tokens, and payloads to local disk.
+Fix: Removed all file-based debug logging (`fs.appendFileSync`), removed unused `fs` and `path` imports from `bridge.ts`, and verified server request payload sanitization.
+Tests: `TestBridgeTSNoSecretLeakOrDebugLogs` in `backend/internal/agent/bridge_secret_leak_test.go`. Commit: `f2be722`.
+
+## RAR-045 — Restored persisted agent capabilities fail-closed
+Severity: P1
+Status: DONE
+Source: Architecture review & state recovery audit
+Plan requirement: Restored agent instances loaded from disk after daemon restart must initialize with fail-closed capabilities (`chat: true`, `prompt: false`, `abort: false`, `model: false`, `thinking: false`) until the bridge socket reconnects and issues a fresh `hello` frame.
+Root cause: `restorePersisted` in `backend/internal/agent/adapter.go` initialized agent metadata without enforcing fail-closed capability flags on restored instances prior to bridge reconnection.
+Fix: In `restorePersisted`, unconditionally initialized `Capabilities: protocol.AgentCapabilities{Chat: true, Prompt: false, Abort: false, Model: false, Thinking: false}` and immediately persisted/emitted the fail-closed state until bridge `hello` frame updates capabilities with live agent support.
+Tests: `TestRestoredAgentCapabilitiesFailClosedUntilBridgeHello` in `backend/internal/agent/adapter_test.go`. Commit: `ebcc4db`.
+
+## RAR-046 — Integration test strict-mode fail-closed enforcement (requireBinary + verify-phase1-4 + CI)
+Severity: P1
+Status: DONE
+Source: Verification harness audit
+Plan requirement: When `AGENTICREMOTE_STRICT_INTEGRATION=1` is set (such as in `make verify-phase1-4` and dedicated CI integration jobs), missing external test dependencies (`omp`, `tmux`) must fail closed via `t.Fatalf` rather than silently skipping tests.
+Root cause: Integration tests previously called `t.Skipf` when `exec.LookPath("omp")` or `exec.LookPath("tmux")` failed, allowing environments without dependencies to report false-positive test passes.
+Fix: Added `requireBinary(t, name)` helper in `backend/internal/agent/hermetic_omp_test.go` that inspects `AGENTICREMOTE_STRICT_INTEGRATION`. If set to `1` or `true`, missing binaries trigger `t.Fatalf`; otherwise `t.Skipf`. Updated all skip guards in `goldenflow_hermetic_test.go` and `hermetic_omp_test.go`. Updated `Makefile` `verify-phase1-4` with environment preflight reporting and `AGENTICREMOTE_STRICT_INTEGRATION=1`. Added `integration-strict` CI job in `.github/workflows/ci.yml`.
+Tests: `TestRequireBinaryExists`, `TestRequireBinaryMissingNonStrict`, `TestRequireBinaryStrictFails` in `backend/internal/agent/hermetic_omp_test.go`; verified `make verify-phase1-4` execution. Commit: `d98b567`.

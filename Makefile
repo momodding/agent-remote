@@ -185,13 +185,21 @@ test:
 	$(MAKE) client-test
 
 verify-phase1-4:
+	@echo "===== Preflight Environment ====="
+	@echo "Git SHA: $$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+	@echo "OS:      $$(uname -s 2>/dev/null || echo 'unknown')"
+	@echo "Go:      $$(go version 2>/dev/null || echo 'not found')"
+	@echo "Bun:     $$(bun --version 2>/dev/null || echo 'not found')"
+	@echo "OMP:     $$(omp --version 2>/dev/null || echo 'not found')"
+	@echo "tmux:    $$(tmux -V 2>/dev/null || echo 'not found')"
+	@echo "================================="
 	@echo "Building backend..."
 	cd backend && go build ./...
 	@echo "Running vet..."
 	cd backend && go vet ./...
-	@echo "Running hermetic Golden Flow tests..."
-	cd backend && go test -v -count=1 ./internal/agent/... -run 'TestGoldenFlowHermetic.*' -timeout 600s
-	cd backend && go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s
+	@echo "Running hermetic Golden Flow tests (strict integration)..."
+	cd backend && AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run 'TestGoldenFlowHermetic.*' -timeout 600s
+	cd backend && AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s
 	@echo "Running full backend test suite..."
 	cd backend && go test -count=1 -timeout 600s ./...
 	@echo "Running race detector on concurrency-sensitive packages..."

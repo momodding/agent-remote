@@ -33,6 +33,30 @@ jobs:
       - run: bun run test
       - run: bun run build:web
 
+  integration-strict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install system dependencies (tmux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+      # Note: OMP distribution/installation in CI depends on public npm/bun/binary availability.
+      # If omp is distributed on npm/bun, e.g.:
+      #   bun add -g @oh-my-pi/pi-coding-agent || true
+      # AGENTICREMOTE_STRICT_INTEGRATION=1 ensures make verify-phase1-4 fails closed if omp is missing.
+      - name: Run strict Phase 1-4 verification
+        env:
+          AGENTICREMOTE_STRICT_INTEGRATION: "1"
+        run: |
+          make verify-phase1-4
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [go, client]

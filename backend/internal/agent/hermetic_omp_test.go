@@ -336,12 +336,54 @@ modelRoles:
 	t.Setenv("OMP_AGENT_MODELS_FILE", filepath.Join(agentDir, "models.yml"))
 }
 
+// requireBinary checks for a required executable binary in PATH.
+// If not found and AGENTICREMOTE_STRICT_INTEGRATION=1, it fails the test with t.Fatalf.
+// Otherwise, it skips the test with t.Skip.
+func requireBinary(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		if os.Getenv("AGENTICREMOTE_STRICT_INTEGRATION") == "1" {
+			t.Fatalf("AGENTICREMOTE_STRICT_INTEGRATION=1: %s binary required but not found in PATH", name)
+		}
+		t.Skipf("%s binary not found in PATH; skipping test", name)
+	}
+	return path
+}
+
+func TestRequireBinaryExists(t *testing.T) {
+	p := requireBinary(t, "go")
+	if p == "" {
+		t.Fatal("expected non-empty path for existing binary 'go'")
+	}
+}
+
+func TestRequireBinaryMissingNonStrict(t *testing.T) {
+	t.Setenv("AGENTICREMOTE_STRICT_INTEGRATION", "")
+	requireBinary(t, "non_existent_binary_xyz_12345")
+	t.Fatal("should have skipped")
+}
+
+func TestRequireBinaryStrictFails(t *testing.T) {
+	if os.Getenv("TEST_REQUIRE_BINARY_SUB") == "1" {
+		requireBinary(t, "non_existent_binary_xyz_12345")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRequireBinaryStrictFails$")
+	cmd.Env = append(os.Environ(), "TEST_REQUIRE_BINARY_SUB=1", "AGENTICREMOTE_STRICT_INTEGRATION=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected command to fail when AGENTICREMOTE_STRICT_INTEGRATION=1, but passed. Output: %s", string(out))
+	}
+	if !strings.Contains(string(out), "AGENTICREMOTE_STRICT_INTEGRATION=1: non_existent_binary_xyz_12345 binary required") {
+		t.Fatalf("expected strict failure message in output, got: %s", string(out))
+	}
+}
+
 // TestHermeticOMP_CannedText verifies that real omp binary executes a prompt turn
 // against the local deterministic mock server and records the assistant response in transcript.
 func TestHermeticOMP_CannedText(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp binary not found in PATH")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
@@ -449,9 +491,7 @@ func TestHermeticOMP_CannedText(t *testing.T) {
 // TestHermeticOMP_ToolCallsAndContinuation verifies that real omp handles tool calls,
 // executes the requested tool (bash echo), and sends tool output back to complete the turn.
 func TestHermeticOMP_ToolCallsAndContinuation(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp binary not found in PATH")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
@@ -564,9 +604,7 @@ func TestHermeticOMP_ToolCallsAndContinuation(t *testing.T) {
 
 // TestHermeticOMP_Unicode verifies multibyte UTF-8 and unicode streaming without corruption.
 func TestHermeticOMP_Unicode(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp binary not found in PATH")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
@@ -653,9 +691,7 @@ func TestHermeticOMP_Unicode(t *testing.T) {
 
 // TestHermeticOMP_ErrorAndLatency verifies error responses and latency delays are handled gracefully.
 func TestHermeticOMP_ErrorAndLatency(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp binary not found in PATH")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
@@ -740,9 +776,7 @@ func TestHermeticOMP_ErrorAndLatency(t *testing.T) {
 // TestHermeticOMP_TruthfulCapabilitiesAndDegradation verifies that capabilities
 // truthfully reflect live bridge state: enabled when bridge connects, disabled when disconnected.
 func TestHermeticOMP_TruthfulCapabilitiesAndDegradation(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp binary not found in PATH")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()

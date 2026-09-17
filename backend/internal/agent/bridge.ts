@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as net from "node:net";
 type ThinkingLevelParam = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
@@ -50,9 +49,6 @@ export default function (pi: ExtensionAPI) {
 	const socketPath = process.env.AGENTIC_REMOTE_BRIDGE_SOCKET;
 	const agentId = process.env.AGENTIC_REMOTE_BRIDGE_AGENT_ID;
 	const secret = process.env.AGENTIC_REMOTE_BRIDGE_SECRET;
-	try {
-		fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] bridge.ts init: socketPath=${socketPath}, agentId=${agentId}, secret=${secret}\n`);
-	} catch {}
 
 	if (!socketPath || !agentId || !secret) {
 		return;
@@ -459,9 +455,6 @@ export default function (pi: ExtensionAPI) {
 			initialSessionFile = sessionFile;
 		}
 		const meta = getModelMetadata(ctx);
-		try {
-			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] sendHello: sessionId=${sessionId}, sessionFile=${sessionFile}\n`);
-		} catch {}
 		sendFrame({
 			type: "hello",
 			agentId,
@@ -484,14 +477,8 @@ export default function (pi: ExtensionAPI) {
 
 	function connect() {
 		if (socket || !socketPath) return;
-		try {
-			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] connect() starting to ${socketPath}\n`);
-		} catch {}
 		socket = net.createConnection({ path: socketPath });
 		socket.on("connect", () => {
-			try {
-				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket onConnect, latestCtx=${!!latestCtx}\n`);
-			} catch {}
 			isConnected = true;
 			retryDelayMs = 100;
 			if (latestCtx) {
@@ -524,16 +511,10 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		socket.on("error", (err) => {
-			try {
-				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket error: ${err}\n`);
-			} catch {}
 			socket?.destroy();
 		});
 
 		socket.on("close", () => {
-			try {
-				fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] socket close\n`);
-			} catch {}
 			isConnected = false;
 			socket = null;
 			scheduleReconnect();
@@ -541,9 +522,6 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		try {
-			fs.appendFileSync("/tmp/bridge_debug.log", `[${new Date().toISOString()}] session_start event fired\n`);
-		} catch {}
 		latestCtx = ctx;
 		emittedEntryIds.clear();
 		emitNewEntries(ctx.sessionManager);
