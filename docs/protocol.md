@@ -23,7 +23,7 @@ Sensitive query parameters (`token` and `ticket`) and authorization headers are 
 ## 3. REST API Endpoints
 
 ### Identity & Health
-- `GET /healthz`: Public service health check (`{"status":"ok"}`).
+- `GET /healthz`: Public service health check (`{"ok": true, "version": "dev"}`).
 - `GET /ping`: Public simple ping (`pong`).
 - `GET /v1/daemon/identity`: Authenticated host identity and daemon capabilities (`HostIdentity` + `capabilities: []`).
 - `GET /v1/shells`: Authenticated list of available login shells on the host (`{"shells": ["/bin/bash", ...]}`).
