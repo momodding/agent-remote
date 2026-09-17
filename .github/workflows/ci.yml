@@ -47,10 +47,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux
-      # Note: OMP distribution/installation in CI depends on public npm/bun/binary availability.
-      # If omp is distributed on npm/bun, e.g.:
-      #   bun add -g @oh-my-pi/pi-coding-agent || true
-      # AGENTICREMOTE_STRICT_INTEGRATION=1 ensures make verify-phase1-4 fails closed if omp is missing.
+      - name: Install OMP (pinned to 18.1.22 from public npm registry)
+        run: |
+          bun add -g @oh-my-pi/pi-coding-agent@18.1.22
+          echo "$(bun pm bin -g)" >> $GITHUB_PATH
       - name: Run strict Phase 1-4 verification
         env:
           AGENTICREMOTE_STRICT_INTEGRATION: "1"
