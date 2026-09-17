@@ -31,9 +31,7 @@ Sensitive query parameters (`token` and `ticket`) and authorization headers are 
 ### Terminal Sessions
 - `GET /v1/sessions`: List active terminal session summaries.
 - `POST /v1/sessions`: Create a new terminal session (`CreateSessionRequest`: `name`, `command`, `args`, `cwd`, `cols`, `rows`, optional `backend`).
-- `GET /v1/sessions/:id`: Get session summary.
-- `DELETE /v1/sessions/:id`: Terminate session.
-- `POST /v1/sessions/:id/restart`: Restart terminal session.
+- `POST /v1/sessions/:id/close`: Terminate terminal session (`{"ok": true}`).
 - `WS /v1/ws/sessions/:id`: Raw interactive terminal WebSocket.
 
 ### Agent Sessions
