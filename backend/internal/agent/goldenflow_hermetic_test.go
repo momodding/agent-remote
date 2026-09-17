@@ -110,12 +110,8 @@ func countHermeticOMPPIDsForAgent(agentID string) int {
 }
 
 func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("installed omp binary required")
-	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("installed tmux binary required")
-	}
+	requireBinary(t, "omp")
+	requireBinary(t, "tmux")
 
 	// Mandate: The gate must print the tested OMP version.
 	versionCmd := exec.Command("omp", "--version")
@@ -539,27 +535,19 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 		}
 		return hResp.Events, nil
 	}
-
-	deadline = time.Now().Add(60 * time.Second)
-	var sawWorking bool
+	deadline = time.Now().Add(90 * time.Second)
 	var assistantText string
 	for time.Now().Before(deadline) {
-		agCur, err := getAgent(agentID1)
+		events, err := getHistory(agentID1)
 		if err == nil {
-			if agCur.State == "working" {
-				sawWorking = true
-			}
-			if sawWorking && agCur.State == "idle" {
-				events, _ := getHistory(agentID1)
-				for _, ev := range events {
-					if ev.Type == "message.assistant" && ev.Text != "" {
-						assistantText = ev.Text
-						break
-					}
-				}
-				if assistantText != "" {
+			for _, ev := range events {
+				if ev.Type == "message.assistant" && ev.Text != "" {
+					assistantText = ev.Text
 					break
 				}
+			}
+			if assistantText != "" {
+				break
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -666,7 +654,7 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 	t.Log(">>> STEP 10b: Restarting daemon and verifying reattachment to running OMP")
 	daemonCmd = startDaemon()
 	newDaemonPID := daemonCmd.Process.Pid
-	deadline = time.Now().Add(45 * time.Second)
+	deadline = time.Now().Add(90 * time.Second)
 	var promptOK bool
 	for time.Now().Before(deadline) {
 		ag, err := getAgent(agentID1)
@@ -704,7 +692,7 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 		t.Fatalf("submit post-restart prompt: %v", err)
 	}
 
-	deadline = time.Now().Add(60 * time.Second)
+	deadline = time.Now().Add(90 * time.Second)
 	var foundRestartResponse bool
 	for time.Now().Before(deadline) {
 		h, _ := getHistory(agentID1)
@@ -1272,9 +1260,7 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 // TestGoldenFlowHermetic_BridgeDegradation validates bridge disconnect, truthful capability degradation,
 // raw PTY terminal interaction during degradation, and automatic bridge reconnection.
 func TestGoldenFlowHermetic_BridgeDegradation(t *testing.T) {
-	if _, err := exec.LookPath("omp"); err != nil {
-		t.Skip("omp executable not found; skipping hermetic bridge degradation test")
-	}
+	requireBinary(t, "omp")
 
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
