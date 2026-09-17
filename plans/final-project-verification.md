@@ -1,6 +1,6 @@
 # Final Project Verification
 
-- Base Commit: `360d9de5c5fce855dbc58fd0f92713330a945755`
+- Base Commit: `927c3dce9218037104ab421ee9d32cac05872d83`
 - Date: 2026-09-17
 - Environment: Linux x86_64, Go 1.26.4, Bun 1.3.14, OMP 18.1.22, tmux 3.4, Xvfb, x11vnc
 
@@ -18,8 +18,8 @@ Full verification command executed: `make verify-all`
   - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/agent/... -run TestHermeticOMP -timeout 180s`: PASS
   - `go test -count=1 -timeout 600s ./...`: Full backend test suite PASS (10 packages)
   - `go test -race -count=1 -timeout 600s ./internal/agent/... ./internal/session/...`: Concurrency race detector PASS (0 data races)
-  - `cd client && bun install && bun run typecheck`: TypeScript typecheck PASS
-  - `cd client && bun run test`: Jest client test suite PASS (26 suites, 175 tests)
+  - `cd client && bun install && bun run typecheck`: TypeScript typecheck PASS (`tsc --noEmit`)
+  - `cd client && bun run test`: Jest client test suite PASS (26 suites, 175 tests, 44.10s)
 - `verify-phase5-desktop`:
   - `AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/server -run '^TestGoldenFlowPhase5Desktop$' -timeout 180s`: PASS (8.24s)
 
@@ -39,23 +39,25 @@ Result: 3/3 clean executions with zero timeouts or flaky failures.
 
 ## 3. Client Flake Fix & Stress Evidence
 
-- Root Cause: In `client/src/screens/DashboardScreen.tsx`, `activeTab` from Zustand `useTabsStore` became stale in background intervals/listeners if closure captures lagged state changes. A diagnostic interval also risked timer retention across unmounts.
+- Target File: `client/app/index.tsx`
+- Root Cause: In `client/app/index.tsx`, `connect()` asynchronously awaits pairing authentication (`await authenticatePairing(...)`). Referencing `store` directly after the asynchronous pause captured a stale closure snapshot of `ConnectionStore`, causing `getConnection(store, paired.hostId)` to miss concurrent updates and fall back to `new URL(paired.endpoint).host`. Additionally, `diagnosticsTimer` was unmanaged across rapid reconnects and unmounts, risking dangling timeouts.
 - Fix:
-  - Store reference synchronization: `const tabsRef = useRef(tabsStore); tabsRef.current = tabsStore;` on every render.
-  - Active tab lookup helper: `const getActiveTab = () => tabsRef.current.tabs.find((t) => t.id === tabsRef.current.activeTabId) || tabsRef.current.tabs[0];`.
-  - Diagnostics timer cleanup: Ensured all interval and timeout references are cleared in `useEffect` return hooks.
-- Verification Evidence: Full Jest test suite executed repeatedly with 26 test suites and 175 tests passing without hangs, unhandled timer leaks, or missing-key warnings.
+  - Store Reference Synchronization: Added `storeRef = useRef(store); storeRef.current = store;` so post-await connection lookups consistently access current connection state via `getConnection(storeRef.current, paired.hostId)`.
+  - Tracked Diagnostics Timer Cleanup: Added `diagnosticsTimer = useRef<Parameters<typeof clearTimeout>[0] | undefined>(undefined);`, cleared in `useEffect` unmount cleanup (`clearTimeout(diagnosticsTimer.current)`) and reset before each new pairing attempt.
+- Regression & Suite Verification:
+  - Regression coverage in `client/src/dashboard-route.test.tsx` (covering pairing lifecycle, custom daemon names, and teardown).
+  - Exact-head client test suite execution (`make client-test` / `jest --runInBand`): 26 test suites passed, 175 tests passed, 0 failures, duration 44.10s.
 
 ## 4. Fresh Review Audit Status
 
-All phase reviews confirmed passing at commit `360d9de`:
-- R1 Oracle Review: PASS
-- R1 Flow Review: PASS
-- R1 Security Review: PASS
-- R1 Test Review: PASS
-- R2 Specialist Reviews: PASS
+Review status recorded at commit `927c3dce`:
+- R1 Oracle Review: PASS at `927c3dce`
+- R1 Flow Review: PASS at `927c3dce`
+- R1 Security Review: PASS at `927c3dce`
+- R1 Test Review: PASS at `927c3dce` (`make client-test` 26/26 suites, 175/175 tests; `make lint` clean)
+- R2 Specialist Reviews: PASS at `927c3dce`
 
-Note: per gate sequencing rules, documentation commits advance Git HEAD and require fresh final review passes on the committed documentation HEAD.
+Note: Committing documentation corrections advances Git HEAD from `927c3dce`. Gate sequencing requires final review consideration on the committed documentation HEAD.
 
 ## 5. Residual Limitations & Scope Boundaries
 
