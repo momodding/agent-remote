@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint verify-phase1-4 run-daemon run-client run-client-web help
+.PHONY: backend-test backend-build daemon-build daemon-release daemon-install daemon-remove client-test client-build client-build-web client-build-android client-build-ios test lint verify-phase1-4 verify-phase5-desktop verify-all run-daemon run-client run-client-web help
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
@@ -214,6 +214,18 @@ lint:
 	cd backend && go vet ./...
 	cd client && bun install && bun run typecheck
 
+verify-phase5-desktop:
+	@echo "===== Preflight Environment (Phase 5 Desktop) ====="
+	@echo "Git SHA: $$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+	@echo "OS:      $$(uname -s 2>/dev/null || echo 'unknown')"
+	@echo "Go:      $$(go version 2>/dev/null || echo 'not found')"
+	@echo "Xvfb:    $$(which Xvfb 2>/dev/null || echo 'not found')"
+	@echo "x11vnc:  $$(x11vnc -version 2>&1 | head -n 1 2>/dev/null || echo 'not found')"
+	@echo "==================================================="
+	@echo "Running Phase 5 Desktop Golden Flow test (strict integration)..."
+	cd backend && AGENTICREMOTE_STRICT_INTEGRATION=1 go test -v -count=1 ./internal/server -run '^TestGoldenFlowPhase5Desktop$$' -timeout 180s
+	@echo "===== verify-phase5-desktop PASSED ====="
+verify-all: verify-phase1-4 verify-phase5-desktop
 run-daemon:
 	cd backend && go run ./cmd/agenticRemote serve --config ../examples/config.local.json
 
