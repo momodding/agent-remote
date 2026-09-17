@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 )
+const maxPendingChallenges = 64
+
 
 const authContext = "agenticRemote-auth-v2"
 
@@ -115,17 +117,37 @@ func (a *AuthService) Begin(msg HelloMessage) (*ChallengeMessage, error) {
 		return nil, err
 	}
 	a.mu.Lock()
-	a.pending[challengeID] = pendingChallenge{Pairing: *record, ClientNonce: msg.ClientNonce, ClientName: clientName, ServerNonce: serverNonce, ChallengeID: challengeID, CreatedAt: a.now()}
+	now := a.now()
+	for id, p := range a.pending {
+		if !now.Before(p.Pairing.ExpiresAt) {
+			delete(a.pending, id)
+		}
+	}
+	if len(a.pending) >= maxPendingChallenges {
+		a.mu.Unlock()
+		return nil, errors.New("authentication failed")
+	}
+	a.pending[challengeID] = pendingChallenge{
+		Pairing:     *record,
+		ClientNonce: msg.ClientNonce,
+		ClientName:  clientName,
+		ServerNonce: serverNonce,
+		ChallengeID: challengeID,
+		CreatedAt:   now,
+	}
 	a.mu.Unlock()
 	return &ChallengeMessage{ServerNonce: serverNonce, ChallengeID: challengeID, Salt: record.Salt}, nil
 }
-
 func (a *AuthService) Complete(pairingID, challengeID, proof string) (string, error) {
 	if err := a.pairings.Cleanup(a.now()); err != nil {
 		return "", err
 	}
 	a.mu.Lock()
 	pending, ok := a.pending[challengeID]
+	if ok {
+		delete(a.pending, challengeID)
+	}
+	onPaired := a.onPaired
 	a.mu.Unlock()
 	if !ok || pending.Pairing.PairingID != pairingID || a.now().After(pending.Pairing.ExpiresAt) {
 		return "", errors.New("authentication failed")
@@ -142,10 +164,6 @@ func (a *AuthService) Complete(pairingID, challengeID, proof string) (string, er
 	if err != nil {
 		return "", errors.New("authentication failed")
 	}
-	a.mu.Lock()
-	delete(a.pending, challengeID)
-	onPaired := a.onPaired
-	a.mu.Unlock()
 	token, err := randomEncoded(32)
 	if err != nil {
 		return "", err
