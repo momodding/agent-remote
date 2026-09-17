@@ -343,31 +343,36 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 		t.Fatal("expected at least 1 rectangle in FramebufferUpdate")
 	}
 
-	// Read first rectangle header (12 bytes)
-	rectHdr := make([]byte, 12)
-	if _, err := io.ReadFull(stream, rectHdr); err != nil {
-		t.Fatalf("failed to read rectangle header: %v", err)
-	}
-	rectW := binary.BigEndian.Uint16(rectHdr[4:6])
-	rectH := binary.BigEndian.Uint16(rectHdr[6:8])
-	rectEnc := binary.BigEndian.Uint32(rectHdr[8:12])
-
-	if rectW == 0 || rectH == 0 {
-		t.Fatalf("expected non-zero rectangle dimensions, got %dx%d", rectW, rectH)
-	}
-	if rectEnc != 0 {
-		t.Fatalf("expected Raw encoding 0, got %d", rectEnc)
-	}
-
-	// Read rectangle pixel data
 	bytesPerPixel := int(bpp) / 8
 	if bytesPerPixel == 0 {
 		bytesPerPixel = 1
 	}
-	pixelDataLen := int(rectW) * int(rectH) * bytesPerPixel
-	pixelData := make([]byte, pixelDataLen)
-	if _, err := io.ReadFull(stream, pixelData); err != nil {
-		t.Fatalf("failed to read %d pixel bytes: %v", pixelDataLen, err)
+
+	var hasNonZeroRaw bool
+	for range numRects {
+		rectHdr := make([]byte, 12)
+		if _, err := io.ReadFull(stream, rectHdr); err != nil {
+			t.Fatalf("failed to read rectangle header: %v", err)
+		}
+		rectW := binary.BigEndian.Uint16(rectHdr[4:6])
+		rectH := binary.BigEndian.Uint16(rectHdr[6:8])
+		rectEnc := binary.BigEndian.Uint32(rectHdr[8:12])
+
+		if rectEnc != 0 {
+			t.Fatalf("expected Raw encoding 0, got %d", rectEnc)
+		}
+		if rectW > 0 && rectH > 0 {
+			hasNonZeroRaw = true
+		}
+
+		pixelDataLen := int(rectW) * int(rectH) * bytesPerPixel
+		pixelData := make([]byte, pixelDataLen)
+		if _, err := io.ReadFull(stream, pixelData); err != nil {
+			t.Fatalf("failed to read %d pixel bytes: %v", pixelDataLen, err)
+		}
+	}
+	if !hasNonZeroRaw {
+		t.Fatal("expected at least 1 non-zero Raw rectangle in FramebufferUpdate")
 	}
 
 	// 9. Send pointer input event: type 5, mask 0, x=100, y=100
@@ -410,11 +415,12 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 		rw := binary.BigEndian.Uint16(rectHdr[4:6])
 		rh := binary.BigEndian.Uint16(rectHdr[6:8])
 		renc := binary.BigEndian.Uint32(rectHdr[8:12])
-		if renc == 0 {
-			pData := make([]byte, int(rw)*int(rh)*bytesPerPixel)
-			if _, err := io.ReadFull(stream, pData); err != nil {
-				t.Fatalf("failed to read incremental rect pixel data: %v", err)
-			}
+		if renc != 0 {
+			t.Fatalf("expected Raw encoding 0, got %d", renc)
+		}
+		pData := make([]byte, int(rw)*int(rh)*bytesPerPixel)
+		if _, err := io.ReadFull(stream, pData); err != nil {
+			t.Fatalf("failed to read incremental rect pixel data: %v", err)
 		}
 	}
 
