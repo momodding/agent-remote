@@ -50,6 +50,25 @@ func (s *DesktopTicketStore) Issue(scope string, ttl time.Duration, now time.Tim
 
 	return plain, expiresAt, nil
 }
+// Valid checks whether the plaintext ticket is currently valid for the required scope at the given timestamp.
+// It does not mutate the ticket state or mark it consumed.
+func (s *DesktopTicketStore) Valid(plaintext, requiredScope string, now time.Time) bool {
+	if plaintext == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// ponytail: sweep expired or consumed entries on access; unbounded growth only if issued faster than expired/consumed
+	s.sweepLocked(now)
+
+	hash := hashToken(plaintext)
+	rec, ok := s.tickets[hash]
+	if !ok {
+		return false
+	}
+	return !rec.Consumed && !now.After(rec.ExpiresAt) && rec.Scope == requiredScope
+}
+
 
 // Consume validates the plaintext ticket for the required scope at the given timestamp.
 // If valid and unconsumed, it atomically marks the ticket as consumed and returns true.

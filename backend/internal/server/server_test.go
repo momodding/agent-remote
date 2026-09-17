@@ -1552,6 +1552,71 @@ func TestHandleRFBProxyCleanCloseOnUpstreamClose(t *testing.T) {
 	}
 }
 
+func TestHandleRFBProxyFailedDialDoesNotConsumeTicket(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	srv.cfg.VNCPort = 40001
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Attempt connection while VNC is down -> expect 503
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+ticket, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+
+	// 2. Start VNC listener on new port, update config
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := vncListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4)
+				n, _ := io.ReadFull(c, buf)
+				if n == 4 && string(buf) == "PING" {
+					_, _ = c.Write([]byte("PONG"))
+				}
+			}(conn)
+		}
+	}()
+
+	// 3. Connect using the SAME ticket -> expect successful upgrade and byte flow
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("expected successful connection with unconsumed ticket, got: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("PING")); err != nil {
+		t.Fatal(err)
+	}
+	_, reply, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != "PONG" {
+		t.Fatalf("expected PONG, got %s", reply)
+	}
+}
+
 func TestLogRequestRedactsTicketAndToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log.SetOutput(buf)

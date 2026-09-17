@@ -1490,9 +1490,9 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
-	// 1. Auth via single-use desktop ticket
+	// 1. Validate desktop ticket before resource acquisition or backend dial (fail closed)
 	ticketPlain := r.URL.Query().Get("ticket")
-	if ticketPlain == "" || s.desktopTickets == nil || !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
+	if ticketPlain == "" || s.desktopTickets == nil || !s.desktopTickets.Valid(ticketPlain, "desktop:connect", time.Now()) {
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorEnvelope{Type: "error", Code: "unauthorized", Message: "authentication failed"})
 		return
 	}
@@ -1535,7 +1535,13 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	wsConn.SetReadLimit(32 * 1024 * 1024)
 
-	// 6. Bridge: keep TCP reads alive after a clean WebSocket close.
+	// 6. Consume ticket atomically after successful WebSocket upgrade
+	if !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
+		_ = wsConn.Close(websocket.StatusPolicyViolation, "ticket already consumed")
+		return
+	}
+
+	// 7. Bridge: keep TCP reads alive after a clean WebSocket close.
 	var wsMux sync.Mutex
 	tcpToWS := make(chan struct{})
 	go func() {

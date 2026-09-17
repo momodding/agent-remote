@@ -59,6 +59,47 @@ func TestDesktopTicketStore_IssueAndConsume(t *testing.T) {
 		t.Fatal("expected replay consume to fail")
 	}
 }
+func TestDesktopTicketStore_ValidDoesNotMutate(t *testing.T) {
+	store := NewDesktopTicketStore()
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	plain, _, err := store.Issue("desktop:connect", time.Minute, now)
+	if err != nil {
+		t.Fatalf("unexpected Issue error: %v", err)
+	}
+
+	// Valid returns true without consuming
+	if !store.Valid(plain, "desktop:connect", now.Add(10*time.Second)) {
+		t.Fatal("expected Valid to return true")
+	}
+	if !store.Valid(plain, "desktop:connect", now.Add(20*time.Second)) {
+		t.Fatal("expected Valid to return true on second call")
+	}
+
+	// Consume succeeds
+	if !store.Consume(plain, "desktop:connect", now.Add(30*time.Second)) {
+		t.Fatal("expected Consume to return true")
+	}
+
+	// Valid returns false after Consume
+	if store.Valid(plain, "desktop:connect", now.Add(35*time.Second)) {
+		t.Fatal("expected Valid to return false after consumption")
+	}
+
+	// Invalid inputs to Valid
+	if store.Valid("", "desktop:connect", now) {
+		t.Fatal("expected Valid to return false for empty string")
+	}
+	if store.Valid("bogus", "desktop:connect", now) {
+		t.Fatal("expected Valid to return false for bogus ticket")
+	}
+	if store.Valid(plain, "other:scope", now) {
+		t.Fatal("expected Valid to return false for wrong scope")
+	}
+	if store.Valid(plain, "desktop:connect", now.Add(2*time.Hour)) {
+		t.Fatal("expected Valid to return false for expired ticket")
+	}
+}
+
 
 func TestDesktopTicketStore_WrongScope(t *testing.T) {
 	store := NewDesktopTicketStore()
