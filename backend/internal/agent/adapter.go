@@ -860,7 +860,7 @@ func (s *Service) SubmitPrompt(agentID, prompt string) error {
 	if !promptEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return s.bridgeServer.SendCommand(ctx, agentID, "prompt", map[string]any{"prompt": prompt})
 }
@@ -885,7 +885,7 @@ func (s *Service) Abort(agentID string) error {
 	if !abortEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
 		return errors.New("needs_terminal")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return s.bridgeServer.SendCommand(ctx, agentID, "abort", nil)
 }
