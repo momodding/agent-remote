@@ -13,9 +13,8 @@ export const flushImmediate = (fn: () => void): (() => void) => {
 };
 
 // ============================================================================
-// Per-kind frame payloads. `channelId` + `kind` are added by ChannelEnvelope;
-// these mirror the wire shapes desktop.tsx uses today, minus the sessionId
-// (channelId is the multiplexing key now).
+// Terminal PTY channel frame payloads. `channelId` + `kind` are added by ChannelEnvelope;
+// channelId is the multiplexing key.
 // ============================================================================
 
 export type PTYChannelFrame =
@@ -31,7 +30,7 @@ type ErrorChannelFrame = { type: 'error'; code: string; message: string };
 export type ChannelFramePayload = PTYChannelFrame | ErrorChannelFrame;
 
 /**
- * Every PTY/VNC-byte frame gets tagged with the tab's `channelId`
+ * Every PTY frame gets tagged with the tab's `channelId`
  * so tabs share multiplexing routing.
  */
 export type ChannelEnvelope = { channelId: string; kind: TabKind } & ChannelFramePayload;
@@ -83,9 +82,6 @@ export class WebSocketDaemonChannel implements DaemonChannel {
         rows: typeof meta.rows === 'number' ? meta.rows : 24,
       });
       return session.id;
-    }
-    if (kind === 'desktop') {
-      return typeof meta.channelId === 'string' && meta.channelId ? meta.channelId : 'vnc';
     }
     throw new Error(`openChannel: unsupported tab kind "${kind}"`);
   }

@@ -59,6 +59,13 @@ describe('daemon-channel', () => {
     expect(channelRegistry.get('daemon-b')).toBe(channelB);
     disposeDaemonChannel('daemon-b');
   });
+
+  it('rejects unsupported channel tab kinds', async () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'unsupported-host' });
+    await expect(channel.openChannel('desktop', {})).rejects.toThrow('openChannel: unsupported tab kind "desktop"');
+    await expect(channel.openChannel('files', {})).rejects.toThrow('openChannel: unsupported tab kind "files"');
+    disposeDaemonChannel('unsupported-host');
+  });
 });
 
 describe('WebSocketDaemonChannel raw terminal reconnect', () => {

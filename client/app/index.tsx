@@ -155,13 +155,12 @@ export default function TabDeckScreen() {
         });
         router.push({ pathname: '/files/[id]', params: { id: tabId } });
       } else if (kind === 'desktop') {
-        const remoteSessionId = await channel.openChannel('desktop', {});
         dispatch(prev => {
           const tabs = [...prev.tabs];
           tabs.push({
             tabId, daemonId: hostId, kind: 'desktop', title: 'Desktop',
             createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false,
-            remoteSessionId, state: 'connecting'
+            remoteSessionId: 'desktop', state: 'connecting'
           });
           return { ...prev, tabs, activeId: tabId };
         });
