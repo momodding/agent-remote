@@ -4,6 +4,7 @@ import type {
   CopyFileRequest,
   CreateSessionRequest,
   DaemonCapabilities,
+  DesktopSessionResponse,
   ErrorEnvelope,
   FileEntry,
   GitStatus,
@@ -43,6 +44,9 @@ export class AgenticRemoteAPI {
 
   async createSession(request: CreateSessionRequest): Promise<SessionSummary> {
     return this.request('/v1/sessions', { method: 'POST', body: JSON.stringify(request) });
+  }
+  async createDesktopSession(): Promise<DesktopSessionResponse> {
+    return this.request('/v1/desktop/sessions', { method: 'POST' });
   }
 
   async closeSession(id: string): Promise<void> {
