@@ -7,7 +7,8 @@ export default defineConfig({
   workers: 1,
   reporter: [
     ['list'],
-    ['html', { outputFolder: './artifacts/playwright-report', open: 'never' }],
+    ['html', { outputFolder: '../artifacts/playwright-report', open: 'never' }],
+    ['json', { outputFile: '../artifacts/playwright-results.json' }],
   ],
   use: {
     baseURL: process.env.CLIENT_WEB_URL || 'http://127.0.0.1:8081',
@@ -32,5 +33,5 @@ export default defineConfig({
       },
     },
   ],
-  outputDir: './artifacts/playwright',
+  outputDir: '../artifacts/playwright',
 });

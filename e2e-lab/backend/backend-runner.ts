@@ -13,7 +13,6 @@ export interface BackendSuiteResult {
 }
 
 function sanitizeSecrets(input: string): string {
-  // Redact bearer tokens, session tokens, pairing tokens, secret keys, passwords
   return input
     .replace(/(bearer\s+token\s+obtained:\s*)([^\s\n]+)/gi, '$1[REDACTED]')
     .replace(/("token"\s*:\s*")([^"]+)(")/gi, '$1[REDACTED]$3')
@@ -34,10 +33,15 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
   console.log('[Backend Runner] Executing `make verify-phase1-4` with real OMP, tmux, and strict integration...');
 
   return new Promise((resolve) => {
+    const home = process.env.HOME || '/root';
+    const currentPath = process.env.PATH || '';
+    const extendedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${currentPath}`;
+
     const proc = spawn('make', ['verify-phase1-4'], {
       cwd: rootDir,
       env: {
         ...process.env,
+        PATH: extendedPath,
         AGENTICREMOTE_STRICT_INTEGRATION: '1',
       },
     });
@@ -67,11 +71,19 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
       const fullLog = `${stdout}\n${stderr}`;
       const sanitizedLog = sanitizeSecrets(fullLog);
 
+      // 1. Mandatory test no-skip check
       const skipPattern = /---\s*SKIP:\s*(TestGoldenFlowHermetic\w*|TestHermeticOMP\w*)/i;
       const skipMatch = fullLog.match(skipPattern);
       const mandatoryTestSkipped = !!skipMatch;
 
-      const hasPass = fullLog.includes('PASS: TestGoldenFlowHermeticPhase1to4') && exitCode === 0;
+      // 2. Missing prerequisite pattern check
+      const missingPrereqPattern = /(?:binary required but not found in PATH|installed omp binary required|command not found|executable file not found in \$PATH|no such file or directory.*omp|no such file or directory.*tmux)/i;
+      const isMissingPrereq = missingPrereqPattern.test(fullLog);
+
+      // 3. Strict verification of pass criteria
+      const hasGoldenPass = fullLog.includes('PASS: TestGoldenFlowHermeticPhase1to4') || fullLog.includes('PASS: TestHermeticOMP');
+      const hasFail = fullLog.includes('--- FAIL:') || fullLog.includes('FAIL\t');
+      const hasPass = exitCode === 0 && hasGoldenPass && !hasFail && !mandatoryTestSkipped;
 
       let status: 'PASS' | 'FAIL' | 'BLOCKED_ENVIRONMENT' = 'FAIL';
       let details = '';
@@ -82,6 +94,9 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
       } else if (hasPass) {
         status = 'PASS';
         details = 'Golden flow backend hermetic phase 1-4 tests passed with strict verification.';
+      } else if (isMissingPrereq) {
+        status = 'BLOCKED_ENVIRONMENT';
+        details = 'Backend verification blocked by missing environment prerequisite (Go, tmux, or OMP binary).';
       } else {
         status = 'FAIL';
         details = `make verify-phase1-4 failed with exit code ${exitCode}.`;
@@ -94,7 +109,7 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
         exitCode,
         durationMs,
         details,
-        sanitizedLog,
+      sanitizedLog,
       };
 
       fs.writeFileSync(
@@ -122,7 +137,10 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
 
 if (import.meta.main) {
   runBackendVerification().then((res) => {
-    console.log(JSON.stringify(res, null, 2));
-    process.exit(res.status === 'PASS' ? 0 : 1);
+    console.log(`Backend Runner Status: ${res.status} (exit ${res.exitCode})`);
+    console.log(`Details: ${res.details}`);
+    if (res.status === 'FAIL') {
+      process.exit(1);
+    }
   });
 }

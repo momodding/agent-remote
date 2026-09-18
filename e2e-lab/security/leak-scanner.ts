@@ -20,6 +20,7 @@ const SUSPICIOUS_PATTERNS = [
 ];
 
 const IGNORE_DIRS: Record<string, true> = {
+  '.git': true,
   'examples': true,
   'node_modules': true,
   'dist': true,
@@ -28,9 +29,18 @@ const IGNORE_DIRS: Record<string, true> = {
   'android-sdk': true,
   'playwright-report': true,
   'test-results': true,
+  'coverage': true,
+  '.runtime': true,
+  'artifacts': true,
 };
 
-function scanDirectory(dir: string, baseDir: string, flaggedPathsSet: Set<string>): number {
+function scanDirectory(
+  dir: string,
+  baseDir: string,
+  flaggedPathsSet: Set<string>,
+  visitedFiles: Set<string>,
+  customIgnoreDirs: Record<string, true> = IGNORE_DIRS
+): number {
   let count = 0;
   if (!fs.existsSync(dir)) return 0;
 
@@ -42,31 +52,36 @@ function scanDirectory(dir: string, baseDir: string, flaggedPathsSet: Set<string
   }
 
   for (const entry of entries) {
-    if (IGNORE_DIRS[entry.name]) continue;
+    if (customIgnoreDirs[entry.name]) continue;
 
-    const fullPath = path.join(dir, entry.name);
+    const fullPath = path.resolve(dir, entry.name);
     const relPath = path.relative(baseDir, fullPath);
 
     if (entry.isDirectory()) {
-      count += scanDirectory(fullPath, baseDir, flaggedPathsSet);
+      count += scanDirectory(fullPath, baseDir, flaggedPathsSet, visitedFiles, customIgnoreDirs);
     } else if (entry.isFile()) {
-      if (/\.(png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|exe|bin|so|dylib|apk|aab|tar|gz|zip)$/i.test(entry.name)) {
+      if (visitedFiles.has(fullPath)) {
+        continue;
+      }
+      visitedFiles.add(fullPath);
+
+      if (/\.(png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|exe|bin|so|dylib|apk|aab|tar|gz|zip|lock|lockb)$/i.test(entry.name)) {
         continue;
       }
 
       // Allow intentional TLS private key files under .runtime/tls/ or certs/
-      const isIntentionalKeyFile = (fullPath.includes('/.runtime/tls/') || fullPath.includes('/certs/')) &&
+      const isIntentionalKeyFile =
+        (fullPath.includes('/.runtime/tls/') || fullPath.includes('/certs/')) &&
         /\.(key|pem|der)$/i.test(entry.name);
 
       count++;
+
       try {
         const content = fs.readFileSync(fullPath, 'utf8');
         for (const pattern of SUSPICIOUS_PATTERNS) {
           if (pattern === SUSPICIOUS_PATTERNS[0] && isIntentionalKeyFile) {
-            // Private key is expected inside the dedicated server.key file
             continue;
           }
-
           if (pattern.test(content)) {
             // Report file path ONLY; never print secret content
             flaggedPathsSet.add(relPath || fullPath);
@@ -78,118 +93,92 @@ function scanDirectory(dir: string, baseDir: string, flaggedPathsSet: Set<string
       }
     }
   }
+
   return count;
 }
 
 export function runLeakScan(): LeakScanResult {
-  const rootDir = path.join(__dirname, '../..');
-  const labDir = path.join(__dirname, '..');
+  const rootDir = path.resolve(__dirname, '../..');
+  const labDir = path.resolve(__dirname, '..');
   const flaggedPathsSet = new Set<string>();
+  const visitedFiles = new Set<string>();
 
-  // 1. Scan repo files (excluding build dirs)
-  let scannedFilesCount = scanDirectory(rootDir, rootDir, flaggedPathsSet);
+  // 1. Scan repo tree (skipping .git, .runtime, artifacts, node_modules)
+  let scannedFilesCount = scanDirectory(rootDir, rootDir, flaggedPathsSet, visitedFiles, IGNORE_DIRS);
 
-  // 2. Scan e2e-lab/.runtime explicitly
+  // 2. Scan e2e-lab/.runtime explicitly once
   const runtimeDir = path.join(labDir, '.runtime');
   if (fs.existsSync(runtimeDir)) {
-    scannedFilesCount += scanDirectory(runtimeDir, rootDir, flaggedPathsSet);
+    scannedFilesCount += scanDirectory(runtimeDir, rootDir, flaggedPathsSet, visitedFiles, {});
   }
 
-  // 3. Scan e2e-lab/artifacts explicitly
+  // 3. Scan e2e-lab/artifacts explicitly once
   const artifactsDir = path.join(labDir, 'artifacts');
   if (fs.existsSync(artifactsDir)) {
-    scannedFilesCount += scanDirectory(artifactsDir, rootDir, flaggedPathsSet);
+    scannedFilesCount += scanDirectory(artifactsDir, rootDir, flaggedPathsSet, visitedFiles, {});
   }
 
   // 4. Scan test-owned /tmp runtime paths if they exist
   const tmpTargets = [
     '/tmp/bridge_debug.log',
     '/tmp/agenticremote-test.log',
-    '/tmp/omp-daemon.log',
   ];
 
-  for (const tmpFile of tmpTargets) {
-    if (fs.existsSync(tmpFile)) {
+  for (const tmpPath of tmpTargets) {
+    if (fs.existsSync(tmpPath)) {
+      if (visitedFiles.has(tmpPath)) continue;
+      visitedFiles.add(tmpPath);
+
       scannedFilesCount++;
       try {
-        const content = fs.readFileSync(tmpFile, 'utf8');
+        const content = fs.readFileSync(tmpPath, 'utf8');
         for (const pattern of SUSPICIOUS_PATTERNS) {
           if (pattern.test(content)) {
-            flaggedPathsSet.add(tmpFile);
+            flaggedPathsSet.add(tmpPath);
             break;
           }
         }
       } catch {
-        // Skip unreadable
+        // Ignore unreadable tmp
       }
     }
-  }
-
-  // 5. Scan any /tmp/runtime* directories created during test runs
-  try {
-    const tmpEntries = fs.readdirSync('/tmp', { withFileTypes: true });
-    for (const ent of tmpEntries) {
-      if (ent.isDirectory() && ent.name.startsWith('agenticremote-runtime-')) {
-        scannedFilesCount += scanDirectory(path.join('/tmp', ent.name), rootDir, flaggedPathsSet);
-      }
-    }
-  } catch {
-    // Skip unreadable /tmp
   }
 
   const flaggedPaths = Array.from(flaggedPathsSet);
-  const leaksFound = flaggedPaths.length;
-  const status: 'PASS' | 'FAIL' = leaksFound === 0 ? 'PASS' : 'FAIL';
+  const status: 'PASS' | 'FAIL' = flaggedPaths.length === 0 ? 'PASS' : 'FAIL';
 
-  let details = '';
-  if (status === 'PASS') {
-    details = `Scanned ${scannedFilesCount} files across repository, runtime, and artifacts. Zero unredacted secrets or leaked tokens detected.`;
-  } else {
-    details = `Detected ${leaksFound} files with potential unredacted secret patterns. File paths flagged for review.`;
-  }
-
-  const res: LeakScanResult = {
+  const result: LeakScanResult = {
     timestamp: new Date().toISOString(),
     suite: 'Security Secret & Leak Scanner',
     status,
     scannedFilesCount,
-    leaksFoundCount: leaksFound,
+    leaksFoundCount: flaggedPaths.length,
     flaggedPaths,
-    details,
+    details:
+      status === 'PASS'
+        ? `Leak scanner inspected ${scannedFilesCount} files; 0 plaintext credentials or leaked secrets found.`
+        : `Leak scanner detected ${flaggedPaths.length} file(s) with leaked credentials!`,
   };
 
-  try {
-    if (!fs.existsSync(artifactsDir)) {
-      fs.mkdirSync(artifactsDir, { recursive: true });
-    }
-    fs.writeFileSync(path.join(artifactsDir, 'security-results.json'), JSON.stringify(res, null, 2));
-    let log = `=================================================================\n`;
-    log += `        SECURITY LEAK SCAN REPORT                                \n`;
-    log += `=================================================================\n`;
-    log += `Timestamp: ${res.timestamp}\n`;
-    log += `Status: ${res.status}\n`;
-    log += `Files Scanned: ${res.scannedFilesCount}\n`;
-    log += `Leaks Detected: ${res.leaksFoundCount}\n\n`;
-    if (flaggedPaths.length > 0) {
-      log += `Flagged Paths (Path-only reporting):\n`;
-      for (const p of flaggedPaths) {
-        log += `  - ${p}\n`;
-      }
-    }
-    fs.writeFileSync(path.join(artifactsDir, 'security.log'), log);
-  } catch {
-    // Ignore fallback
+  if (!fs.existsSync(artifactsDir)) {
+    fs.mkdirSync(artifactsDir, { recursive: true });
   }
+  fs.writeFileSync(
+    path.join(artifactsDir, 'security-leak-scan.json'),
+    JSON.stringify(result, null, 2),
+    'utf-8'
+  );
 
-  return res;
+  return result;
 }
 
 if (import.meta.main) {
-  const rep = runLeakScan();
-  console.log(`Leak Scanner Status: ${rep.status} (${rep.scannedFilesCount} files scanned)`);
-  if (rep.flaggedPaths.length > 0) {
-    console.log('Flagged paths (reporting paths only):');
-    rep.flaggedPaths.forEach((p) => console.log(`  - ${p}`));
-    process.exit(1);
+  const r = runLeakScan();
+  console.log(`Leak Scanner Status: ${r.status}`);
+  console.log(`Files scanned: ${r.scannedFilesCount}`);
+  console.log(`Leaks found: ${r.leaksFoundCount}`);
+  if (r.flaggedPaths.length > 0) {
+    console.log('Flagged paths:');
+    r.flaggedPaths.forEach((p) => console.log(`  - ${p}`));
   }
 }

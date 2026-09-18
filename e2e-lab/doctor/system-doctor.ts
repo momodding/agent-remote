@@ -1,12 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveAndroidSdkRoot, getAndroidEnvironment } from '../android/env';
 
 export interface DoctorCheck {
   id: string;
   name: string;
   status: 'READY' | 'MISSING' | 'BLOCKED_ENVIRONMENT' | 'WARN';
-  versionOrPath?: string;
+  versionOrPath: string;
   details: string;
   remediation?: string;
 }
@@ -20,7 +21,7 @@ export interface DoctorReport {
 function runCmd(cmd: string, env?: Record<string, string>, timeoutMs = 15000): string | null {
   const home = process.env.HOME || '/root';
   const baseEnvPath = env?.PATH || process.env.PATH || '';
-  const resolvedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${baseEnvPath}`;
+  const resolvedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${home}/.maestro/bin:${baseEnvPath}`;
   try {
     const out = execSync(cmd, {
       encoding: 'utf8',
@@ -126,23 +127,19 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 5. Android SDK & ADB
-  const home = process.env.HOME || '/root';
-  const sdkRoot = process.env.ANDROID_HOME || path.join(home, 'android-sdk');
-  const androidEnv = {
-    ANDROID_HOME: sdkRoot,
-    ANDROID_SDK_ROOT: sdkRoot,
-    PATH: `${sdkRoot}/platform-tools:${sdkRoot}/cmdline-tools/latest/bin:${sdkRoot}/emulator:${process.env.PATH || ''}`,
-  };
-
+  // 5. Android SDK & ADB via shared resolver
+  const sdkRoot = resolveAndroidSdkRoot();
+  const androidEnv = getAndroidEnvironment();
   const adbVer = runCmd('adb version', androidEnv);
-  if (fs.existsSync(sdkRoot) && adbVer) {
+  const sdkExists = fs.existsSync(sdkRoot);
+
+  if (adbVer && sdkExists) {
     checks.push({
       id: 'DOC-05',
       name: 'Android SDK & ADB',
       status: 'READY',
       versionOrPath: `${sdkRoot} (${adbVer.split('\n')[0]})`,
-      details: 'Android SDK and ADB platform-tools located.',
+      details: 'Android SDK platform tools and ADB available.',
     });
   } else {
     checks.push({
@@ -151,7 +148,7 @@ export function runSystemDoctor(): DoctorReport {
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
       details: 'Android SDK commandline-tools or ADB missing.',
-      remediation: './scripts/setup-android-sdk.sh',
+      remediation: './e2e-lab/scripts/setup-android-sdk.sh',
     });
   }
 
@@ -208,7 +205,7 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 8. Rootless Podman Container Runtime
+  // 8. Podman Container Runtime
   const podmanVer = runCmd('podman --version');
   if (podmanVer) {
     checks.push({
@@ -216,7 +213,7 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Rootless Podman Container Runtime',
       status: 'READY',
       versionOrPath: podmanVer,
-      details: 'Podman container engine available for lab container topology.',
+      details: 'Podman is available for running hermetic multi-container E2E topology.',
     });
   } else {
     checks.push({
@@ -224,52 +221,37 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Rootless Podman Container Runtime',
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
-      details: 'Podman binary is required for rootless daemon and provider container topology.',
+      details: 'Podman is required for running containerized daemon/provider/client topology.',
       remediation: 'sudo apt install -y podman',
     });
   }
 
-  const blocked = checks.some((c) => c.status === 'BLOCKED_ENVIRONMENT');
+  // Treat any MISSING or BLOCKED_ENVIRONMENT check as blocking the environment
+  const isBlocked = checks.some((c) => c.status === 'BLOCKED_ENVIRONMENT' || c.status === 'MISSING');
+
   const report: DoctorReport = {
     timestamp: new Date().toISOString(),
     checks,
-    overallEnvironmentStatus: blocked ? 'BLOCKED_ENVIRONMENT' : 'READY',
+    overallEnvironmentStatus: isBlocked ? 'BLOCKED_ENVIRONMENT' : 'READY',
   };
 
-  // Write environment report to artifacts
   const artifactsDir = path.join(__dirname, '../artifacts');
-  try {
-    if (!fs.existsSync(artifactsDir)) {
-      fs.mkdirSync(artifactsDir, { recursive: true });
-    }
-    fs.writeFileSync(path.join(artifactsDir, 'doctor-report.json'), JSON.stringify(report, null, 2), 'utf8');
-
-    let txt = `===============================================================\n`;
-    txt += `          agenticRemote E2E System Doctor Report\n`;
-    txt += `===============================================================\n`;
-    txt += `Timestamp: ${report.timestamp}\n`;
-    txt += `Overall Status: ${report.overallEnvironmentStatus}\n\n`;
-    for (const c of report.checks) {
-      txt += `[${c.status}] ${c.id}: ${c.name}\n`;
-      txt += `       Version/Path: ${c.versionOrPath || 'N/A'}\n`;
-      txt += `       Details:      ${c.details}\n`;
-      if (c.remediation) {
-        txt += `       Remedy:       ${c.remediation}\n`;
-      }
-      txt += `\n`;
-    }
-    fs.writeFileSync(path.join(artifactsDir, 'environment-report.txt'), txt, 'utf8');
-  } catch (err) {
-    console.error('Failed to write doctor artifacts:', err);
+  if (!fs.existsSync(artifactsDir)) {
+    fs.mkdirSync(artifactsDir, { recursive: true });
   }
+  fs.writeFileSync(
+    path.join(artifactsDir, 'doctor-report.json'),
+    JSON.stringify(report, null, 2),
+    'utf-8'
+  );
 
   return report;
 }
 
 if (import.meta.main) {
-  const rep = runSystemDoctor();
-  console.log(`System Doctor Status: ${rep.overallEnvironmentStatus}`);
-  for (const c of rep.checks) {
+  const report = runSystemDoctor();
+  console.log(`System Doctor Status: ${report.overallEnvironmentStatus}`);
+  for (const c of report.checks) {
     console.log(`[${c.status}] ${c.id}: ${c.name} -> ${c.versionOrPath}`);
     if (c.remediation && c.status !== 'READY') {
       console.log(`       Remedy: ${c.remediation}`);

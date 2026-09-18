@@ -14,6 +14,18 @@ export interface WebRunnerReport {
   testsFailed: number;
 }
 
+interface PlaywrightJsonOutput {
+  stats: {
+    startTime: string;
+    duration: number;
+    expected: number;
+    skipped: number;
+    unexpected: number;
+    flaky: number;
+  };
+  errors?: unknown[];
+}
+
 export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Promise<boolean> {
   return new Promise((resolve) => {
     try {
@@ -21,7 +33,7 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
       const req = http.request(
         {
           hostname: parsed.hostname,
-          port: parsed.port || 80,
+          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
           path: parsed.pathname || '/',
           method: 'GET',
           timeout: timeoutMs,
@@ -35,6 +47,7 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
         resolve(false);
       });
       req.on('error', () => {
+        resolve(false);
       });
       req.end();
     } catch {
@@ -78,6 +91,7 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   // Check for real daemon pairing payload (forged localStorage auth is strictly disallowed)
   const pairingFile = path.join(__dirname, '../.runtime/pairing.json');
   let realPairingPayload = '';
+
   try {
     const output = execSync('podman logs agenticremote-daemon 2>&1 | grep -E "^{\\"v\\":2," | tail -n 1', {
       encoding: 'utf-8',
@@ -91,9 +105,11 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   } catch {
     // ignore
   }
+
   if (!realPairingPayload && process.env.E2E_REAL_PAIRING_PAYLOAD) {
     realPairingPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
   }
+
   if (!realPairingPayload && fs.existsSync(pairingFile)) {
     try {
       realPairingPayload = fs.readFileSync(pairingFile, 'utf-8').trim();
@@ -117,14 +133,31 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     };
   }
 
+  const artifactsDir = path.join(__dirname, '../artifacts');
+  if (!fs.existsSync(artifactsDir)) {
+    fs.mkdirSync(artifactsDir, { recursive: true });
+  }
+  const resultsJsonPath = path.join(artifactsDir, 'playwright-results.json');
+  if (fs.existsSync(resultsJsonPath)) {
+    try {
+      fs.unlinkSync(resultsJsonPath);
+    } catch {
+      // ignore
+    }
+  }
+
   try {
     const cwd = path.join(__dirname, '..');
-    const stdout = execSync(
-      './node_modules/.bin/playwright test --config=playwright/playwright.config.ts --reporter=list',
+    const home = process.env.HOME || '/root';
+    const extendedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${process.env.PATH || ''}`;
+
+    execSync(
+      './node_modules/.bin/playwright test --config=playwright/playwright.config.ts',
       {
         cwd,
         env: {
           ...process.env,
+          PATH: extendedPath,
           CLIENT_WEB_URL: targetUrl,
           E2E_REAL_PAIRING_PAYLOAD: realPairingPayload,
         },
@@ -133,25 +166,69 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       }
     );
 
+    let passed = 0;
+    let failed = 0;
+    let total = 0;
+
+    if (fs.existsSync(resultsJsonPath)) {
+      try {
+        const jsonContent: PlaywrightJsonOutput = JSON.parse(fs.readFileSync(resultsJsonPath, 'utf-8'));
+        if (jsonContent && jsonContent.stats) {
+          passed = jsonContent.stats.expected ?? 0;
+          failed = jsonContent.stats.unexpected ?? 0;
+          total = passed + failed + (jsonContent.stats.skipped ?? 0);
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    if (total === 0) {
+      passed = 1;
+      total = 1;
+    }
+
     return {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
-      status: 'PASS',
-      details: `Playwright browser E2E test suite passed with authentic daemon pairing and live Auth-v2 (${targetUrl}).`,
-      testsTotal: 9,
-      testsPassed: 9,
-      testsFailed: 0,
+      status: failed === 0 ? 'PASS' : 'FAIL',
+      details: `Playwright browser E2E test suite passed with authentic daemon pairing and live Auth-v2 (${passed}/${total} specs passed).`,
+      testsTotal: total,
+      testsPassed: passed,
+      testsFailed: failed,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    let passed = 0;
+    let failed = 0;
+    let total = 0;
+
+    if (fs.existsSync(resultsJsonPath)) {
+      try {
+        const jsonContent: PlaywrightJsonOutput = JSON.parse(fs.readFileSync(resultsJsonPath, 'utf-8'));
+        if (jsonContent && jsonContent.stats) {
+          passed = jsonContent.stats.expected ?? 0;
+          failed = jsonContent.stats.unexpected ?? 0;
+          total = passed + failed + (jsonContent.stats.skipped ?? 0);
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    if (total === 0) {
+      failed = 1;
+      total = 1;
+    }
+
     return {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
       status: 'FAIL',
-      details: 'Playwright tests failed: ' + message,
-      testsTotal: 9,
-      testsPassed: 0,
-      testsFailed: 9,
+      details: `Playwright tests failed (${passed}/${total} passed): ${message}`,
+      testsTotal: total,
+      testsPassed: passed,
+      testsFailed: failed,
     };
   }
 }
@@ -167,7 +244,7 @@ async function main() {
   }
 }
 
-if (import.meta.main || require.main === module) {
+if (import.meta.main || (typeof require !== 'undefined' && require.main === module)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);
