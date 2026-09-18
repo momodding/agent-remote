@@ -17,13 +17,20 @@ export interface DoctorReport {
   overallEnvironmentStatus: 'READY' | 'BLOCKED_ENVIRONMENT';
 }
 
-function runCmd(cmd: string, env?: Record<string, string>): string | null {
+function runCmd(cmd: string, env?: Record<string, string>, timeoutMs = 15000): string | null {
+  const home = process.env.HOME || '/root';
+  const baseEnvPath = env?.PATH || process.env.PATH || '';
+  const resolvedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${baseEnvPath}`;
   try {
     const out = execSync(cmd, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      env: env ? { ...process.env, ...env } : process.env,
-      timeout: 5000,
+      env: {
+        ...process.env,
+        ...env,
+        PATH: resolvedPath,
+      },
+      timeout: timeoutMs,
     });
     return out.trim();
   } catch {
