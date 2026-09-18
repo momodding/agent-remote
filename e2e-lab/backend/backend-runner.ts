@@ -4,8 +4,8 @@ import { spawn } from 'node:child_process';
 
 export interface BackendSuiteResult {
   timestamp: string;
-  suite: 'Backend Golden Flow & Strict Daemon Verification';
-  status: 'PASS' | 'FAIL';
+  suite: string;
+  status: 'PASS' | 'FAIL' | 'BLOCKED_ENVIRONMENT';
   exitCode: number;
   durationMs: number;
   details: string;
@@ -57,25 +57,31 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
       process.stderr.write(s);
     });
 
-    proc.on('close', (code: number | null) => {
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+
       const exitCode = code ?? 1;
       const durationMs = Date.now() - startTime;
       const fullLog = `${stdout}\n${stderr}`;
       const sanitizedLog = sanitizeSecrets(fullLog);
 
-      // Specifically detect if mandatory Golden Flow tests were skipped
-      const mandatoryTestSkipped = /--- SKIP:\s*TestGoldenFlowHermeticPhase1to4/i.test(fullLog);
-      const hasPass = /verify-phase1-4 PASSED/i.test(fullLog) && exitCode === 0;
+      const skipPattern = /---\s*SKIP:\s*(TestGoldenFlowHermetic\w*|TestHermeticOMP\w*)/i;
+      const skipMatch = fullLog.match(skipPattern);
+      const mandatoryTestSkipped = !!skipMatch;
 
-      let status: 'PASS' | 'FAIL' = 'FAIL';
+      const hasPass = fullLog.includes('PASS: TestGoldenFlowHermeticPhase1to4') && exitCode === 0;
+
+      let status: 'PASS' | 'FAIL' | 'BLOCKED_ENVIRONMENT' = 'FAIL';
       let details = '';
 
       if (mandatoryTestSkipped) {
         status = 'FAIL';
-        details = 'Strict verification rejected: Mandatory TestGoldenFlowHermeticPhase1to4 was skipped.';
+        details = `Strict verification rejected: Mandatory test ${skipMatch ? skipMatch[1] : 'GoldenFlow/HermeticOMP'} was skipped.`;
       } else if (hasPass) {
         status = 'PASS';
-        details = 'make verify-phase1-4 succeeded with all hermetic golden flow tests passing strictly without skips.';
+        details = 'Golden flow backend hermetic phase 1-4 tests passed with strict verification.';
       } else {
         status = 'FAIL';
         details = `make verify-phase1-4 failed with exit code ${exitCode}.`;
@@ -91,24 +97,32 @@ export async function runBackendVerification(): Promise<BackendSuiteResult> {
         sanitizedLog,
       };
 
-      try {
-        fs.writeFileSync(path.join(artifactsDir, 'backend.log'), sanitizedLog);
-        fs.writeFileSync(path.join(artifactsDir, 'backend-results.json'), JSON.stringify(res, null, 2));
-      } catch {
-        // artifacts write fallback
-      }
+      fs.writeFileSync(
+        path.join(artifactsDir, 'backend-verification.json'),
+        JSON.stringify(res, null, 2),
+        'utf-8'
+      );
+      fs.writeFileSync(
+        path.join(artifactsDir, 'backend-make-verify.log'),
+        sanitizedLog,
+        'utf-8'
+      );
 
       resolve(res);
+    };
+
+    proc.on('exit', (code: number | null) => finish(code));
+    proc.on('close', (code: number | null) => finish(code));
+    proc.on('error', (err: Error) => {
+      stderr += `\nProcess error: ${err.message}`;
+      finish(1);
     });
   });
 }
 
 if (import.meta.main) {
   runBackendVerification().then((res) => {
-    console.log(`\nBackend Verification Result: ${res.status} (${res.durationMs}ms)`);
-    console.log(`Details: ${res.details}`);
-    if (res.status !== 'PASS') {
-      process.exit(1);
-    }
+    console.log(JSON.stringify(res, null, 2));
+    process.exit(res.status === 'PASS' ? 0 : 1);
   });
 }

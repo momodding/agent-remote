@@ -7,6 +7,7 @@ test-results/
 playwright-report/
 .playwright/
 browser-cache/
+playwright/artifacts/
 *.apk
 *.log
 *.tmp

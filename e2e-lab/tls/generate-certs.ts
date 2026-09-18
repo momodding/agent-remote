@@ -102,9 +102,12 @@ async function generateCerts(opts: Partial<GenerateOptions> = {}): Promise<void>
 
   const keyPath = `${config.outDir}/${config.keyFile}`;
   const certPath = `${config.outDir}/${config.certFile}`;
-
+  const keyPemPath = `${config.outDir}/key.pem`;
+  const certPemPath = `${config.outDir}/cert.pem`;
   await fs.writeFile(keyPath, keyPair.privateKey, { mode: 0o600 });
   await fs.writeFile(certPath, certPem, { mode: 0o644 });
+  await fs.writeFile(keyPemPath, keyPair.privateKey, { mode: 0o600 });
+  await fs.writeFile(certPemPath, certPem, { mode: 0o644 });
 
   // Log only paths and success status; no secrets
   console.log(`[TLS] Private key written (600): ${keyPath}`);

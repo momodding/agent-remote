@@ -57,6 +57,41 @@ RUN echo '{\n\
   "terminalBackend": "tmux"\n\
 }' > /app/.agenticremote/config.json
 
+
+# Configure OMP v18 for deterministic mock provider
+RUN mkdir -p /root/.omp/agent && echo '{\n\
+  "providers": {\n\
+    "deterministic": {\n\
+      "baseUrl": "http://agenticremote-provider:19090/v1",\n\
+      "api": "openai-completions",\n\
+      "apiKey": "test-key",\n\
+      "models": [\n\
+        {\n\
+          "id": "omni-deterministic",\n\
+          "name": "Omni Deterministic",\n\
+          "contextWindow": 128000,\n\
+          "maxTokens": 4096,\n\
+          "supportsTools": true\n\
+        },\n\
+        {\n\
+          "id": "gpt-4o",\n\
+          "name": "GPT-4o Mock",\n\
+          "contextWindow": 128000,\n\
+          "maxTokens": 4096,\n\
+          "supportsTools": true\n\
+        }\n\
+      ]\n\
+    }\n\
+  }\n\
+}' > /root/.omp/agent/models.json && echo '{\n\
+  "modelRoles": {\n\
+    "default": "omni-deterministic",\n\
+    "smol": "omni-deterministic",\n\
+    "slow": "omni-deterministic"\n\
+  }\n\
+}' > /root/.omp/agent/settings.json && \
+  cp /root/.omp/agent/models.json /root/.omp/models.json && \
+  cp /root/.omp/agent/settings.json /root/.omp/settings.json
 EXPOSE 18765
 
-ENTRYPOINT ["agenticRemote", "serve", "/app/.agenticremote/config.json"]
+ENTRYPOINT ["agenticRemote", "serve", "--config", "/app/.agenticremote/config.json"]

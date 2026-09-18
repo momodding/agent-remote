@@ -2,39 +2,50 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Web Client Pairing & TLS Verification', () => {
   test('should load web client landing page over HTTP/HTTPS', async ({ page }) => {
-    await page.goto('/');
-    const title = await page.title();
-    expect(title).toBeTruthy();
+    await page.goto('/', { waitUntil: 'commit' });
+    const wordmark = page.locator('text=agenticRemote').first();
+    await expect(wordmark).toBeVisible({ timeout: 15000 });
+    const subtitle = page.locator('text=Your terminal, at reach.').first();
+    await expect(subtitle).toBeVisible({ timeout: 5000 });
   });
 
-  test('should render daemon secure pairing input with HTTPS/WSS defaults', async ({ page }) => {
-    await page.goto('/');
+  test('should render daemon secure pairing prompt', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'commit' });
+    const prompt = page.locator('text=Pair this device with a running daemon').first();
+    await expect(prompt).toBeVisible({ timeout: 15000 });
+    const connectBtn = page.locator('text=Connect daemon').first();
+    await expect(connectBtn).toBeVisible({ timeout: 5000 });
+  });
 
-    // Check for pairing form, host input, or QR scanner element
-    const pairingSection = page.locator('[data-testid="pairing"], h1:has-text("Pair"), input[placeholder*="daemon"], input[placeholder*="Host"]');
-    await expect(pairingSection.first()).toBeVisible({ timeout: 5000 }).catch(() => {
-      // Allow fallback if app is in paired state
-      return true;
+  test('should open pairing sheet and accept secure daemon payload', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'commit' });
+    const connectBtn = page.locator('text=Connect daemon').first();
+    await expect(connectBtn).toBeVisible({ timeout: 15000 });
+    await connectBtn.click();
+
+    const modalTitle = page.locator('text=Connect a daemon').first();
+    await expect(modalTitle).toBeVisible({ timeout: 5000 });
+
+    const deviceNameInput = page.locator('input[placeholder="Device name"]');
+    await expect(deviceNameInput).toBeVisible({ timeout: 5000 });
+    await deviceNameInput.fill('e2e-browser-client');
+    await expect(deviceNameInput).toHaveValue('e2e-browser-client');
+
+    const payloadInput = page.locator('textarea[placeholder="Paste pairing JSON"]');
+    await expect(payloadInput).toBeVisible({ timeout: 5000 });
+    const payload = JSON.stringify({
+      daemonId: 'daemon-test-1',
+      url: 'https://127.0.0.1:18765',
+      fingerprint: 'sha256:abcd1234abcd1234',
+      token: 'tok-e2e-test-1234',
     });
-  });
+    await payloadInput.fill(payload);
+    await expect(payloadInput).toHaveValue(payload);
 
-  test('should accept secure HTTPS / WSS daemon endpoint input', async ({ page }) => {
-    await page.goto('/');
+    const cancelBtn = page.locator('[aria-label="cancel-pairing"]');
+    await expect(cancelBtn).toBeVisible({ timeout: 5000 });
+    await cancelBtn.click();
 
-    const input = page.locator('input[type="text"]').first();
-    if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await input.fill('https://127.0.0.1:18765');
-      await expect(input).toHaveValue('https://127.0.0.1:18765');
-    }
-  });
-
-  test('should execute pairing handshake against real HTTPS daemon endpoint', async ({ page }) => {
-    await page.goto('/');
-
-    const button = page.locator('button').filter({ hasText: /pair|connect|submit/i }).first();
-    if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await button.click();
-      await page.waitForTimeout(1000);
-    }
+    await expect(modalTitle).toBeHidden({ timeout: 5000 });
   });
 });

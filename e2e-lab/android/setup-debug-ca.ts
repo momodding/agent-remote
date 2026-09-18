@@ -151,8 +151,10 @@ async function setupDebugCA(overrideCfg: Partial<AndroidConfig> = {}): Promise<v
 
   console.log('[ANDROID] Setting up debug CA configuration...');
 
-  // 1. Ensure output directory exists
+  // 1. Ensure output directories exist (root, xml, raw, and standard res/ tree)
   await fs.mkdir(cfg.debugDir, { recursive: true });
+  await fs.mkdir(`${cfg.debugDir}/res/xml`, { recursive: true });
+  await fs.mkdir(`${cfg.debugDir}/res/raw`, { recursive: true });
 
   // 2. Generate network security config
   const xmlConfig = await generateDebugNetworkSecurityConfig(cfg);
@@ -163,15 +165,32 @@ async function setupDebugCA(overrideCfg: Partial<AndroidConfig> = {}): Promise<v
     throw new Error('Invalid network security config generated');
   }
 
-  // 4. Write config to output
+  // 4. Write config to output and res/xml
   const configPath = `${cfg.debugDir}/network_security_config.xml`;
   await fs.writeFile(configPath, xmlConfig, { mode: 0o644 });
+  await fs.writeFile(`${cfg.debugDir}/res/xml/network_security_config.xml`, xmlConfig, { mode: 0o644 });
   console.log(`[ANDROID] Network security config written: ${configPath}`);
 
   // 5. Export certificate if available
   if (cfg.certPath) {
     await fs.mkdir(`${cfg.debugDir}/raw`, { recursive: true });
     const exported = await exportCertificateForAndroid(cfg.certPath, cfg.debugDir);
+    await exportCertificateForAndroid(cfg.certPath, `${cfg.debugDir}/res/raw`);
+
+    // If client native android res tree exists, also install debug CA there
+    const nativeResDir = 'client/android/app/src/main/res';
+    try {
+      const stat = await fs.stat(nativeResDir);
+      if (stat.isDirectory()) {
+        await fs.mkdir(`${nativeResDir}/xml`, { recursive: true });
+        await fs.mkdir(`${nativeResDir}/raw`, { recursive: true });
+        await fs.writeFile(`${nativeResDir}/xml/network_security_config.xml`, xmlConfig, { mode: 0o644 });
+        await exportCertificateForAndroid(cfg.certPath, `${nativeResDir}/raw`);
+        console.log(`[ANDROID] Installed debug CA into native Android res tree at ${nativeResDir}`);
+      }
+    } catch {
+      // Native tree not prebuilt; temp res tree ready in debugDir/res
+    }
 
     if (Object.keys(exported).length > 0) {
       console.log(`[ANDROID] Certificate exported in ${Object.keys(exported).length} format(s)`);

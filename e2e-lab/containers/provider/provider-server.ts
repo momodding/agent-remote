@@ -1,8 +1,14 @@
 import * as http from 'node:http';
 
+interface ChatContentPart {
+  type?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content?: string;
+  content?: string | ChatContentPart[] | unknown;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -83,9 +89,17 @@ enum DeterministicScenario {
   NORMAL = 'NORMAL',
 }
 
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => (typeof c === 'string' ? c : ((c as ChatContentPart)?.text || ''))).join(' ');
+  }
+  return String(content || '');
+}
+
 function detectScenario(messages: ChatMessage[]): DeterministicScenario {
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
-  const text = lastUserMsg.toUpperCase();
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content;
+  const text = extractTextFromContent(lastUserMsg).toUpperCase();
 
   if (text.includes('E2E_PONG')) return DeterministicScenario.PONG;
   if (text.includes('E2E_TOOL_TEST')) return DeterministicScenario.TOOL_TEST;
@@ -120,8 +134,9 @@ function getScenarioPayload(scenario: DeterministicScenario, messages: ChatMessa
 
     case DeterministicScenario.NORMAL:
     default:
-      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || 'Hello';
-      return { text: `Hermetic response to: "${lastUser}" (verified deterministic OMP upstream turn).`, isTool: false };
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content;
+      const userText = extractTextFromContent(lastUser) || 'Hello';
+      return { text: `Hermetic response to: "${userText}" (verified deterministic OMP upstream turn).`, isTool: false };
   }
 }
 

@@ -1,66 +1,34 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Web Terminal (xterm)', () => {
-  test('should render terminal container', async ({ page }) => {
-    await page.goto('/');
-    
-    // Look for xterm canvas or terminal div
-    const terminal = page.locator('[data-testid="terminal"], .xterm, [class*="terminal"]');
-    
-    if (await terminal.first().isVisible({ timeout: 5000 }).catch(() => false)) {
-      await expect(terminal.first()).toBeVisible();
-    }
-  });
+test.describe('Web Terminal & Daemon Topbar', () => {
+  test('should render topbar daemon actions and brand wordmark', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'commit' });
 
-  test('should render multiple terminal tabs', async ({ page }) => {
-    await page.goto('/');
-    
-    const tabs = page.locator('[role="tab"], [data-testid*="tab"], .tab');
-    const tabCount = await tabs.count().catch(() => 0);
-    
-    if (tabCount > 0) {
-      expect(tabCount).toBeGreaterThan(0);
-    }
-  });
+    // Seed connection into localStorage
+    await page.evaluate(() => {
+      const store = {
+        connections: [
+          {
+            name: 'Terminal Host',
+            endpoint: 'https://127.0.0.1:18765',
+            hostId: 'daemon-term-host',
+            fingerprint: 'sha256:term1234',
+            skipFingerprintVerification: true,
+            token: 'tok-term-1234',
+            clientName: 'web-term-tester',
+          },
+        ],
+      };
+      localStorage.setItem('agenticremote.connection', JSON.stringify(store));
+    });
 
-  test('should switch between terminal tabs', async ({ page }) => {
-    await page.goto('/');
-    
-    const tabs = page.locator('button:has-text("Terminal"), button[role="tab"]');
-    const firstTab = tabs.first();
-    
-    if (await firstTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await firstTab.click();
-      await page.waitForTimeout(500);
-      await expect(firstTab).toHaveAttribute('aria-selected', 'true').catch(() => true);
-    }
-  });
+    await page.reload({ waitUntil: 'commit' });
 
-  test('should accept terminal input', async ({ page }) => {
-    await page.goto('/');
-    
-    const terminal = page.locator('[data-testid="terminal"], .xterm, [class*="terminal"]');
-    
-    if (await terminal.first().isVisible({ timeout: 5000 }).catch(() => false)) {
-      // Click terminal to focus
-      await terminal.first().click();
-      // Type a test command
-      await page.keyboard.type('echo hello', { delay: 50 });
-      await page.keyboard.press('Enter');
-      // Wait for potential response
-      await page.waitForTimeout(500);
-    }
-  });
+    // Verify wordmark and active host
+    const wordmark = page.locator('text=agenticRemote').first();
+    await expect(wordmark).toBeVisible({ timeout: 15000 });
 
-  test('should handle terminal disconnection gracefully', async ({ page }) => {
-    await page.goto('/');
-    
-    const terminal = page.locator('[data-testid="terminal"], .xterm, [class*="terminal"]');
-    
-    if (await terminal.first().isVisible({ timeout: 5000 }).catch(() => false)) {
-      // Navigate away and back
-      await page.goto('/');
-      await expect(terminal.first()).toBeVisible({ timeout: 5000 }).catch(() => true);
-    }
+    const hostName = page.locator('text=Terminal Host').first();
+    await expect(hostName).toBeVisible({ timeout: 5000 });
   });
 });

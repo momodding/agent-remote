@@ -1,70 +1,37 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Web Agent Chat', () => {
-  test('should load chat interface', async ({ page }) => {
-    await page.goto('/');
-    
-    const chatContainer = page.locator('[data-testid="chat"], [data-testid="agent"], textarea, input[placeholder*="message"]');
-    
-    if (await chatContainer.first().isVisible({ timeout: 5000 }).catch(() => false)) {
-      await expect(chatContainer.first()).toBeVisible();
-    }
-  });
+test.describe('Web Agent & Daemon View', () => {
+  test('should render daemon card and session area when connection is active', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'commit' });
 
-  test('should display agent prompt input', async ({ page }) => {
-    await page.goto('/');
-    
-    const input = page.locator('textarea[placeholder*="message"], textarea[placeholder*="prompt"], input[placeholder*="message"]').first();
-    
-    if (await input.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await expect(input).toBeVisible();
-    }
-  });
+    // Seed connection into localStorage
+    await page.evaluate(() => {
+      const store = {
+        connections: [
+          {
+            name: 'Production Daemon',
+            endpoint: 'https://127.0.0.1:18765',
+            hostId: 'daemon-e2e-prod',
+            fingerprint: 'sha256:abcd1234abcd1234',
+            skipFingerprintVerification: true,
+            token: 'tok-e2e-agent-test',
+            clientName: 'web-browser',
+          },
+        ],
+      };
+      localStorage.setItem('agenticremote.connection', JSON.stringify(store));
+    });
 
-  test('should submit agent prompt', async ({ page }) => {
-    await page.goto('/');
-    
-    const input = page.locator('textarea, input[placeholder*="message"]').first();
-    const button = page.locator('button').filter({ hasText: /send|submit|go/i }).first();
-    
-    if (await input.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await input.click();
-      await input.fill('List directory contents');
-      
-      if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await button.click();
-        await page.waitForTimeout(1000);
-      }
-    }
-  });
+    await page.reload({ waitUntil: 'commit' });
 
-  test('should render tool card from agent', async ({ page }) => {
-    await page.goto('/');
-    
-    const toolCard = page.locator('[data-testid="tool-card"], [class*="tool"], [class*="card"]');
-    
-    const count = await toolCard.count().catch(() => 0);
-    if (count > 0) {
-      await expect(toolCard.first()).toBeVisible().catch(() => true);
-    }
-  });
+    // Verify daemon card renders
+    const daemonTitle = page.locator('text=Production Daemon').first();
+    await expect(daemonTitle).toBeVisible({ timeout: 15000 });
 
-  test('should render agent message history', async ({ page }) => {
-    await page.goto('/');
-    
-    const messages = page.locator('[role="log"], [data-testid="messages"], [class*="message"]');
-    
-    const count = await messages.count().catch(() => 0);
-    expect(count).toBeGreaterThanOrEqual(0);
-  });
+    const daemonEndpoint = page.locator('text=127.0.0.1:18765').first();
+    await expect(daemonEndpoint).toBeVisible({ timeout: 5000 });
 
-  test('should handle agent response display', async ({ page }) => {
-    await page.goto('/');
-    
-    const responseArea = page.locator('[data-testid="response"], [class*="response"], [class*="output"]');
-    
-    if (await responseArea.first().isVisible({ timeout: 3000 }).catch(() => false)) {
-      await expect(responseArea.first()).toBeVisible();
-    }
+    const emptySessionNotice = page.locator('text=No open sessions for this daemon').first();
+    await expect(emptySessionNotice).toBeVisible({ timeout: 5000 });
   });
 });

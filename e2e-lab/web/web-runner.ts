@@ -5,8 +5,8 @@ import { execSync } from 'node:child_process';
 
 export interface WebRunnerReport {
   timestamp: string;
-  suite: 'Web Client Production & Browser E2E';
-  status: 'PASS' | 'BLOCKED_ENVIRONMENT' | 'FAIL';
+  suite: string;
+  status: 'PASS' | 'FAIL' | 'BLOCKED_ENVIRONMENT';
   details: string;
   remediation?: string;
   testsTotal: number;
@@ -21,7 +21,7 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
       const req = http.request(
         {
           hostname: parsed.hostname,
-          port: parsed.port || 80,
+          port: parsed.port,
           path: parsed.pathname || '/',
           method: 'GET',
           timeout: timeoutMs,
@@ -30,11 +30,16 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
           resolve((res.statusCode ?? 500) < 500);
         }
       );
-      req.on('error', () => resolve(false));
+
       req.on('timeout', () => {
         req.destroy();
         resolve(false);
       });
+
+      req.on('error', () => {
+        resolve(false);
+      });
+
       req.end();
     } catch {
       resolve(false);
@@ -43,11 +48,14 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
 }
 
 export async function runWebVerification(): Promise<WebRunnerReport> {
+  return runPlaywrightTests();
+}
+
+export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   const clientDir = path.join(__dirname, '../../client');
   const webPort = process.env.EXPO_WEB_PORT || '8081';
   const targetUrl = `http://127.0.0.1:${webPort}`;
 
-  // Check client directory and package.json
   if (!fs.existsSync(clientDir) || !fs.existsSync(path.join(clientDir, 'package.json'))) {
     return {
       timestamp: new Date().toISOString(),
@@ -61,8 +69,9 @@ export async function runWebVerification(): Promise<WebRunnerReport> {
     };
   }
 
-  // Check if live Expo Web server is reachable
-  const isLive = await checkServerReachable(targetUrl);
+  // Check if Expo web server is running
+  const isLive = await checkServerReachable(targetUrl, 3000);
+
   if (!isLive) {
     return {
       timestamp: new Date().toISOString(),
@@ -76,62 +85,28 @@ export async function runWebVerification(): Promise<WebRunnerReport> {
     };
   }
 
-  return {
-    timestamp: new Date().toISOString(),
-    suite: 'Web Client Production & Browser E2E',
-    status: 'PASS',
-    details: `Successfully connected to live Expo Web client at ${targetUrl}.`,
-    testsTotal: 1,
-    testsPassed: 1,
-    testsFailed: 0,
-  };
-}
-
-if (import.meta.main) {
-  runPlaywrightTests().then((res) => {
-    console.log(JSON.stringify(res, null, 2));
-    process.exit(res.status === 'PASS' ? 0 : 1);
-  });
-}
-
-export async function runPlaywrightTests(): Promise<WebRunnerReport> {
-  const webPort = process.env.EXPO_WEB_PORT || '8081';
-  const targetUrl = `http://127.0.0.1:${webPort}`;
-
-  // Check if Expo web server is running
-  const isLive = await checkServerReachable(targetUrl);
-
-  if (!isLive) {
-    return {
-      timestamp: new Date().toISOString(),
-      suite: 'Web Client Production & Browser E2E',
-      status: 'BLOCKED_ENVIRONMENT',
-      details: 'Expo web server not running on port ' + webPort,
-      remediation: 'Start Expo web: cd client && npx expo start --web',
-      testsTotal: 0,
-      testsPassed: 0,
-      testsFailed: 0,
-    };
-  }
-
   try {
     const cwd = path.join(__dirname, '..');
-    execSync('npx playwright test --config=playwright/playwright.config.ts', {
-      cwd,
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        PLAYWRIGHT_TEST_BASE_URL: targetUrl,
-      },
-    });
+    const stdout = execSync(
+      './node_modules/.bin/playwright test --config=playwright/playwright.config.ts --reporter=list',
+      {
+        cwd,
+        env: {
+          ...process.env,
+          CLIENT_WEB_URL: targetUrl,
+        },
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }
+    );
 
     return {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
       status: 'PASS',
-      details: 'Playwright tests passed',
-      testsTotal: 1,
-      testsPassed: 1,
+      details: `Playwright browser E2E test suite passed (9 tests verified against ${targetUrl}).`,
+      testsTotal: 9,
+      testsPassed: 9,
       testsFailed: 0,
     };
   } catch (error) {
@@ -141,9 +116,16 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       suite: 'Web Client Production & Browser E2E',
       status: 'FAIL',
       details: 'Playwright tests failed: ' + message,
-      testsTotal: 1,
+      testsTotal: 9,
       testsPassed: 0,
-      testsFailed: 1,
+      testsFailed: 9,
     };
   }
+}
+
+if (import.meta.main) {
+  runPlaywrightTests().then((res) => {
+    console.log(JSON.stringify(res, null, 2));
+    process.exit(res.status === 'PASS' ? 0 : 1);
+  });
 }

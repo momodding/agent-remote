@@ -13,21 +13,19 @@ test.describe('Responsive Design', () => {
         viewport: { width: viewport.width, height: viewport.height },
       });
       const page = await context.newPage();
-      
-      await page.goto('/');
-      
-      // Check that main content is visible
-      const main = page.locator('main, [role="main"], body > *');
-      await expect(main.first()).toBeVisible({ timeout: 5000 }).catch(() => true);
-      
-      // Take screenshot for visual inspection
+      await page.goto('/', { waitUntil: 'commit' });
+
+      const wordmark = page.locator('text=agenticRemote').first();
+      await expect(wordmark).toBeVisible({ timeout: 15000 });
+
+      const connectBtn = page.locator('text=Connect daemon').first();
+      await expect(connectBtn).toBeVisible({ timeout: 5000 });
+
       await page.screenshot({
         path: `./artifacts/playwright/responsive-${viewport.name}.png`,
         fullPage: false,
-      }).catch(() => {
-        // Screenshot directory may not exist, that's okay for this test
       });
-      
+
       await context.close();
     });
   }
@@ -37,31 +35,17 @@ test.describe('Responsive Design', () => {
       viewport: { width: 390, height: 844 },
     });
     const page = await context.newPage();
-    
-    await page.goto('/');
-    
-    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-    const viewportWidth = 390;
-    
-    expect(scrollWidth).toBeLessThanOrEqual(viewportWidth + 1);
-    
-    await context.close();
-  });
+    await page.goto('/', { waitUntil: 'commit' });
 
-  test('should have readable text on all viewports', async ({ browser }) => {
-    for (const viewport of viewports) {
-      const context = await browser.newContext({
-        viewport: { width: viewport.width, height: viewport.height },
-      });
-      const page = await context.newPage();
-      
-      await page.goto('/');
-      
-      // Check for text content
-      const textContent = await page.textContent('body');
-      expect(textContent).toBeTruthy();
-      
-      await context.close();
-    }
+    const wordmark = page.locator('text=agenticRemote').first();
+    await expect(wordmark).toBeVisible({ timeout: 15000 });
+
+    const hasHorizontalScroll = await page.evaluate(() => {
+      return document.documentElement.scrollWidth > window.innerWidth;
+    });
+
+    expect(hasHorizontalScroll).toBe(false);
+
+    await context.close();
   });
 });
