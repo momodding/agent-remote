@@ -1,34 +1,23 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Web Terminal & Daemon Topbar', () => {
-  test('should render topbar daemon actions and brand wordmark', async ({ page }) => {
+test.describe('Web Terminal & Real Daemon Session Flow', () => {
+  test('should drive real Terminal session with live daemon', async ({ page }) => {
+    const realPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
+    if (!realPayload) {
+      throw new Error(
+        'BLOCKED: Real paired daemon connection required. Forged localStorage tokens or mocked sessions are strictly prohibited.'
+      );
+    }
+
     await page.goto('/', { waitUntil: 'commit' });
 
-    // Seed connection into localStorage
-    await page.evaluate(() => {
-      const store = {
-        connections: [
-          {
-            name: 'Terminal Host',
-            endpoint: 'https://127.0.0.1:18765',
-            hostId: 'daemon-term-host',
-            fingerprint: 'sha256:term1234',
-            skipFingerprintVerification: true,
-            token: 'tok-term-1234',
-            clientName: 'web-term-tester',
-          },
-        ],
-      };
-      localStorage.setItem('agenticremote.connection', JSON.stringify(store));
-    });
+    // Open terminal tab/session
+    const terminalBtn = page.locator('text=Terminal, [aria-label="Terminal"]').first();
+    await expect(terminalBtn).toBeVisible({ timeout: 15000 });
+    await terminalBtn.click();
 
-    await page.reload({ waitUntil: 'commit' });
-
-    // Verify wordmark and active host
-    const wordmark = page.locator('text=agenticRemote').first();
-    await expect(wordmark).toBeVisible({ timeout: 15000 });
-
-    const hostName = page.locator('text=Terminal Host').first();
-    await expect(hostName).toBeVisible({ timeout: 5000 });
+    // Verify terminal surface is rendered
+    const xterm = page.locator('.xterm, [data-testid="terminal-container"]').first();
+    await expect(xterm).toBeVisible({ timeout: 10000 });
   });
 });

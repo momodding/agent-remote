@@ -1,37 +1,32 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Web Agent & Daemon View', () => {
-  test('should render daemon card and session area when connection is active', async ({ page }) => {
+test.describe('Web Agent & Live Daemon Session Flow', () => {
+  test('should drive real Agent session with live daemon', async ({ page }) => {
+    const realPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
+    if (!realPayload) {
+      throw new Error(
+        'BLOCKED: Real paired daemon connection required. Forged localStorage tokens or mocked sessions are strictly prohibited.'
+      );
+    }
+
     await page.goto('/', { waitUntil: 'commit' });
 
-    // Seed connection into localStorage
-    await page.evaluate(() => {
-      const store = {
-        connections: [
-          {
-            name: 'Production Daemon',
-            endpoint: 'https://127.0.0.1:18765',
-            hostId: 'daemon-e2e-prod',
-            fingerprint: 'sha256:abcd1234abcd1234',
-            skipFingerprintVerification: true,
-            token: 'tok-e2e-agent-test',
-            clientName: 'web-browser',
-          },
-        ],
-      };
-      localStorage.setItem('agenticremote.connection', JSON.stringify(store));
-    });
+    // Expect real paired connection on dashboard
+    const newSessionBtn = page.locator('text=New Session, text=Create Agent').first();
+    await expect(newSessionBtn).toBeVisible({ timeout: 15000 });
+    await newSessionBtn.click();
 
-    await page.reload({ waitUntil: 'commit' });
+    // Verify chat interface loaded
+    const promptInput = page.locator('textarea[placeholder*="Ask"], input[placeholder*="Ask"]').first();
+    await expect(promptInput).toBeVisible({ timeout: 10000 });
+    await promptInput.fill('E2E_PONG');
 
-    // Verify daemon card renders
-    const daemonTitle = page.locator('text=Production Daemon').first();
-    await expect(daemonTitle).toBeVisible({ timeout: 15000 });
+    const sendBtn = page.locator('[aria-label="Send"], button:has-text("Send")').first();
+    await expect(sendBtn).toBeVisible({ timeout: 5000 });
+    await sendBtn.click();
 
-    const daemonEndpoint = page.locator('text=127.0.0.1:18765').first();
-    await expect(daemonEndpoint).toBeVisible({ timeout: 5000 });
-
-    const emptySessionNotice = page.locator('text=No open sessions for this daemon').first();
-    await expect(emptySessionNotice).toBeVisible({ timeout: 5000 });
+    // Verify response from deterministic provider through daemon
+    const responseMsg = page.locator('text=PONG').first();
+    await expect(responseMsg).toBeVisible({ timeout: 20000 });
   });
 });

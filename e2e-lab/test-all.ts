@@ -69,8 +69,11 @@ export async function runAll(): Promise<FinalLabReport> {
     }
   }
 
-  if (web.status === 'BLOCKED_ENVIRONMENT' && web.remediation) {
-    remediationPlan.push(web.remediation);
+  if (web.status === 'BLOCKED_ENVIRONMENT') {
+    if (!blockers.includes(web.details)) blockers.push(web.details);
+    if (web.remediation && !remediationPlan.includes(web.remediation)) {
+      remediationPlan.push(web.remediation);
+    }
   }
 
   const overallStatus: 'BLOCKED_ENVIRONMENT, Phase1-4 NOT YET VERIFIED' | 'PASS' =
