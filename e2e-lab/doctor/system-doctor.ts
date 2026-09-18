@@ -196,11 +196,40 @@ export function runSystemDoctor(): DoctorReport {
 
   const blocked = checks.some((c) => c.status === 'BLOCKED_ENVIRONMENT');
 
-  return {
+  const report: DoctorReport = {
     timestamp: new Date().toISOString(),
     checks,
     overallEnvironmentStatus: blocked ? 'BLOCKED_ENVIRONMENT' : 'READY',
   };
+
+  // Write environment report to ignored artifacts
+  const artifactsDir = path.join(__dirname, '../artifacts');
+  try {
+    if (!fs.existsSync(artifactsDir)) {
+      fs.mkdirSync(artifactsDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(artifactsDir, 'doctor-report.json'), JSON.stringify(report, null, 2));
+
+    let txt = `=================================================================\n`;
+    txt += `          AGENTIC-REMOTE HOST ENVIRONMENT REPORT                \n`;
+    txt += `=================================================================\n`;
+    txt += `Timestamp: ${report.timestamp}\n`;
+    txt += `Overall Environment Status: ${report.overallEnvironmentStatus}\n\n`;
+    for (const c of checks) {
+      txt += `[${c.status}] ${c.id}: ${c.name}\n`;
+      txt += `  Target: ${c.versionOrPath}\n`;
+      txt += `  Details: ${c.details}\n`;
+      if (c.remediation) {
+        txt += `  Remediation: ${c.remediation}\n`;
+      }
+      txt += `\n`;
+    }
+    fs.writeFileSync(path.join(artifactsDir, 'environment-report.txt'), txt);
+  } catch {
+    // Artifact write fallback
+  }
+
+  return report;
 }
 
 if (import.meta.main) {
