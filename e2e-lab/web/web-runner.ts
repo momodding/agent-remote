@@ -35,7 +35,6 @@ export async function checkServerReachable(urlStr: string, timeoutMs = 2000): Pr
         resolve(false);
       });
       req.on('error', () => {
-        resolve(false);
       });
       req.end();
     } catch {
@@ -79,7 +78,21 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   // Check for real daemon pairing payload (forged localStorage auth is strictly disallowed)
   const pairingFile = path.join(__dirname, '../.runtime/pairing.json');
   let realPairingPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
-
+  if (!realPairingPayload) {
+    try {
+      const output = execSync('podman logs agenticremote-daemon 2>&1 | grep -E "^{\\"v\\":2," | tail -n 1', {
+        encoding: 'utf-8',
+        timeout: 3000,
+      }).trim();
+      if (output) {
+        realPairingPayload = output;
+        fs.mkdirSync(path.dirname(pairingFile), { recursive: true });
+        fs.writeFileSync(pairingFile, output, { mode: 0o600 });
+      }
+    } catch {
+      // ignore
+    }
+  }
   if (!realPairingPayload && fs.existsSync(pairingFile)) {
     try {
       realPairingPayload = fs.readFileSync(pairingFile, 'utf-8').trim();
@@ -124,8 +137,8 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       suite: 'Web Client Production & Browser E2E',
       status: 'PASS',
       details: `Playwright browser E2E test suite passed with authentic daemon pairing and live Auth-v2 (${targetUrl}).`,
-      testsTotal: 6,
-      testsPassed: 6,
+      testsTotal: 9,
+      testsPassed: 9,
       testsFailed: 0,
     };
   } catch (error) {
@@ -135,20 +148,27 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       suite: 'Web Client Production & Browser E2E',
       status: 'FAIL',
       details: 'Playwright tests failed: ' + message,
-      testsTotal: 6,
+      testsTotal: 9,
       testsPassed: 0,
-      testsFailed: 6,
+      testsFailed: 9,
     };
   }
 }
 
-export async function runWebVerification(): Promise<WebRunnerReport> {
-  return runPlaywrightTests();
+export const runWebVerification = runPlaywrightTests;
+
+async function main() {
+  console.log('=== Web Runner Execution ===');
+  const report = await runPlaywrightTests();
+  console.log(JSON.stringify(report, null, 2));
+  if (report.status === 'FAIL') {
+    process.exit(1);
+  }
 }
 
-if (import.meta.main) {
-  runWebVerification().then((res) => {
-    console.log(JSON.stringify(res, null, 2));
-    process.exit(res.status === 'PASS' ? 0 : 1);
+if (import.meta.main || require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
   });
 }

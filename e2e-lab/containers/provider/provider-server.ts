@@ -113,7 +113,7 @@ function detectScenario(messages: ChatMessage[]): DeterministicScenario {
 function getScenarioPayload(scenario: DeterministicScenario, messages: ChatMessage[]): { text: string; isTool: boolean } {
   switch (scenario) {
     case DeterministicScenario.PONG:
-      return { text: 'pong', isTool: false };
+      return { text: 'E2E_PONG', isTool: false };
 
     case DeterministicScenario.TOOL_TEST:
       return { text: '', isTool: true };

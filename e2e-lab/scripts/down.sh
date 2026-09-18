@@ -17,4 +17,8 @@ if podman network exists "${NETWORK_NAME}" 2>/dev/null; then
   podman network rm "${NETWORK_NAME}" 2>/dev/null || true
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+rm -f "${LAB_DIR}/.runtime/pairing.json"
+
 echo "Status: Teardown complete. All lab containers and networks released."

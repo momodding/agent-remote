@@ -111,4 +111,18 @@ if [[ ${PROVIDER_HEALTHY} -eq 0 || ${DAEMON_HEALTHY} -eq 0 || ${CLIENT_HEALTHY} 
   exit 1
 fi
 
+# 10. Extract real temporary pairing payload from daemon logs
+PAIRING_JSON=$(podman logs agenticremote-daemon 2>&1 | grep -E '^{"v":2,' | tail -n 1 || true)
+if [[ -n "${PAIRING_JSON}" ]]; then
+  mkdir -p "${RUNTIME_DIR}"
+  echo "${PAIRING_JSON}" > "${RUNTIME_DIR}/pairing.json"
+  chmod 0600 "${RUNTIME_DIR}/pairing.json"
+  echo "Real daemon pairing payload saved to ${RUNTIME_DIR}/pairing.json (mode 0600)"
+else
+  echo "Warning: Could not extract pairing payload from daemon logs." >&2
+fi
+
+# 11. Ensure test files exist in daemon workspace
+podman exec agenticremote-daemon bash -c "echo 'Hello from sample.txt in project1' > /app/workspace/sample.txt && mkdir -p /app/workspace/project1 && echo 'Hello from sample.txt in project1' > /app/workspace/project1/sample.txt" || true
+
 echo "=== Podman Topology Started Successfully ==="

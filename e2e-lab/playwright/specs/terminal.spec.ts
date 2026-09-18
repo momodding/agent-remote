@@ -1,23 +1,20 @@
 import { test, expect } from '@playwright/test';
+import { ensurePaired } from '../helpers';
 
 test.describe('Web Terminal & Real Daemon Session Flow', () => {
   test('should drive real Terminal session with live daemon', async ({ page }) => {
-    const realPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
-    if (!realPayload) {
-      throw new Error(
-        'BLOCKED: Real paired daemon connection required. Forged localStorage tokens or mocked sessions are strictly prohibited.'
-      );
-    }
+    // Ensure authentic Auth-v2 pairing
+    await ensurePaired(page);
+    // Open dedicated Terminal session from dashboard
+    const newTerminalBtn = page.locator('[aria-label*="New Terminal"]').first();
+    await expect(newTerminalBtn).toBeVisible({ timeout: 15000 });
+    await newTerminalBtn.click();
 
-    await page.goto('/', { waitUntil: 'commit' });
+    // Verify dedicated terminal page and surface
+    const terminalHeader = page.getByText('Shell');
+    await expect(terminalHeader).toBeVisible({ timeout: 15000 });
 
-    // Open terminal tab/session
-    const terminalBtn = page.locator('text=Terminal, [aria-label="Terminal"]').first();
-    await expect(terminalBtn).toBeVisible({ timeout: 15000 });
-    await terminalBtn.click();
-
-    // Verify terminal surface is rendered
-    const xterm = page.locator('.xterm, [data-testid="terminal-container"]').first();
-    await expect(xterm).toBeVisible({ timeout: 10000 });
+    const xtermSurface = page.locator('.xterm, canvas, [data-testid="terminal-container"]').first();
+    await expect(xtermSurface).toBeVisible({ timeout: 10000 });
   });
 });
