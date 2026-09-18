@@ -59,7 +59,8 @@ RUN echo '{\n\
 
 
 # Configure OMP v18 for deterministic mock provider
-RUN mkdir -p /root/.omp/agent && echo '{\n\
+RUN mkdir -p /root/.omp/agent && \
+  echo '{\n\
   "providers": {\n\
     "deterministic": {\n\
       "baseUrl": "http://agenticremote-provider:19090/v1",\n\
@@ -83,15 +84,44 @@ RUN mkdir -p /root/.omp/agent && echo '{\n\
       ]\n\
     }\n\
   }\n\
-}' > /root/.omp/agent/models.json && echo '{\n\
+}' > /root/.omp/agent/models.json && \
+  echo '{\n\
+  "defaultProvider": "deterministic",\n\
+  "defaultModel": "omni-deterministic",\n\
   "modelRoles": {\n\
-    "default": "omni-deterministic",\n\
-    "smol": "omni-deterministic",\n\
-    "slow": "omni-deterministic"\n\
+    "default": "deterministic/omni-deterministic",\n\
+    "smol": "deterministic/omni-deterministic",\n\
+    "slow": "deterministic/omni-deterministic"\n\
   }\n\
 }' > /root/.omp/agent/settings.json && \
+  echo 'providers:\n\
+  deterministic:\n\
+    baseUrl: "http://agenticremote-provider:19090/v1"\n\
+    api: "openai-completions"\n\
+    apiKey: "test-key"\n\
+    models:\n\
+      - id: "omni-deterministic"\n\
+        name: "Omni Deterministic"\n\
+        contextWindow: 128000\n\
+        maxTokens: 4096\n\
+        supportsTools: true\n\
+      - id: "gpt-4o"\n\
+        name: "GPT-4o Mock"\n\
+        contextWindow: 128000\n\
+        maxTokens: 4096\n\
+        supportsTools: true\n\
+' > /root/.omp/agent/models.yml && \
+  echo 'defaultProvider: deterministic\n\
+defaultModel: omni-deterministic\n\
+modelRoles:\n\
+  default: deterministic/omni-deterministic\n\
+  smol: deterministic/omni-deterministic\n\
+  slow: deterministic/omni-deterministic\n\
+' > /root/.omp/agent/config.yml && \
   cp /root/.omp/agent/models.json /root/.omp/models.json && \
-  cp /root/.omp/agent/settings.json /root/.omp/settings.json
+  cp /root/.omp/agent/settings.json /root/.omp/settings.json && \
+  cp /root/.omp/agent/models.yml /root/.omp/models.yml && \
+  cp /root/.omp/agent/config.yml /root/.omp/config.yml
 EXPOSE 18765
 
 ENTRYPOINT ["agenticRemote", "serve", "--config", "/app/.agenticremote/config.json"]

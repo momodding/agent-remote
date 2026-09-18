@@ -45,10 +45,10 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
     );
   }
 
-  await page.goto('/', { waitUntil: 'commit' });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  const daemonHeader = page.locator('text=localhost:18765').first();
-  const connectBtn = page.locator('text=Connect daemon').first();
+  const daemonHeader = page.getByText('localhost:18765').first();
+  const connectBtn = page.locator('[aria-label="Connect daemon"]').first();
 
   // If already paired from a prior test in same session
   if (await daemonHeader.isVisible({ timeout: 3000 }).catch(() => false)) {
