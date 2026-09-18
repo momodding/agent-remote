@@ -1,0 +1,27 @@
+appId: com.agentic_remote.client
+---
+- launchApp
+
+- tapOn:
+    text: Pair
+    optional: true
+
+- tapOn:
+    text: Manual Input
+    optional: true
+
+- inputText: ws://127.0.0.1:9000
+  optional: true
+
+- tapOn:
+    text: Connect
+    optional: true
+
+- wait:
+    duration: 2000
+
+- assertVisible:
+    text: Paired
+    optional: true
+
+- screenshot

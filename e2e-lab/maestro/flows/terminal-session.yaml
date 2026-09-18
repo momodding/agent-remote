@@ -1,0 +1,41 @@
+appId: com.agentic_remote.client
+---
+- launchApp
+
+- tapOn:
+    text: Terminal
+    optional: true
+
+- wait:
+    duration: 1000
+
+- tapOn:
+    id: terminal_input
+    optional: true
+
+- inputText: ls -la
+  optional: true
+
+- keyPress: return
+
+- wait:
+    duration: 1000
+
+- tapOn:
+    text: New Tab
+    optional: true
+
+- wait:
+    duration: 500
+
+- screenshot
+
+- tapOn:
+    text: Terminal
+    index: 0
+    optional: true
+
+- wait:
+    duration: 500
+
+- screenshot

@@ -73,11 +73,84 @@ export function runAndroidVerification(): AndroidRunnerReport {
 }
 
 if (import.meta.main) {
-  const res = runAndroidVerification();
+  const res = runMaestroTests();
   console.log(`Android Runner Status: ${res.status}`);
   console.log(`Details: ${res.details}`);
   if (res.blockers.length > 0) {
     console.log('Blockers:');
     res.blockers.forEach((b, i) => console.log(`  [${i + 1}] ${b}`));
+  }
+}
+
+export function runMaestroTests(): AndroidRunnerReport {
+  const setup = checkAndroidSetup();
+  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '/home/momodding/android-sdk';
+  const extendedPath = `${path.join(sdkRoot, 'platform-tools')}:${path.join(sdkRoot, 'emulator')}:${path.join(sdkRoot, 'cmdline-tools/latest/bin')}:${process.env.PATH}`;
+  const env = { ...process.env, ANDROID_HOME: sdkRoot, PATH: extendedPath };
+
+  const blockers: string[] = [];
+  const remediationSteps: string[] = [];
+
+  if (!setup.maestroInstalled) {
+    blockers.push('Maestro CLI not installed.');
+    remediationSteps.push('Install Maestro: curl -fsSL "https://get.maestro.mobile.dev" | bash');
+    return {
+      timestamp: new Date().toISOString(),
+      suite: 'Android Mobile E2E & Device Automation',
+      status: 'BLOCKED_ENVIRONMENT',
+      details: 'Maestro not available',
+      blockers,
+      remediationSteps,
+    };
+  }
+
+  let runningDevice = false;
+  try {
+    const adbOut = execSync('adb devices', { env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+    const lines = adbOut.trim().split('\n').slice(1);
+    runningDevice = lines.some((l) => l.includes('\tdevice'));
+  } catch {
+    // adb command failed
+  }
+
+  if (!runningDevice) {
+    blockers.push('No Android device or emulator booted and connected.');
+    remediationSteps.push('Start an emulator: emulator -avd <avd-name>');
+    return {
+      timestamp: new Date().toISOString(),
+      suite: 'Android Mobile E2E & Device Automation',
+      status: 'BLOCKED_ENVIRONMENT',
+      details: 'No device ready',
+      blockers,
+      remediationSteps,
+    };
+  }
+
+  try {
+    const cwd = path.join(__dirname, '..');
+    execSync('maestro test maestro/flows/', {
+      cwd,
+      env,
+      stdio: 'inherit',
+    });
+
+    return {
+      timestamp: new Date().toISOString(),
+      suite: 'Android Mobile E2E & Device Automation',
+      status: 'PASS',
+      details: 'Maestro tests passed',
+      blockers: [],
+      remediationSteps: [],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      timestamp: new Date().toISOString(),
+      suite: 'Android Mobile E2E & Device Automation',
+      status: 'FAIL',
+      details: 'Maestro tests failed: ' + message,
+      blockers: ['Maestro tests did not complete successfully'],
+      remediationSteps: ['Review Maestro logs for details'],
+    };
   }
 }

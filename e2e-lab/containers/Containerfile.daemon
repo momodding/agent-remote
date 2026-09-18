@@ -1,0 +1,54 @@
+FROM ubuntu:24.04
+
+# Install Go 1.22+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz \
+    && rm go1.22.0.linux-amd64.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install tmux for session management
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build OMP binary from source (or mount from host)
+WORKDIR /workspace
+
+# Copy backend source
+COPY backend/ /workspace/backend/
+WORKDIR /workspace/backend
+
+# Build the agenticRemote binary
+RUN go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
+
+WORKDIR /app
+
+# Create runtime directories
+RUN mkdir -p /app/.agenticremote/state /app/workspace \
+    && chmod 755 /app /app/.agenticremote /app/.agenticremote/state /app/workspace
+
+# Copy a basic config (or mount at runtime)
+RUN cat > /app/.agenticremote/config.json << 'EOF'
+{
+  "stateDir": ".agenticremote/state",
+  "workspaceRoot": "workspace",
+  "listenAddr": "0.0.0.0:18765",
+  "publicEndpoint": "http://localhost:18765",
+  "terminalBackend": "pty",
+  "maxScrollbackBytes": 1048576,
+  "channelBufferSize": 100,
+  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
+}
+EOF
+
+EXPOSE 18765
+
+ENTRYPOINT ["agenticRemote", "serve", "/app/.agenticremote/config.json"]

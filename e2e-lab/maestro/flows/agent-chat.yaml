@@ -1,0 +1,47 @@
+appId: com.agentic_remote.client
+---
+- launchApp
+
+- wait:
+    duration: 1000
+
+- tapOn:
+    text: Agent
+    optional: true
+
+- wait:
+    duration: 500
+
+- tapOn:
+    id: chat_input
+    optional: true
+
+- inputText: What is the current directory?
+
+- tapOn:
+    text: Send
+    optional: true
+
+- wait:
+    duration: 2000
+
+- assertVisible:
+    text: response
+    optional: true
+
+- screenshot
+
+- tapOn:
+    id: chat_input
+    optional: true
+
+- inputText: List files here
+
+- tapOn:
+    text: Send
+    optional: true
+
+- wait:
+    duration: 2000
+
+- screenshot
