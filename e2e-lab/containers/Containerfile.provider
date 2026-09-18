@@ -2,7 +2,7 @@ FROM oven/bun:latest
 
 WORKDIR /app
 
-# Copy provider server
+# Copy deterministic provider server implementation
 COPY e2e-lab/containers/provider/provider-server.ts /app/provider-server.ts
 
 EXPOSE 19090

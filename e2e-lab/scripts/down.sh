@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== [agenticRemote E2E Lab] Topology Teardown (down.sh) ==="
+echo "=== [agenticRemote E2E Lab] Rootless Podman Topology Teardown ==="
 
-RUNTIME=""
-if command -v podman >/dev/null 2>&1; then
-  RUNTIME="podman"
-elif command -v docker >/dev/null 2>&1; then
-  RUNTIME="docker"
+if ! command -v podman >/dev/null 2>&1; then
+  echo "Podman not found; skipping container teardown."
+  exit 0
 fi
 
-if [ -n "${RUNTIME}" ]; then
-  echo "Stopping and removing containers..."
-  ${RUNTIME} rm -f agenticremote-provider agenticremote-daemon agenticremote-client 2>/dev/null || true
+echo "Stopping and removing containers..."
+podman rm -f agenticremote-provider agenticremote-daemon agenticremote-client 2>/dev/null || true
 
-  NETWORK_NAME="agenticremote-net"
-  if ${RUNTIME} network exists "${NETWORK_NAME}" 2>/dev/null; then
-    echo "Cleaning up network: ${NETWORK_NAME}"
-    ${RUNTIME} network rm "${NETWORK_NAME}" 2>/dev/null || true
-  fi
+NETWORK_NAME="agent-remote-e2e"
+if podman network exists "${NETWORK_NAME}" 2>/dev/null; then
+  echo "Cleaning up Podman network: ${NETWORK_NAME}"
+  podman network rm "${NETWORK_NAME}" 2>/dev/null || true
 fi
 
 echo "Status: Teardown complete. All lab containers and networks released."

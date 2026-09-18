@@ -1,30 +1,16 @@
-FROM node:22-alpine
-
-# Install bun
-RUN npm install -g bun
-
-# Install required system packages for Expo
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++
+FROM oven/bun:latest
 
 WORKDIR /app
 
-# Copy client application
+# Copy client application source
 COPY client/ /app/
 
-# Install dependencies
+# Install client dependencies
 RUN bun install
-
-# Build Expo web (static export)
-RUN bun run web 2>&1 | tee /tmp/expo-build.log &
-# Note: Expo web build happens at runtime via expo start --web
-# For production, we just need the dev server ready
 
 EXPOSE 8081
 
-ENV EXPO_PUBLIC_API_URL=http://localhost:18765
+ENV EXPO_PUBLIC_API_URL=https://localhost:18765
 
-# Start Expo dev server on web
+# Start Expo web client
 CMD ["bun", "run", "web"]

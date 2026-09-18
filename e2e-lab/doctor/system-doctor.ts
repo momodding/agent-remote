@@ -6,7 +6,7 @@ export interface DoctorCheck {
   id: string;
   name: string;
   status: 'READY' | 'MISSING' | 'BLOCKED_ENVIRONMENT' | 'WARN';
-  versionOrPath: string;
+  versionOrPath?: string;
   details: string;
   remediation?: string;
 }
@@ -19,11 +19,13 @@ export interface DoctorReport {
 
 function runCmd(cmd: string, env?: Record<string, string>): string | null {
   try {
-    return execSync(cmd, {
+    const out = execSync(cmd, {
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
       env: env ? { ...process.env, ...env } : process.env,
-      stdio: ['pipe', 'pipe', 'ignore'],
-    }).trim();
+      timeout: 5000,
+    });
+    return out.trim();
   } catch {
     return null;
   }
@@ -31,9 +33,6 @@ function runCmd(cmd: string, env?: Record<string, string>): string | null {
 
 export function runSystemDoctor(): DoctorReport {
   const checks: DoctorCheck[] = [];
-  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '/home/momodding/android-sdk';
-  const extendedPath = `${path.join(sdkRoot, 'platform-tools')}:${path.join(sdkRoot, 'emulator')}:${path.join(sdkRoot, 'cmdline-tools/latest/bin')}:${process.env.PATH}`;
-  const androidEnv = { ANDROID_HOME: sdkRoot, PATH: extendedPath };
 
   // 1. Go Toolchain
   const goVer = runCmd('go version');
@@ -43,7 +42,7 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Go Compiler Toolchain',
       status: 'READY',
       versionOrPath: goVer,
-      details: 'Go compiler available for building and testing daemon.',
+      details: 'Go compiler available for backend build and tests.',
     });
   } else {
     checks.push({
@@ -51,12 +50,12 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Go Compiler Toolchain',
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
-      details: 'Go compiler is required.',
-      remediation: 'Install Go 1.22+ and add to PATH.',
+      details: 'Go compiler is missing from PATH.',
+      remediation: 'Install Go 1.26.4: https://go.dev/dl/',
     });
   }
 
-  // 2. Bun & Node
+  // 2. Bun & Node Runtime
   const bunVer = runCmd('bun --version');
   const nodeVer = runCmd('node --version');
   if (bunVer && nodeVer) {
@@ -65,7 +64,7 @@ export function runSystemDoctor(): DoctorReport {
       name: 'JavaScript / TypeScript Runtime (Bun + Node)',
       status: 'READY',
       versionOrPath: `Bun v${bunVer} / Node ${nodeVer}`,
-      details: 'Runtimes available for client testing.',
+      details: 'Bun and Node are available for Expo, Playwright, and provider scripts.',
     });
   } else {
     checks.push({
@@ -74,11 +73,11 @@ export function runSystemDoctor(): DoctorReport {
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'missing',
       details: 'Bun and Node are required.',
-      remediation: 'Install Bun and Node.js.',
+      remediation: 'Install Bun (https://bun.sh) and Node.js.',
     });
   }
 
-  // 3. Tmux
+  // 3. Tmux Multiplexer
   const tmuxVer = runCmd('tmux -V');
   if (tmuxVer) {
     checks.push({
@@ -100,7 +99,7 @@ export function runSystemDoctor(): DoctorReport {
   }
 
   // 4. OMP Binary
-  const ompVer = runCmd('omp --version') || runCmd('omp -v');
+  const ompVer = runCmd('omp --version');
   if (ompVer) {
     checks.push({
       id: 'DOC-04',
@@ -116,11 +115,19 @@ export function runSystemDoctor(): DoctorReport {
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
       details: 'OMP CLI binary required for agent verification.',
-      remediation: 'Install omp binary into PATH.',
+      remediation: 'bun add -g @oh-my-pi/pi-coding-agent@18.1.22',
     });
   }
 
   // 5. Android SDK & ADB
+  const home = process.env.HOME || '/root';
+  const sdkRoot = process.env.ANDROID_HOME || path.join(home, 'android-sdk');
+  const androidEnv = {
+    ANDROID_HOME: sdkRoot,
+    ANDROID_SDK_ROOT: sdkRoot,
+    PATH: `${sdkRoot}/platform-tools:${sdkRoot}/cmdline-tools/latest/bin:${sdkRoot}/emulator:${process.env.PATH || ''}`,
+  };
+
   const adbVer = runCmd('adb version', androidEnv);
   if (fs.existsSync(sdkRoot) && adbVer) {
     checks.push({
@@ -128,20 +135,20 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Android SDK & ADB',
       status: 'READY',
       versionOrPath: `${sdkRoot} (${adbVer.split('\n')[0]})`,
-      details: 'Android SDK directory and adb executable accessible.',
+      details: 'Android SDK and ADB platform-tools located.',
     });
   } else {
     checks.push({
       id: 'DOC-05',
       name: 'Android SDK & ADB',
       status: 'BLOCKED_ENVIRONMENT',
-      versionOrPath: 'missing/incomplete',
-      details: 'Android SDK or adb not found.',
-      remediation: 'Set ANDROID_HOME and install platform-tools.',
+      versionOrPath: 'not found',
+      details: 'Android SDK commandline-tools or ADB missing.',
+      remediation: './scripts/setup-android-sdk.sh',
     });
   }
 
-  // 6. KVM Acceleration (/dev/kvm)
+  // 6. Hardware Virtualization / KVM
   if (fs.existsSync('/dev/kvm')) {
     try {
       fs.accessSync('/dev/kvm', fs.constants.R_OK | fs.constants.W_OK);
@@ -149,8 +156,8 @@ export function runSystemDoctor(): DoctorReport {
         id: 'DOC-06',
         name: 'Hardware Virtualization (/dev/kvm)',
         status: 'READY',
-        versionOrPath: '/dev/kvm',
-        details: 'Read/write access to /dev/kvm granted.',
+        versionOrPath: '/dev/kvm (rw)',
+        details: 'KVM hardware acceleration is accessible.',
       });
     } catch {
       checks.push({
@@ -173,7 +180,7 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 7. Maestro UI Test Runner
+  // 7. Maestro CLI
   const maestroVer = runCmd('maestro --version', androidEnv);
   if (maestroVer) {
     checks.push({
@@ -194,39 +201,59 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  const blocked = checks.some((c) => c.status === 'BLOCKED_ENVIRONMENT');
+  // 8. Rootless Podman Container Runtime
+  const podmanVer = runCmd('podman --version');
+  if (podmanVer) {
+    checks.push({
+      id: 'DOC-08',
+      name: 'Rootless Podman Container Runtime',
+      status: 'READY',
+      versionOrPath: podmanVer,
+      details: 'Podman container engine available for lab container topology.',
+    });
+  } else {
+    checks.push({
+      id: 'DOC-08',
+      name: 'Rootless Podman Container Runtime',
+      status: 'BLOCKED_ENVIRONMENT',
+      versionOrPath: 'not found',
+      details: 'Podman binary is required for rootless daemon and provider container topology.',
+      remediation: 'sudo apt install -y podman',
+    });
+  }
 
+  const blocked = checks.some((c) => c.status === 'BLOCKED_ENVIRONMENT');
   const report: DoctorReport = {
     timestamp: new Date().toISOString(),
     checks,
     overallEnvironmentStatus: blocked ? 'BLOCKED_ENVIRONMENT' : 'READY',
   };
 
-  // Write environment report to ignored artifacts
+  // Write environment report to artifacts
   const artifactsDir = path.join(__dirname, '../artifacts');
   try {
     if (!fs.existsSync(artifactsDir)) {
       fs.mkdirSync(artifactsDir, { recursive: true });
     }
-    fs.writeFileSync(path.join(artifactsDir, 'doctor-report.json'), JSON.stringify(report, null, 2));
+    fs.writeFileSync(path.join(artifactsDir, 'doctor-report.json'), JSON.stringify(report, null, 2), 'utf8');
 
-    let txt = `=================================================================\n`;
-    txt += `          AGENTIC-REMOTE HOST ENVIRONMENT REPORT                \n`;
-    txt += `=================================================================\n`;
+    let txt = `===============================================================\n`;
+    txt += `          agenticRemote E2E System Doctor Report\n`;
+    txt += `===============================================================\n`;
     txt += `Timestamp: ${report.timestamp}\n`;
-    txt += `Overall Environment Status: ${report.overallEnvironmentStatus}\n\n`;
-    for (const c of checks) {
+    txt += `Overall Status: ${report.overallEnvironmentStatus}\n\n`;
+    for (const c of report.checks) {
       txt += `[${c.status}] ${c.id}: ${c.name}\n`;
-      txt += `  Target: ${c.versionOrPath}\n`;
-      txt += `  Details: ${c.details}\n`;
+      txt += `       Version/Path: ${c.versionOrPath || 'N/A'}\n`;
+      txt += `       Details:      ${c.details}\n`;
       if (c.remediation) {
-        txt += `  Remediation: ${c.remediation}\n`;
+        txt += `       Remedy:       ${c.remediation}\n`;
       }
       txt += `\n`;
     }
-    fs.writeFileSync(path.join(artifactsDir, 'environment-report.txt'), txt);
-  } catch {
-    // Artifact write fallback
+    fs.writeFileSync(path.join(artifactsDir, 'environment-report.txt'), txt, 'utf8');
+  } catch (err) {
+    console.error('Failed to write doctor artifacts:', err);
   }
 
   return report;
@@ -237,7 +264,7 @@ if (import.meta.main) {
   console.log(`System Doctor Status: ${rep.overallEnvironmentStatus}`);
   for (const c of rep.checks) {
     console.log(`[${c.status}] ${c.id}: ${c.name} -> ${c.versionOrPath}`);
-    if (c.remediation) {
+    if (c.remediation && c.status !== 'READY') {
       console.log(`       Remedy: ${c.remediation}`);
     }
   }

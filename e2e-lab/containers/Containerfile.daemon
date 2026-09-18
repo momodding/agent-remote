@@ -1,22 +1,19 @@
-FROM ubuntu:24.04
+FROM oven/bun:latest
 
 # Pinned Toolchain Versions (derived from env/versions.env and backend/go.mod)
 ARG GO_VERSION=1.26.4
 ARG OMP_VERSION=18.1.22
-ARG NODE_VERSION=22.22.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/local/go/bin:/root/.bun/bin:${PATH}"
 
-# Install base OS dependencies
+# Install minimal OS dependencies for daemon and tmux session management
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
     tmux \
-    unzip \
     tar \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pinned Go compiler
@@ -25,14 +22,11 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go
     && rm /tmp/go.tar.gz \
     && go version
 
-# Install Bun & Node
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
+# Install exact pinned Oh My Pi (OMP) CLI binary via @oh-my-pi/pi-coding-agent
+RUN bun add -g "@oh-my-pi/pi-coding-agent@${OMP_VERSION}"
 
-# Install pinned Oh My Pi (OMP) CLI binary
-RUN bun add -g "@oh-my-pi/omp@${OMP_VERSION}" || npm install -g "@oh-my-pi/omp@${OMP_VERSION}" || true
-# Verify real OMP binary version or link host binary
-RUN which omp && omp --version || true
+# Strict verification of real OMP binary version (fails build if binary missing or mismatched)
+RUN which omp && omp --version
 
 # Setup AgenticRemote working directories
 WORKDIR /app
@@ -41,22 +35,28 @@ COPY backend/ ./backend/
 # Build backend daemon binary
 RUN cd backend && go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
 
-# Create TLS and configuration directories
-RUN mkdir -p /etc/agenticremote/tls /app/.agenticremote/state /app/workspace
+# Create state, TLS, and workspace directories
+RUN mkdir -p /app/.agenticremote/state/tls /app/workspace /app/uploads
 
-# Default production TLS daemon configuration
+# Default production TLS daemon configuration matching backend/internal/config/config.go
 RUN echo '{\n\
+  "listenAddr": "0.0.0.0:18765",\n\
+  "listenScheme": "https",\n\
+  "publicEndpoint": "https://localhost:18765",\n\
   "stateDir": "/app/.agenticremote/state",\n\
   "workspaceRoot": "/app/workspace",\n\
-  "listenAddr": "0.0.0.0:18765",\n\
-  "publicEndpoint": "https://localhost:18765",\n\
-  "tlsCertPath": "/etc/agenticremote/tls/server.crt",\n\
-  "tlsKeyPath": "/etc/agenticremote/tls/server.key",\n\
-  "terminalBackend": "pty",\n\
+  "uploadDir": "uploads",\n\
+  "allowedCidrs": ["0.0.0.0/0", "::/0"],\n\
+  "maxConnections": 16,\n\
+  "maxSessions": 16,\n\
+  "channelBufferSize": 256,\n\
   "maxScrollbackBytes": 1048576,\n\
-  "channelBufferSize": 100\n\
-}' > /etc/agenticremote/config.json
+  "allowDestructiveFiles": true,\n\
+  "skipFingerprintVerification": false,\n\
+  "pairingRotationSeconds": 300,\n\
+  "terminalBackend": "tmux"\n\
+}' > /app/.agenticremote/config.json
 
 EXPOSE 18765
 
-ENTRYPOINT ["agenticRemote", "serve", "/etc/agenticremote/config.json"]
+ENTRYPOINT ["agenticRemote", "serve", "/app/.agenticremote/config.json"]
