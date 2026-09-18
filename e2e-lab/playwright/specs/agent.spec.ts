@@ -168,9 +168,9 @@ test.describe('Web Agent & Live Daemon Session Flow', () => {
     // Verify redirected to dashboard and connection card is active
     const deckHeader = page.getByText('localhost:18765').last();
     await expect(deckHeader).toBeVisible({ timeout: 15000 });
-
     // Assert remote agent surface disappears from dashboard
     const remainingAgentCards = page.locator('[aria-label^="Open agent"]:visible');
+    // The created test agent should be removed; other pre-existing agents remain
     await expect(remainingAgentCards).toHaveCount(initialAgentCardsCount, { timeout: 10000 });
   });
 });
