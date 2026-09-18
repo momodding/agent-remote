@@ -1,0 +1,19 @@
+# e2e-lab local ignore
+node_modules/
+.runtime/
+certs/
+generated-certs/
+test-results/
+playwright-report/
+.playwright/
+browser-cache/
+*.apk
+*.log
+*.tmp
+.expo/
+web-build/
+dist/
+
+# Ignore all artifacts except .gitkeep
+artifacts/*
+!artifacts/.gitkeep

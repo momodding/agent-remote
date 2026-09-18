@@ -2,23 +2,20 @@
   "name": "agentic-remote-e2e-lab",
   "version": "1.0.0",
   "private": true,
-  "description": "Comprehensive Phase 1-4 E2E Lab for agenticRemote",
+  "description": "Truthful E2E validation lab and diagnostic harness for agenticRemote",
   "scripts": {
-    "doctor": "bun run doctor/doctor.ts",
-    "test:phase1": "bun run backend-wrapper/strict-backend.ts",
-    "test:phase2": "bun x playwright test --config=playwright/playwright.config.ts",
-    "test:phase3": "bun run android/android-doctor.ts",
-    "test:phase4": "bun run security/security-audit.ts",
-    "test:all": "bun run unified-runner/run-all.ts",
-    "e2e": "bun run unified-runner/run-all.ts"
+    "doctor": "bun run doctor/system-doctor.ts",
+    "backend": "bun run backend/backend-runner.ts",
+    "web": "bun run web/web-runner.ts",
+    "android": "bun run android/android-runner.ts",
+    "security": "bun run security/leak-scanner.ts",
+    "test-all": "bun run test-all.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
-    "@types/node": "^22.10.0",
-    "@types/ws": "^8.5.10"
-  },
-  "dependencies": {
-    "@noble/hashes": "^2.2.0",
+    "@types/node": "^22.13.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.7.3",
     "ws": "^8.18.0"
   }
 }
