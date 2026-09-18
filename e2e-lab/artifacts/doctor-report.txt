@@ -1,0 +1,21 @@
+=================================================================
+           AGENTIC-REMOTE E2E LAB DOCTOR REPORT                  
+=================================================================
+Timestamp: 2026-09-18T03:09:54.390Z
+Summary: 10 PASS | 1 WARN | 0 FAIL | 2 BLOCKED
+
+[WARN]     Git Clean Tree & HEAD               : HEAD: cf864f2 | Modified files: 1
+[PASS]     Go Compiler (1.24+)                 : go version go1.26.4 linux/amd64
+[PASS]     Bun Runtime                         : bun v1.3.14
+[PASS]     Node.js Runtime (v20+)              : node v22.22.2
+[PASS]     tmux Session Backend                : tmux 3.4
+[PASS]     Oh My Pi (OMP CLI)                  : omp/18.1.22
+[PASS]     Podman Container Engine             : podman version 5.8.1
+[PASS]     Playwright Browser Engine           : Version 1.63.0
+[PASS]     Java JDK (17+)                      : Java not found
+[PASS]     Android SDK & adb                   : Android Debug Bridge version 1.0.41
+[BLOCKED]  KVM Hardware Acceleration (/dev/kvm) : KVM blocked: /dev/kvm exists (crw-rw----) but user lacks permission (accel:)
+           -> Remediation: Add user to kvm group: sudo gpasswd -a $USER kvm and re-login
+[BLOCKED]  Maestro Mobile UI Test CLI          : Maestro CLI not installed
+           -> Remediation: curl -fsSL "https://get.maestro.mobile.dev" | bash
+[PASS]     E2E Test Ports Availability         : 8765: FREE, 8766: FREE, 8081: FREE, 19006: FREE, 5900: FREE

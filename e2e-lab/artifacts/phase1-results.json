@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-09-18T03:31:50.866Z",
+  "suite": "Phase 1 - Strict Backend & TLS Daemon",
+  "passed": 7,
+  "failed": 0,
+  "total": 7,
+  "results": [
+    {
+      "testId": "RAR-E2E-101",
+      "name": "Daemon Spawn with Strict TLS & Custom SANs",
+      "status": "PASS",
+      "durationMs": 219,
+      "details": "Daemon spawned on PID 169538 (port 18765) with strict TLS certs and SANs"
+    },
+    {
+      "testId": "RAR-E2E-102",
+      "name": "Pairing Payload Structure & Fingerprint Verification",
+      "status": "PASS",
+      "durationMs": 0,
+      "details": "Valid v2 payload: pairingId=rdhxso-E..., fingerprint=68:22:EC:42:95:DE..."
+    },
+    {
+      "testId": "RAR-E2E-103",
+      "name": "Auth-v2 HMAC-SHA256 Challenge-Response Handshake",
+      "status": "PASS",
+      "durationMs": 13,
+      "details": "Successfully completed handshake and acquired session bearer token (ThUsCWbs09kW...)"
+    },
+    {
+      "testId": "RAR-E2E-104",
+      "name": "Runtime Snapshot & Host Identity Verification",
+      "status": "PASS",
+      "durationMs": 2,
+      "details": "Host ID: 68:22:EC:42:95:DE:96:D6:DC:B1:5F:F8:97:EE:2C:39:20:FB:DC:BF:A4:09:9B:9D:7E:E0:2F:D4:AC:22:0B:A9 | Cursor: 0 | Capabilities: 6"
+    },
+    {
+      "testId": "RAR-E2E-105",
+      "name": "Interactive Terminal PTY over WebSocket (tmux Backend)",
+      "status": "PASS",
+      "durationMs": 34,
+      "details": "Created session MDMzMTUwLjgxOTk2MjY3NA, sent input and observed PTY output echo"
+    },
+    {
+      "testId": "RAR-E2E-106",
+      "name": "Workspace File Operations (Relative Paths & CRUD)",
+      "status": "PASS",
+      "durationMs": 2,
+      "details": "Listed workspace files (2 entries), wrote and verified e2e-output.txt"
+    },
+    {
+      "testId": "RAR-E2E-107",
+      "name": "Pairing Token Single-Use & Replay Rejection",
+      "status": "PASS",
+      "durationMs": 4,
+      "details": "Used pairing token was strictly consumed and correctly rejected on second attempt"
+    }
+  ]
+}

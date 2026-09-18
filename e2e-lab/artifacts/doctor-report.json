@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-09-18T03:09:54.390Z",
+  "workspaceRoot": "/home/momodding/Documents/agentic-remote",
+  "checks": [
+    {
+      "id": "git-status",
+      "name": "Git Clean Tree & HEAD",
+      "category": "core",
+      "status": "WARN",
+      "details": "HEAD: cf864f2 | Modified files: 1"
+    },
+    {
+      "id": "go-compiler",
+      "name": "Go Compiler (1.24+)",
+      "category": "backend",
+      "status": "PASS",
+      "details": "go version go1.26.4 linux/amd64",
+      "remediation": "Install Go 1.24+ and ensure it is in PATH"
+    },
+    {
+      "id": "bun-runtime",
+      "name": "Bun Runtime",
+      "category": "core",
+      "status": "PASS",
+      "details": "bun v1.3.14",
+      "remediation": "Install Bun (https://bun.sh)"
+    },
+    {
+      "id": "node-runtime",
+      "name": "Node.js Runtime (v20+)",
+      "category": "core",
+      "status": "PASS",
+      "details": "node v22.22.2"
+    },
+    {
+      "id": "tmux",
+      "name": "tmux Session Backend",
+      "category": "backend",
+      "status": "PASS",
+      "details": "tmux 3.4",
+      "remediation": "sudo apt-get install -y tmux"
+    },
+    {
+      "id": "omp-binary",
+      "name": "Oh My Pi (OMP CLI)",
+      "category": "backend",
+      "status": "PASS",
+      "details": "omp/18.1.22",
+      "remediation": "bun add -g @oh-my-pi/pi-coding-agent@18.1.22"
+    },
+    {
+      "id": "podman",
+      "name": "Podman Container Engine",
+      "category": "backend",
+      "status": "PASS",
+      "details": "podman version 5.8.1",
+      "remediation": "sudo apt-get install -y podman"
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright Browser Engine",
+      "category": "web",
+      "status": "PASS",
+      "details": "Version 1.63.0"
+    },
+    {
+      "id": "java-jdk",
+      "name": "Java JDK (17+)",
+      "category": "android",
+      "status": "PASS",
+      "details": "Java not found"
+    },
+    {
+      "id": "android-sdk-adb",
+      "name": "Android SDK & adb",
+      "category": "android",
+      "status": "PASS",
+      "details": "Android Debug Bridge version 1.0.41",
+      "remediation": "Export ANDROID_HOME pointing to valid Android SDK"
+    },
+    {
+      "id": "kvm-acceleration",
+      "name": "KVM Hardware Acceleration (/dev/kvm)",
+      "category": "android",
+      "status": "BLOCKED_ENVIRONMENT",
+      "details": "KVM blocked: /dev/kvm exists (crw-rw----) but user lacks permission (accel:)",
+      "remediation": "Add user to kvm group: sudo gpasswd -a $USER kvm and re-login"
+    },
+    {
+      "id": "maestro-cli",
+      "name": "Maestro Mobile UI Test CLI",
+      "category": "android",
+      "status": "BLOCKED_ENVIRONMENT",
+      "details": "Maestro CLI not installed",
+      "remediation": "curl -fsSL \"https://get.maestro.mobile.dev\" | bash"
+    },
+    {
+      "id": "test-ports",
+      "name": "E2E Test Ports Availability",
+      "category": "backend",
+      "status": "PASS",
+      "details": "8765: FREE, 8766: FREE, 8081: FREE, 19006: FREE, 5900: FREE"
+    }
+  ],
+  "summary": {
+    "passed": 10,
+    "warned": 1,
+    "failed": 0,
+    "blocked": 2
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-09-18T03:31:57.487Z",
+  "suite": "Phase 2 - Web Client Playwright E2E",
+  "passed": 10,
+  "failed": 0,
+  "total": 10,
+  "results": [
+    {
+      "testId": "RAR-E2E-206",
+      "name": "RAR-E2E-206: Agent Prompt Submission and Mock OMP Stream Handling",
+      "status": "PASS",
+      "durationMs": 955
+    },
+    {
+      "testId": "RAR-E2E-207",
+      "name": "RAR-E2E-207: Agent Turn Cancellation Flow",
+      "status": "PASS",
+      "durationMs": 335
+    },
+    {
+      "testId": "RAR-E2E-201",
+      "name": "RAR-E2E-201: Renders Pairing Portal and validates empty payload rejection",
+      "status": "PASS",
+      "durationMs": 247
+    },
+    {
+      "testId": "RAR-E2E-202",
+      "name": "RAR-E2E-202: Manual JSON Pairing Payload Exchange and Host Identity",
+      "status": "PASS",
+      "durationMs": 296
+    },
+    {
+      "testId": "RAR-E2E-203",
+      "name": "RAR-E2E-203: Simulated QR Code Scan Flow & Session Teardown",
+      "status": "PASS",
+      "durationMs": 297
+    },
+    {
+      "testId": "RAR-E2E-208",
+      "name": "RAR-E2E-208: Mobile Viewport (390x844) & Navigation Drawer Toggle",
+      "status": "PASS",
+      "durationMs": 532
+    },
+    {
+      "testId": "RAR-E2E-209",
+      "name": "RAR-E2E-209: Tablet Viewport (820x1180) & Layout Adaptability",
+      "status": "PASS",
+      "durationMs": 306
+    },
+    {
+      "testId": "RAR-E2E-210",
+      "name": "RAR-E2E-210: Desktop Viewport (1920x1080) & High-Resolution Layout",
+      "status": "PASS",
+      "durationMs": 425
+    },
+    {
+      "testId": "RAR-E2E-204",
+      "name": "RAR-E2E-204: Multi-tab terminal management (Create, Switch, Close)",
+      "status": "PASS",
+      "durationMs": 508
+    },
+    {
+      "testId": "RAR-E2E-205",
+      "name": "RAR-E2E-205: PTY command execution and output rendering",
+      "status": "PASS",
+      "durationMs": 391
+    }
+  ]
+}
