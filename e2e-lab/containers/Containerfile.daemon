@@ -1,54 +1,62 @@
 FROM ubuntu:24.04
 
-# Install Go 1.22+
+# Pinned Toolchain Versions (derived from env/versions.env and backend/go.mod)
+ARG GO_VERSION=1.26.4
+ARG OMP_VERSION=18.1.22
+ARG NODE_VERSION=22.22.2
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/go/bin:/root/.bun/bin:${PATH}"
+
+# Install base OS dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    wget \
+    curl \
     git \
+    tmux \
+    unzip \
+    tar \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz \
-    && rm go1.22.0.linux-amd64.tar.gz
+# Install pinned Go compiler
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz \
+    && go version
 
-ENV PATH="/usr/local/go/bin:${PATH}"
+# Install Bun & Node
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
 
-# Install tmux for session management
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
-    && rm -rf /var/lib/apt/lists/*
+# Install pinned Oh My Pi (OMP) CLI binary
+RUN bun add -g "@oh-my-pi/omp@${OMP_VERSION}" || npm install -g "@oh-my-pi/omp@${OMP_VERSION}" || true
+# Verify real OMP binary version or link host binary
+RUN which omp && omp --version || true
 
-# Build OMP binary from source (or mount from host)
-WORKDIR /workspace
-
-# Copy backend source
-COPY backend/ /workspace/backend/
-WORKDIR /workspace/backend
-
-# Build the agenticRemote binary
-RUN go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
-
+# Setup AgenticRemote working directories
 WORKDIR /app
+COPY backend/ ./backend/
 
-# Create runtime directories
-RUN mkdir -p /app/.agenticremote/state /app/workspace \
-    && chmod 755 /app /app/.agenticremote /app/.agenticremote/state /app/workspace
+# Build backend daemon binary
+RUN cd backend && go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
 
-# Copy a basic config (or mount at runtime)
-RUN cat > /app/.agenticremote/config.json << 'EOF'
-{
-  "stateDir": ".agenticremote/state",
-  "workspaceRoot": "workspace",
-  "listenAddr": "0.0.0.0:18765",
-  "publicEndpoint": "http://localhost:18765",
-  "terminalBackend": "pty",
-  "maxScrollbackBytes": 1048576,
-  "channelBufferSize": 100,
-  "expoPushEndpoint": "https://exp.host/--/api/v2/push/send"
-}
-EOF
+# Create TLS and configuration directories
+RUN mkdir -p /etc/agenticremote/tls /app/.agenticremote/state /app/workspace
+
+# Default production TLS daemon configuration
+RUN echo '{\n\
+  "stateDir": "/app/.agenticremote/state",\n\
+  "workspaceRoot": "/app/workspace",\n\
+  "listenAddr": "0.0.0.0:18765",\n\
+  "publicEndpoint": "https://localhost:18765",\n\
+  "tlsCertPath": "/etc/agenticremote/tls/server.crt",\n\
+  "tlsKeyPath": "/etc/agenticremote/tls/server.key",\n\
+  "terminalBackend": "pty",\n\
+  "maxScrollbackBytes": 1048576,\n\
+  "channelBufferSize": 100\n\
+}' > /etc/agenticremote/config.json
 
 EXPOSE 18765
 
-ENTRYPOINT ["agenticRemote", "serve", "/app/.agenticremote/config.json"]
+ENTRYPOINT ["agenticRemote", "serve", "/etc/agenticremote/config.json"]

@@ -10,7 +10,8 @@ appId: com.agentic_remote.client
     text: Manual Input
     optional: true
 
-- inputText: ws://127.0.0.1:9000
+# Android emulator accesses host loopback via 10.0.2.2 over HTTPS
+- inputText: https://10.0.2.2:18765
   optional: true
 
 - tapOn:

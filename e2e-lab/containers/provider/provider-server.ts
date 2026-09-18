@@ -1,44 +1,63 @@
-#!/usr/bin/env bun
-import http from "node:http";
+import * as http from 'node:http';
 
 interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+  tool_call_id?: string;
 }
 
 interface ChatRequest {
   model: string;
   messages: ChatMessage[];
-  temperature?: number;
   stream?: boolean;
   tools?: Record<string, unknown>[];
+  temperature?: number;
+}
+
+interface ChatResponseChoice {
+  index: number;
+  message?: {
+    role: 'assistant';
+    content: string | null;
+    tool_calls?: Array<{
+      id: string;
+      type: 'function';
+      function: {
+        name: string;
+        arguments: string;
+      };
+    }>;
+  };
+  delta?: {
+    role?: 'assistant';
+    content?: string;
+    tool_calls?: Array<{
+      index: number;
+      id?: string;
+      type?: 'function';
+      function?: {
+        name?: string;
+        arguments?: string;
+      };
+    }>;
+  };
+  finish_reason: 'stop' | 'tool_calls' | 'length' | null;
 }
 
 interface ChatResponse {
   id: string;
-  object: string;
+  object: 'chat.completion' | 'chat.completion.chunk';
   created: number;
   model: string;
-  choices: Array<{
-    index: number;
-    message?: {
-      role: "assistant";
-      content: string;
-      tool_calls?: Array<{
-        id: string;
-        type: "function";
-        function: {
-          name: string;
-          arguments: string;
-        };
-      }>;
-    };
-    delta?: {
-      role?: "assistant";
-      content?: string;
-    };
-    finish_reason: string | null;
-  }>;
+  choices: ChatResponseChoice[];
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -46,249 +65,290 @@ interface ChatResponse {
   };
 }
 
-interface Model {
-  id: string;
-  object: string;
-  created: number;
-  owned_by: string;
-}
-
-// Deterministic golden response for hermeticity in tests
-function getDeterministicResponse(messages: ChatMessage[]): string {
-  const lastMessage = messages[messages.length - 1]?.content || "";
-
-  if (lastMessage.toLowerCase().includes("hello")) {
-    return "Hello! I'm a deterministic provider server for e2e testing. How can I help?";
-  }
-
-  if (lastMessage.toLowerCase().includes("tool")) {
-    return "I can call tools. Here's an example.";
-  }
-
-  if (lastMessage.toLowerCase().includes("math")) {
-    return "2 + 2 = 4";
-  }
-
-  // Default golden response
-  return "Golden test response from deterministic provider.";
-}
-
-// Tool call example (deterministic for golden flows)
-function getDeterministicToolCall(): Array<{
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-}> {
-  return [
-    {
-      id: "call_001",
-      type: "function",
-      function: {
-        name: "test_tool",
-        arguments: JSON.stringify({ input: "test" }),
-      },
-    },
-  ];
-}
-
-function createChatResponse(
-  messages: ChatMessage[],
-  model: string,
-  stream: boolean,
-  includeTools: boolean
-): ChatResponse {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const responseText = getDeterministicResponse(messages);
-
-  const choice: ChatResponse["choices"][0] = {
-    index: 0,
-    message: {
-      role: "assistant",
-      content: responseText,
-    },
-    finish_reason: "stop",
+interface ErrorResponse {
+  error: {
+    message: string;
+    type: string;
+    code: number;
   };
+}
 
-  if (includeTools && choice.message) {
-    choice.message.tool_calls = [
-      {
-        id: `call_${Date.now()}`,
-        type: "function",
-        function: {
-          name: "get_weather",
-          arguments: JSON.stringify({ location: "San Francisco" }),
+enum DeterministicScenario {
+  PONG = 'PONG',
+  TOOL_TEST = 'TOOL_TEST',
+  SLOW = 'SLOW',
+  ERROR = 'ERROR',
+  UNICODE = 'UNICODE',
+  LARGE = 'LARGE',
+  NORMAL = 'NORMAL',
+}
+
+function detectScenario(messages: ChatMessage[]): DeterministicScenario {
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+  const text = lastUserMsg.toUpperCase();
+
+  if (text.includes('E2E_PONG')) return DeterministicScenario.PONG;
+  if (text.includes('E2E_TOOL_TEST')) return DeterministicScenario.TOOL_TEST;
+  if (text.includes('E2E_SLOW')) return DeterministicScenario.SLOW;
+  if (text.includes('E2E_ERROR')) return DeterministicScenario.ERROR;
+  if (text.includes('UNICODE')) return DeterministicScenario.UNICODE;
+  if (text.includes('LARGE')) return DeterministicScenario.LARGE;
+  return DeterministicScenario.NORMAL;
+}
+
+function getScenarioPayload(scenario: DeterministicScenario, messages: ChatMessage[]): { text: string; isTool: boolean } {
+  switch (scenario) {
+    case DeterministicScenario.PONG:
+      return { text: 'pong', isTool: false };
+
+    case DeterministicScenario.TOOL_TEST:
+      return { text: '', isTool: true };
+
+    case DeterministicScenario.SLOW:
+      return { text: 'This is a delayed response verifying streaming backpressure and latency.', isTool: false };
+
+    case DeterministicScenario.UNICODE:
+      return {
+        text: 'Hello 🚀 🌍 \u{1F600} \u{4E2D}\u{6587} \u{3053}\u{3093}\u{306B}\u{3061}\u{306F} \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442} \u{2728} \u{00E9}\u{00E8}\u{00E0}\u{00F9}\u{00E7}',
+        isTool: false,
+      };
+
+    case DeterministicScenario.LARGE:
+      // Generate deterministic ~36KB payload
+      const chunk = 'Deterministic large payload block for buffering and chunked transfer validation. ';
+      return { text: chunk.repeat(450), isTool: false };
+
+    case DeterministicScenario.NORMAL:
+    default:
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || 'Hello';
+      return { text: `Hermetic response to: "${lastUser}" (verified deterministic OMP upstream turn).`, isTool: false };
+  }
+}
+
+async function handleChatCompletions(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  const bodyText = Buffer.concat(chunks).toString('utf8');
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'Invalid JSON request body', type: 'invalid_request_error', code: 400 } }));
+    return;
+  }
+
+  const reqBody = parsed as Partial<ChatRequest>;
+  const messages: ChatMessage[] = Array.isArray(reqBody.messages) ? reqBody.messages : [];
+  const model = typeof reqBody.model === 'string' ? reqBody.model : 'omni-deterministic';
+  const isStream = Boolean(reqBody.stream);
+
+  const scenario = detectScenario(messages);
+
+  // Scenario: E2E_ERROR -> Emit 500 error payload
+  if (scenario === DeterministicScenario.ERROR) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    const errObj: ErrorResponse = {
+      error: {
+        message: 'Simulated upstream error for scenario E2E_ERROR',
+        type: 'server_error',
+        code: 500,
+      },
+    };
+    res.end(JSON.stringify(errObj));
+    return;
+  }
+
+  const { text, isTool } = getScenarioPayload(scenario, messages);
+
+  if (isStream) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const completionId = `chatcmpl-${Date.now()}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    if (isTool) {
+      const toolChunk: ChatResponse = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created: timestamp,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${Date.now()}`,
+                  type: 'function',
+                  function: {
+                    name: 'get_weather',
+                    arguments: JSON.stringify({ location: 'San Francisco, CA' }),
+                  },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      };
+      res.write(`data: ${JSON.stringify(toolChunk)}\n\n`);
+    } else {
+      const words = text.split(' ');
+      for (let i = 0; i < words.length; i++) {
+        if (scenario === DeterministicScenario.SLOW) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        const isLast = i === words.length - 1;
+        const chunkObj: ChatResponse = {
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created: timestamp,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                content: i === 0 ? words[i] : ` ${words[i]}`,
+              },
+              finish_reason: isLast ? 'stop' : null,
+            },
+          ],
+        };
+        res.write(`data: ${JSON.stringify(chunkObj)}\n\n`);
+      }
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } else {
+    // Non-streaming JSON response
+    if (scenario === DeterministicScenario.SLOW) {
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    const respObj: ChatResponse = {
+      id: `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: isTool
+            ? {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: `call_${Date.now()}`,
+                    type: 'function',
+                    function: {
+                      name: 'get_weather',
+                      arguments: JSON.stringify({ location: 'San Francisco, CA' }),
+                    },
+                  },
+                ],
+              }
+            : {
+                role: 'assistant',
+                content: text,
+              },
+          finish_reason: isTool ? 'tool_calls' : 'stop',
         },
+      ],
+      usage: {
+        prompt_tokens: 15,
+        completion_tokens: text.length > 0 ? text.split(' ').length : 10,
+        total_tokens: 25,
       },
-    ];
-    choice.finish_reason = "tool_calls";
+    };
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(respObj));
   }
-  return {
-    id: `chatcmpl-${Date.now()}`,
-    object: "chat.completion",
-    created: timestamp,
-    model,
-    choices: [choice],
-    usage: {
-      prompt_tokens: 10,
-      completion_tokens: 20,
-      total_tokens: 30,
-    },
-  };
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || "", `http://${req.headers.host}`);
+function handleModels(_req: http.IncomingMessage, res: http.ServerResponse): void {
+  const models = {
+    object: 'list',
+    data: [
+      {
+        id: 'omni-deterministic',
+        object: 'model',
+        created: 1700000000,
+        owned_by: 'e2e-lab',
+      },
+      {
+        id: 'gpt-4o',
+        object: 'model',
+        created: 1700000000,
+        owned_by: 'e2e-lab',
+      },
+    ],
+  };
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(JSON.stringify(models));
+}
 
-  // Strict CORS for e2e testing
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  // Handle preflight
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
+const server = http.createServer((req, res) => {
+  // CORS Preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    });
     res.end();
     return;
   }
 
-  // Models endpoint
-  if (req.method === "GET" && url.pathname === "/v1/models") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    const models: { data: Model[]; object: string } = {
-      object: "list",
-      data: [
-        {
-          id: "test-model",
-          object: "model",
-          created: Math.floor(Date.now() / 1000),
-          owned_by: "provider-server",
-        },
-      ],
-    };
-    res.end(JSON.stringify(models));
+  const url = req.url || '/';
+
+  if (req.method === 'GET' && (url === '/v1/models' || url === '/models')) {
+    handleModels(req, res);
     return;
   }
 
-  // Chat completions endpoint
-  if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-
-    req.on("end", () => {
-      let payload: ChatRequest;
-      try {
-        payload = JSON.parse(body);
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON" }));
-        return;
-      }
-
-      const model = payload.model || "test-model";
-      const stream = payload.stream || false;
-      const includeTools = (payload.tools || []).length > 0;
-
-      if (stream) {
-        // SSE streaming response
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-
-        // Send streaming chunks
-        const response = createChatResponse(
-          payload.messages,
-          model,
-          true,
-          includeTools
-        );
-        const choice = response.choices[0];
-
-        // First delta with role
-        const deltaStart: ChatResponse = {
-          id: response.id,
-          object: "chat.completion.chunk",
-          created: response.created,
-          model,
-          choices: [
-            {
-              index: 0,
-              delta: { role: "assistant" },
-              finish_reason: null,
-            },
-          ],
-        };
-        res.write(`data: ${JSON.stringify(deltaStart)}\n\n`);
-
-        // Content delta
-        const content = choice.message?.content || "";
-        const deltaContent: ChatResponse = {
-          id: response.id,
-          object: "chat.completion.chunk",
-          created: response.created,
-          model,
-          choices: [
-            {
-              index: 0,
-              delta: { content },
-              finish_reason: null,
-            },
-          ],
-        };
-        res.write(`data: ${JSON.stringify(deltaContent)}\n\n`);
-
-        // Final message with tool_calls if present
-        if (choice.message?.tool_calls) {
-          const deltaTools: ChatResponse = {
-            id: response.id,
-            object: "chat.completion.chunk",
-            created: response.created,
-            model,
-            choices: [
-              {
-                index: 0,
-                message: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: choice.message.tool_calls,
-                },
-                finish_reason: "tool_calls",
-              },
-            ],
-          };
-          res.write(`data: ${JSON.stringify(deltaTools)}\n\n`);
-        }
-
-        // Stream terminator
-        res.write("data: [DONE]\n\n");
-        res.end();
-      } else {
-        // Non-streaming JSON response
-        res.writeHead(200, { "Content-Type": "application/json" });
-        const response = createChatResponse(
-          payload.messages,
-          model,
-          false,
-          includeTools
-        );
-        res.end(JSON.stringify(response));
-      }
+  if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/chat/completions')) {
+    handleChatCompletions(req, res).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: msg, type: 'internal_error', code: 500 } }));
     });
     return;
   }
 
-  // 404
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "Not Found" }));
+  if (url === '/healthz' || url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', provider: 'deterministic-e2e-provider' }));
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: { message: `Not Found: ${url}`, type: 'not_found', code: 404 } }));
 });
 
-const PORT = process.env.PROVIDER_PORT ? parseInt(process.env.PROVIDER_PORT) : 19090;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Provider server listening on http://0.0.0.0:${PORT}`);
-  console.log("Endpoints:");
-  console.log("  GET  /v1/models");
-  console.log("  POST /v1/chat/completions (streaming and non-streaming)");
-});
+const PORT = Number(process.env.PROVIDER_PORT || 19090);
+if (import.meta.main) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Deterministic Provider] Listening on http://0.0.0.0:${PORT}`);
+  });
+}

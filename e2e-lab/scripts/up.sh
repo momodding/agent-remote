@@ -1,87 +1,59 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 echo "=== [agenticRemote E2E Lab] Topology Bringup (up.sh) ==="
 
-# Check for container runtime
-CONTAINER_RUNTIME=""
+RUNTIME=""
 if command -v podman >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="podman"
+  RUNTIME="podman"
 elif command -v docker >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="docker"
+  RUNTIME="docker"
 else
-  echo "Status: BLOCKED_ENVIRONMENT"
-  echo "Reason: Container runtime (podman/docker) not found."
-  exit 0
+  echo "[ERROR] Container runtime (podman/docker) is required but not installed." >&2
+  exit 1
 fi
 
-# Verify KVM device is accessible for advanced features
-if [ ! -w /dev/kvm ] 2>/dev/null; then
-  echo "Warning: /dev/kvm not accessible. Some features may be limited."
+# Ensure runtime TLS certs are generated
+"${LAB_DIR}/scripts/generate-runtime-tls.sh"
+TLS_DIR="${LAB_DIR}/.runtime/tls"
+
+if [ ! -f "${TLS_DIR}/server.crt" ] || [ ! -f "${TLS_DIR}/server.key" ]; then
+  echo "[ERROR] TLS certificates missing in ${TLS_DIR}" >&2
+  exit 1
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CONTAINERS_DIR="$PROJECT_ROOT/e2e-lab/containers"
-RUNTIME_DIR="$PROJECT_ROOT/e2e-lab/.runtime"
-ARTIFACTS_DIR="$PROJECT_ROOT/e2e-lab/artifacts"
-
-mkdir -p "$RUNTIME_DIR" "$ARTIFACTS_DIR"
-
-# Create network
-if [ "$CONTAINER_RUNTIME" = "podman" ]; then
-  bash "$CONTAINERS_DIR/podman-network.sh" || true
-  NETWORK_OPTS="--network agenticremote-net"
-else
-  NETWORK_OPTS="--network agenticremote-net"
+NETWORK_NAME="agenticremote-net"
+if ! ${RUNTIME} network exists "${NETWORK_NAME}" 2>/dev/null; then
+  echo "Creating ${RUNTIME} network: ${NETWORK_NAME}"
+  ${RUNTIME} network create "${NETWORK_NAME}"
 fi
 
-echo "Starting provider container..."
-$CONTAINER_RUNTIME run -d \
-  --name agenticremote-provider \
+# Teardown existing containers if running
+${RUNTIME} rm -f agenticremote-provider agenticremote-daemon agenticremote-client 2>/dev/null || true
+
+echo "1. Launching deterministic upstream provider..."
+${RUNTIME} run -d --name agenticremote-provider \
+  --network "${NETWORK_NAME}" \
   -p 19090:19090 \
-  $NETWORK_OPTS \
-  agenticremote/provider:latest \
-  || {
-  echo "Status: BLOCKED_ENVIRONMENT"
-  echo "Reason: Failed to start provider container"
-  exit 0
-}
+  agenticremote/provider:latest
 
-echo "Starting daemon container..."
-$CONTAINER_RUNTIME run -d \
-  --name agenticremote-daemon \
+echo "2. Launching real daemon (HTTPS / TLS 18765)..."
+${RUNTIME} run -d --name agenticremote-daemon \
+  --network "${NETWORK_NAME}" \
+  -v "${TLS_DIR}:/etc/agenticremote/tls:ro,Z" \
   -p 18765:18765 \
-  $NETWORK_OPTS \
-  -e OMP_PROVIDER_URL="http://agenticremote-provider:19090" \
-  agenticremote/daemon:latest \
-  || {
-  echo "Status: BLOCKED_ENVIRONMENT"
-  echo "Reason: Failed to start daemon container"
-  exit 0
-}
+  agenticremote/daemon:latest
 
-echo "Starting client container..."
-$CONTAINER_RUNTIME run -d \
-  --name agenticremote-client \
+echo "3. Launching Expo web client (port 8081)..."
+${RUNTIME} run -d --name agenticremote-client \
+  --network "${NETWORK_NAME}" \
   -p 8081:8081 \
-  $NETWORK_OPTS \
-  -e EXPO_PUBLIC_API_URL="http://localhost:18765" \
-  agenticremote/client:latest \
-  || {
-  echo "Status: BLOCKED_ENVIRONMENT"
-  echo "Reason: Failed to start client container"
-  exit 0
-}
+  agenticremote/client:latest
 
-# Wait for containers to become healthy
-echo "Waiting for topology to stabilize..."
-sleep 3
-
-echo "Status: TOPOLOGY_UP"
-echo "Endpoints:"
-echo "  - Daemon:   http://localhost:18765"
-echo "  - Client:   http://localhost:8081"
-echo "  - Provider: http://localhost:19090"
-echo ""
-echo "Container IDs:"
-$CONTAINER_RUNTIME ps --filter "name=agenticremote-" --format "table {{.Names}}\t{{.Status}}"
+echo "=== Topology successfully started ==="
+echo "  Provider: http://127.0.0.1:19090"
+echo "  Daemon:   https://127.0.0.1:18765 (WSS wss://127.0.0.1:18765/ws)"
+echo "  Web App:  http://127.0.0.1:8081"
