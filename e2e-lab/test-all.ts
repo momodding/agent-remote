@@ -8,7 +8,7 @@ import { runLeakScan, type LeakScanResult } from './security/leak-scanner';
 
 export interface FinalLabReport {
   timestamp: string;
-  overallStatus: 'BLOCKED_ENVIRONMENT, Phase1-4 NOT YET VERIFIED' | 'PASS';
+  overallStatus: string;
   doctor: DoctorReport;
   backend: BackendSuiteResult;
   web: WebRunnerReport;
@@ -75,11 +75,16 @@ export async function runAll(): Promise<FinalLabReport> {
       remediationPlan.push(web.remediation);
     }
   }
-
-  const overallStatus: 'BLOCKED_ENVIRONMENT, Phase1-4 NOT YET VERIFIED' | 'PASS' =
-    android.status === 'BLOCKED_ENVIRONMENT' || web.status === 'BLOCKED_ENVIRONMENT' || backend.status !== 'PASS'
-      ? 'BLOCKED_ENVIRONMENT, Phase1-4 NOT YET VERIFIED'
-      : 'PASS';
+  let overallStatus = 'PASS';
+  if (backend.status !== 'PASS') {
+    overallStatus = `BACKEND_${backend.status}`;
+  } else if (web.status !== 'PASS') {
+    overallStatus = `WEB_${web.status}`;
+  } else if (android.status === 'BLOCKED_ENVIRONMENT') {
+    overallStatus = 'BLOCKED_ENVIRONMENT (Android), Backend & Web PASS';
+  } else if (android.status !== 'PASS') {
+    overallStatus = `ANDROID_${android.status}`;
+  }
 
   const report: FinalLabReport = {
     timestamp: new Date().toISOString(),

@@ -77,21 +77,22 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
 
   // Check for real daemon pairing payload (forged localStorage auth is strictly disallowed)
   const pairingFile = path.join(__dirname, '../.runtime/pairing.json');
-  let realPairingPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
-  if (!realPairingPayload) {
-    try {
-      const output = execSync('podman logs agenticremote-daemon 2>&1 | grep -E "^{\\"v\\":2," | tail -n 1', {
-        encoding: 'utf-8',
-        timeout: 3000,
-      }).trim();
-      if (output) {
-        realPairingPayload = output;
-        fs.mkdirSync(path.dirname(pairingFile), { recursive: true });
-        fs.writeFileSync(pairingFile, output, { mode: 0o600 });
-      }
-    } catch {
-      // ignore
+  let realPairingPayload = '';
+  try {
+    const output = execSync('podman logs agenticremote-daemon 2>&1 | grep -E "^{\\"v\\":2," | tail -n 1', {
+      encoding: 'utf-8',
+      timeout: 3000,
+    }).trim();
+    if (output) {
+      realPairingPayload = output;
+      fs.mkdirSync(path.dirname(pairingFile), { recursive: true });
+      fs.writeFileSync(pairingFile, output, { mode: 0o600 });
     }
+  } catch {
+    // ignore
+  }
+  if (!realPairingPayload && process.env.E2E_REAL_PAIRING_PAYLOAD) {
+    realPairingPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
   }
   if (!realPairingPayload && fs.existsSync(pairingFile)) {
     try {
