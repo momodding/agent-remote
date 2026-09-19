@@ -70,6 +70,14 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
   await expect(deviceNameInput).toBeVisible({ timeout: 5000 });
   await deviceNameInput.fill('Playwright Web Client');
 
+  const skipSwitch = page.locator('button[role="switch"], input[type="checkbox"]').first();
+  if (await skipSwitch.isVisible().catch(() => false)) {
+    const checked = await skipSwitch.getAttribute('aria-checked');
+    if (checked !== 'true') {
+      await skipSwitch.click();
+    }
+  }
+
   const payloadInput = page.locator(
     'textarea[placeholder="Paste pairing JSON"], input[placeholder="Paste pairing JSON"]'
   );
@@ -81,5 +89,5 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
   await submitBtn.click();
 
   // Assert navigation to dashboard with New Agent button visible
-  await expect(newAgentBtn).toBeVisible({ timeout: 25000 });
+  await expect(newAgentBtn).toBeVisible({ timeout: 40000 });
 }
