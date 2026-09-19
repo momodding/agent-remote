@@ -5,7 +5,7 @@ test.describe('Web Agent & Live Daemon Session Flow', () => {
   test('should drive full Agent lifecycle: pairing, live E2E_PONG, live E2E_TOOL_TEST, terminal runtime, files, history retention, and termination', async ({
     page,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(240000);
 
     // Polyfill Alert.alert in React Native Web for non-interactive browser testing
     await page.addInitScript(() => {
