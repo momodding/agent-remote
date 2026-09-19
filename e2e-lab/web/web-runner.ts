@@ -73,18 +73,17 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       testsFailed: 0,
     };
   }
-  let isLive = await checkServerReachable(targetUrl, 3000);
-  if (!isLive) {
-    const upScript = path.join(__dirname, '../scripts/up.sh');
-    if (fs.existsSync(upScript)) {
-      try {
-        execSync(`bash "${upScript}"`, { stdio: 'inherit', timeout: 90000 });
-      } catch {
-        // ignore
-      }
+  // Always ensure fresh container topology and pairing state for web E2E
+  const upScript = path.join(__dirname, '../scripts/up.sh');
+  if (fs.existsSync(upScript)) {
+    try {
+      execSync(`bash "${upScript}"`, { stdio: 'pipe', timeout: 90000 });
+    } catch {
+      // ignore
     }
-    isLive = await checkServerReachable(targetUrl, 5000);
   }
+
+  const isLive = await checkServerReachable(targetUrl, 5000);
   if (!isLive) {
     return {
       timestamp: new Date().toISOString(),
