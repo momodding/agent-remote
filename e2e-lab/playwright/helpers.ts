@@ -47,16 +47,20 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  const daemonHeader = page.getByText('localhost:18765').first();
-  const connectBtn = page.locator('[aria-label="Connect daemon"]').first();
+  const newAgentBtn = page.locator('[aria-label^="New Agent"]:visible').first();
+  const connectBtn = page.locator('[aria-label="Connect daemon"]:visible').first();
 
-  // If already paired from a prior test in same session
-  if (await daemonHeader.isVisible({ timeout: 3000 }).catch(() => false)) {
+  // Wait for either the dashboard (already connected) or the Connect daemon button
+  await page
+    .locator('[aria-label^="New Agent"]:visible, [aria-label="Connect daemon"]:visible')
+    .first()
+    .waitFor({ timeout: 25000 });
+
+  if (await newAgentBtn.isVisible()) {
     return;
   }
 
-  // Otherwise wait for Connect daemon button
-  await expect(connectBtn).toBeVisible({ timeout: 15000 });
+  await expect(connectBtn).toBeVisible({ timeout: 10000 });
   await connectBtn.click();
 
   const modalTitle = page.locator('text="Connect a daemon"').first();
@@ -76,5 +80,6 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
   await expect(submitBtn).toBeVisible({ timeout: 5000 });
   await submitBtn.click();
 
-  await expect(daemonHeader).toBeVisible({ timeout: 20000 });
+  // Assert navigation to dashboard with New Agent button visible
+  await expect(newAgentBtn).toBeVisible({ timeout: 25000 });
 }
