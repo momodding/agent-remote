@@ -200,8 +200,22 @@ export async function runAll(): Promise<FinalLabReport> {
 }
 
 if (import.meta.main) {
-  runAll().catch((err) => {
-    console.error('E2E Lab execution error:', err);
-    process.exit(1);
-  });
+  runAll()
+    .then((report) => {
+      const isCleanPass =
+        report.overallStatus === 'PASS' &&
+        report.doctor.overallEnvironmentStatus === 'READY' &&
+        report.backend.status === 'PASS' &&
+        report.web.status === 'PASS' &&
+        report.android.status === 'PASS' &&
+        report.security.status === 'PASS';
+
+      if (!isCleanPass) {
+        process.exit(1);
+      }
+    })
+    .catch((err) => {
+      console.error('E2E Lab execution error:', err);
+      process.exit(1);
+    });
 }

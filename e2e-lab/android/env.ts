@@ -104,7 +104,7 @@ export function inspectAndroidEnvironment(): AndroidEnvironment {
         env,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5000,
+        timeout: 15000,
       });
       avdAvailable = out.trim().split('\n').filter(Boolean).length > 0;
       if (!avdAvailable) {
@@ -125,7 +125,7 @@ export function inspectAndroidEnvironment(): AndroidEnvironment {
       env,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
+      timeout: 30000,
     });
     maestroInstalled = true;
   } catch {

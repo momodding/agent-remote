@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Cancel on timeout to prevent hanging
+trap 'echo "test-all.sh timed out after 600s"; pkill -P $$ || true; exit 124' SIGALRM
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -11,4 +15,4 @@ export PATH="${HOME}/.bun/bin:${HOME}/go/bin:${HOME}/.local/bin:${PATH}"
 
 mkdir -p "${LAB_DIR}/artifacts"
 cd "${LAB_DIR}"
-bun run test-all.ts
+timeout 600 bun run test-all.ts
