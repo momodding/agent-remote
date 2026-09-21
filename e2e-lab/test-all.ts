@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runSystemDoctor, type DoctorReport } from './doctor/system-doctor';
@@ -5,6 +6,7 @@ import { runBackendVerification, type BackendSuiteResult } from './backend/backe
 import { runWebVerification, type WebRunnerReport } from './web/web-runner';
 import { runAndroidVerification, type AndroidRunnerReport } from './android/android-runner';
 import { runLeakScan, type LeakScanResult } from './security/leak-scanner';
+import { verifyE2eCleanup, type CleanupCheckResult } from './cleanup/cleanup-checker';
 
 export interface FinalLabReport {
   timestamp: string;
@@ -14,6 +16,7 @@ export interface FinalLabReport {
   web: WebRunnerReport;
   android: AndroidRunnerReport;
   security: LeakScanResult;
+  cleanup: CleanupCheckResult;
   blockers: string[];
   remediationPlan: string[];
 }
@@ -46,56 +49,59 @@ export async function runAll(): Promise<FinalLabReport> {
 
   console.log('\n[5/5] Running Security & Secret Leak Scanner...');
   const security = runLeakScan();
-  console.log(`Security Result: ${security.status} (${security.scannedFilesCount} files scanned)`);
+  console.log(`Security Result: ${security.status} (Scanned ${security.scannedFilesCount} files, ${security.flaggedPaths.length} flagged)`);
 
-  // Normalized blocker and remediation deduplication map
-  const blockerMap = new Map<string, { desc: string; remedy?: string }>();
+  // Aggregate and normalize blockers
+  const blockerMap = new Map<string, { desc: string; remedy: string | null }>();
 
-  // 1. Doctor blockers
+  // Add doctor blockers
   for (const c of doctor.checks) {
-    if (c.status === 'BLOCKED_ENVIRONMENT' || c.status === 'MISSING') {
-      blockerMap.set(c.id, {
-        desc: `${c.name}: ${c.details}`,
-        remedy: c.remediation,
-      });
+    if (c.status === 'BLOCKED_ENVIRONMENT') {
+      let normKey = c.id;
+      if (c.id === 'DOC-06') normKey = 'KVM';
+      if (c.id === 'DOC-07') normKey = 'MAESTRO';
+      if (c.id === 'DOC-05') normKey = 'SDK';
+      blockerMap.set(normKey, { desc: `[${c.id}] ${c.name}: ${c.versionOrPath}`, remedy: c.remediation || null });
     }
   }
 
-  // 2. Android runner blockers
-  if (android.status === 'BLOCKED_ENVIRONMENT' || android.status === 'FAIL') {
-    android.blockers.forEach((b, idx) => {
-      const key = b.startsWith('Hardware Virtualization')
-        ? 'DOC-06'
-        : b.startsWith('Android SDK')
-        ? 'DOC-05'
-        : b.startsWith('Maestro CLI')
-        ? 'DOC-07'
-        : b.startsWith('Android Virtual Device')
-        ? 'AND-AVD'
-        : b.startsWith('Client Debug APK')
-        ? 'AND-APK'
-        : b.startsWith('Android Device')
-        ? 'AND-DEV'
-        : `AND-${idx}`;
-
-      const remedy = android.remediationSteps[idx] || undefined;
-      if (!blockerMap.has(key)) {
-        blockerMap.set(key, { desc: b, remedy });
+  // Add android runners blockers
+  if (android.status === 'BLOCKED_ENVIRONMENT') {
+    for (const b of android.blockers) {
+      let normKey = b;
+      let remedy: string | null = null;
+      if (b.includes('/dev/kvm')) {
+        normKey = 'KVM';
+        remedy = 'sudo usermod -aG kvm $USER && newgrp kvm';
+      } else if (b.includes('Maestro')) {
+        normKey = 'MAESTRO';
+        remedy = 'curl -fsSL "https://get.maestro.mobile.dev" | bash';
+      } else if (b.includes('Client Debug APK')) {
+        normKey = 'APK';
+        remedy = 'cd client && bun run prebuild && cd android && ./gradlew assembleDebug';
+      } else if (b.includes('Android Device') || b.includes('adb')) {
+        normKey = 'DEVICE';
+        remedy = 'emulator -avd omp_verify -no-audio -no-window';
+      } else if (b.includes('Android SDK')) {
+        normKey = 'SDK';
+        remedy = './e2e-lab/scripts/setup-android-sdk.sh';
       }
-    });
+      if (!blockerMap.has(normKey)) {
+        blockerMap.set(normKey, { desc: b, remedy });
+      }
+    }
   }
 
-  // 3. Web runner blockers
+  // Add web blockers
   if (web.status === 'BLOCKED_ENVIRONMENT') {
-    blockerMap.set('WEB-E2E', {
-      desc: web.details,
-      remedy: web.remediation,
+    blockerMap.set('WEB_PAIRING', {
+      desc: `Web Runner: ${web.details}`,
+      remedy: 'Ensure daemon container is running on port 18765 and writes pairing.json.',
     });
   }
 
   const blockers: string[] = [];
   const remediationPlan: string[] = [];
-
   for (const item of blockerMap.values()) {
     blockers.push(item.desc);
     if (item.remedy && !remediationPlan.includes(item.remedy)) {
@@ -121,6 +127,20 @@ export async function runAll(): Promise<FinalLabReport> {
     overallStatus = 'BLOCKED_ENVIRONMENT (Android), Backend & Web PASS';
   }
 
+  // Step 6: Cleanup verification
+  if (process.env.E2E_KEEP !== '1') {
+    try {
+      execSync(path.join(__dirname, 'scripts/down.sh'), {
+        stdio: 'ignore',
+        timeout: 30000,
+      });
+    } catch {}
+  }
+  const cleanupCheck = verifyE2eCleanup(__dirname);
+  if (!cleanupCheck.allClean && overallStatus === 'PASS') {
+    overallStatus = 'FAIL (Orphaned Resources Detected)';
+  }
+
   const report: FinalLabReport = {
     timestamp: new Date().toISOString(),
     overallStatus,
@@ -129,6 +149,7 @@ export async function runAll(): Promise<FinalLabReport> {
     web,
     android,
     security,
+    cleanup: cleanupCheck,
     blockers,
     remediationPlan,
   };
@@ -146,15 +167,16 @@ export async function runAll(): Promise<FinalLabReport> {
   md += `| **Phase 1-4 Backend** | Real \`make verify-phase1-4\` (Strict OMP + tmux) | \`${backend.status}\` | ${backend.details} |\n`;
   md += `| **Web Client** | Live Expo Production App | \`${web.status}\` | ${web.details} |\n`;
   md += `| **Android Mobile** | KVM / Emulator / Debug APK / Maestro | \`${android.status}\` | ${android.details} |\n`;
-  md += `| **Security & Leak Audit** | Repository Secret Leak Scanner | \`${security.status}\` | Scanned ${security.scannedFilesCount} files (0 leaks) |\n\n`;
+  md += `| **Security & Leak Audit** | Repository Secret Leak Scanner | \`${security.status}\` | Scanned ${security.scannedFilesCount} files (0 leaks) |\n`;
+  md += `| **Resource Cleanup** | Podman Containers, Networks, Processes | \`${cleanupCheck.allClean ? 'CLEAN' : 'ORPHANS DETECTED'}\` | ${cleanupCheck.allClean ? 'All resources released' : 'Orphaned resources found'} |\n\n`;
 
-  md += `## 2. Blockers Preventing End-to-End Android & Web Verification\n\n`;
+  md += `## 2. Active Environment Blockers\n\n`;
   if (blockers.length === 0) {
-    md += `None. All environments verified.\n\n`;
+    md += `None. All required prerequisites satisfied.\n\n`;
   } else {
-    for (const b of blockers) {
-      md += `- ⛔ **BLOCKER**: ${b}\n`;
-    }
+    blockers.forEach((b, idx) => {
+      md += `${idx + 1}. ${b}\n`;
+    });
     md += `\n`;
   }
 
@@ -187,6 +209,23 @@ export async function runAll(): Promise<FinalLabReport> {
   }
   md += `\n`;
 
+  md += `## 6. E2E Resource Cleanup\n\n`;
+  fs.writeFileSync(path.join(artifactsDir, 'cleanup-results.json'), JSON.stringify(cleanupCheck, null, 2), 'utf-8');
+  if (cleanupCheck.allClean) {
+    md += `Status: **CLEAN**. All test-owned containers, networks, sessions, and child processes terminated properly.\n`;
+  } else {
+    md += `Status: **ORPHANS DETECTED**.\n`;
+    if (cleanupCheck.orphanedContainers.length > 0) md += `- Orphaned Containers: \`${cleanupCheck.orphanedContainers.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedNetwork) md += `- Orphaned Podman Network: \`agent-remote-e2e\`\n`;
+    if (cleanupCheck.orphanedPairingFile) md += `- Orphaned Pairing Payload: \`.runtime/pairing.json\`\n`;
+    if (cleanupCheck.orphanedDaemonPids.length > 0) md += `- Orphaned Daemon PIDs: \`${cleanupCheck.orphanedDaemonPids.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedOmpPids.length > 0) md += `- Orphaned OMP PIDs: \`${cleanupCheck.orphanedOmpPids.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedTmuxSessions.length > 0) md += `- Orphaned Tmux Sessions: \`${cleanupCheck.orphanedTmuxSessions.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedEmulators.length > 0) md += `- Orphaned Emulator PIDs: \`${cleanupCheck.orphanedEmulators.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedPlaywrightProcesses.length > 0) md += `- Orphaned Playwright PIDs: \`${cleanupCheck.orphanedPlaywrightProcesses.join(', ')}\`\n`;
+  }
+  md += `\n`;
+
   // Write markdown and json reports
   fs.writeFileSync(path.join(artifactsDir, 'final-report.md'), md, 'utf-8');
   fs.writeFileSync(path.join(artifactsDir, 'final-report.json'), JSON.stringify(report, null, 2), 'utf-8');
@@ -208,7 +247,8 @@ if (import.meta.main) {
         report.backend.status === 'PASS' &&
         report.web.status === 'PASS' &&
         report.android.status === 'PASS' &&
-        report.security.status === 'PASS';
+        report.security.status === 'PASS' &&
+        report.cleanup.allClean === true;
 
       if (!isCleanPass) {
         process.exit(1);

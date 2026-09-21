@@ -138,6 +138,7 @@ export function inspectAndroidEnvironment(): AndroidEnvironment {
   const possibleApkPaths = [
     path.join(clientDir, 'android/app/build/outputs/apk/debug/app-debug.apk'),
     path.join(clientDir, 'app-debug.apk'),
+    path.join(__dirname, '../.runtime/app-debug.apk'),
   ];
   let clientApkFound = false;
   let clientApkPath: string | null = null;
