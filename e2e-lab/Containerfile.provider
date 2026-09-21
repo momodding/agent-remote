@@ -1,0 +1,32 @@
+FROM debian:bookworm-slim
+
+ARG GO_VERSION=1.26.4
+ARG OMP_VERSION=18.1.22
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/go/bin:/root/.bun/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git tar unzip && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz && \
+    go version && \
+    curl -fsSL https://bun.sh/install | bash || true && \
+    bun add -g "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" && \
+    omp --version
+
+WORKDIR /app
+COPY backend/ ./backend/
+RUN cd backend && go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote && \
+    mkdir -p /app/.agenticremote/state /app/workspace /app/uploads /app/.agenticremote/tls && \
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -out /app/.agenticremote/tls/server.crt \
+    -keyout /app/.agenticremote/tls/server.key \
+    -subj "/CN=localhost"
+
+RUN echo '{"listenAddr":"0.0.0.0:19090","listenScheme":"https","publicEndpoint":"https://localhost:19090","stateDir":"/app/.agenticremote/state","workspaceRoot":"/app/workspace","uploadDir":"uploads","allowedCidrs":["0.0.0.0/0","::/0"],"maxConnections":32,"maxSessions":32,"channelBufferSize":256,"maxScrollbackBytes":1048576,"allowDestructiveFiles":true,"tlsCertFile":"/app/.agenticremote/tls/server.crt","tlsKeyFile":"/app/.agenticremote/tls/server.key"}' > /app/.agenticremote/config.json
+
+EXPOSE 19090
+ENV AGENT_REMOTE_CONFIG_PATH="/app/.agenticremote/config.json"
+ENTRYPOINT ["agenticRemote"]

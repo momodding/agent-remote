@@ -1,0 +1,20 @@
+FROM debian:bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.bun/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates unzip git \
+    libglib2.0-0 libnspr4 libnss3 libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://bun.sh/install | bash || true
+
+WORKDIR /app
+COPY client/ /app/
+
+RUN bun install
+
+EXPOSE 8081
+ENV REACT_APP_API_URL="https://localhost:18765"
+CMD ["bun", "run", "web"]
