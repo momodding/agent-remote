@@ -3,13 +3,12 @@ FROM debian:bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip git build-essential libglib2.0-0 libnspr4 libnss3 \
+    curl ca-certificates unzip git build-essential libglib2.0-0 libnspr4 libnss3 libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://bun.sh/install | bash || true
 
-ENV PATH="/root/.bun/bin:${PATH}"
-ENV EXPO_SKIP_DEVTOOLS=1
+ENV PATH="/root/.bun/bin:${PATH}" NODE_ENV=production EXPO_SKIP_DEVTOOLS=1
 
 WORKDIR /app
 COPY client/ /app/
