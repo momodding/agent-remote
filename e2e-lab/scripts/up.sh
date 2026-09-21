@@ -58,12 +58,12 @@ podman run -d \
   localhost/agenticremote/client:latest
 
 # 9. Health checks
-echo "Waiting for services to become healthy (up to 60s)..."
+echo "Waiting for services to become healthy (up to 180s)..."
 PROVIDER_HEALTHY=0
 DAEMON_HEALTHY=0
 CLIENT_HEALTHY=0
 
-for i in $(seq 1 60); do
+for i in $(seq 1 180); do
   # Check Provider
   if [[ ${PROVIDER_HEALTHY} -eq 0 ]]; then
     if curl -s -f "http://127.0.0.1:19090/health" >/dev/null 2>&1 || curl -s "http://127.0.0.1:19090/v1/models" | grep -q "model" 2>/dev/null; then
