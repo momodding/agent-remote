@@ -13,7 +13,7 @@ ENV PATH="/root/.bun/bin:${PATH}" NODE_ENV=production EXPO_SKIP_DEVTOOLS=1
 WORKDIR /app
 COPY client/ /app/
 
-RUN bun install
+RUN bun install && rm -rf node_modules/@react-native/debugger-shell || true
 
 EXPOSE 8081
 ENV REACT_APP_API_URL="https://localhost:18765"
