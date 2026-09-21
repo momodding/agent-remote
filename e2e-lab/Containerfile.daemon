@@ -29,4 +29,4 @@ RUN echo '{"listenAddr":"0.0.0.0:18765","listenScheme":"https","publicEndpoint":
 
 EXPOSE 18765
 ENV AGENT_REMOTE_CONFIG_PATH="/app/.agenticremote/config.json"
-ENTRYPOINT ["agenticRemote"]
+ENTRYPOINT ["agenticRemote", "serve"]
