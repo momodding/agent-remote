@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://bun.sh/install | bash || true
+ENV EXPO_SKIP_DEVTOOLS=1
 
 WORKDIR /app
 COPY client/ /app/
