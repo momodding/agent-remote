@@ -64,6 +64,7 @@ export default function (pi: ExtensionAPI) {
 	let initialSessionId: string | null = null;
 	let initialSessionFile: string | null = null;
 	const emittedEntryIds = new Set<string>();
+	const submittedUserMessages: string[] = [];
 
 	function sendFrame(frame: unknown) {
 		if (socket && isConnected) {
@@ -96,6 +97,13 @@ export default function (pi: ExtensionAPI) {
 					text = (args as { prompt: string }).prompt;
 				}
 				pi.sendUserMessage(text);
+				submittedUserMessages.push(text);
+				sendFrame({
+					type: "semantic",
+					event: "message.user",
+					eventId: `bridge:prompt:${requestId}`,
+					text,
+				});
 				sendResult(requestId, true);
 				return;
 			}
@@ -314,6 +322,13 @@ export default function (pi: ExtensionAPI) {
 				: msg.role === "fileMention" || msg.role === "custom" || msg.role === "hookMessage"
 					? "system"
 					: msg.role;
+		if (role === "user") {
+			const submittedIndex = submittedUserMessages.indexOf(text);
+			if (submittedIndex !== -1) {
+				submittedUserMessages.splice(submittedIndex, 1);
+				return;
+			}
+		}
 
 		const isAborted =
 			Boolean(msg.aborted) ||
@@ -599,6 +614,7 @@ export default function (pi: ExtensionAPI) {
 			state: "working",
 		});
 	});
+
 	pi.on("message_end", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);

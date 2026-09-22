@@ -1,7 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
-import { resolveAndroidSdkRoot, getAndroidEnvironment } from '../android/env';
 
 export interface DoctorCheck {
   id: string;
@@ -39,6 +38,10 @@ function runCmd(cmd: string, env?: Record<string, string>, timeoutMs = 15000): s
   }
 }
 
+function packageRemediation(formula: string, linuxInstruction: string): string {
+  return process.platform === 'darwin' ? `Install with Homebrew: brew install ${formula}` : linuxInstruction;
+}
+
 export function runSystemDoctor(): DoctorReport {
   const checks: DoctorCheck[] = [];
 
@@ -63,25 +66,24 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 2. Bun & Node Runtime
+  // 2. Bun Runtime
   const bunVer = runCmd('bun --version');
-  const nodeVer = runCmd('node --version');
-  if (bunVer && nodeVer) {
+  if (bunVer) {
     checks.push({
       id: 'DOC-02',
-      name: 'JavaScript / TypeScript Runtime (Bun + Node)',
+      name: 'Bun Runtime',
       status: 'READY',
-      versionOrPath: `Bun v${bunVer} / Node ${nodeVer}`,
-      details: 'Bun and Node are available for Expo, Playwright, and provider scripts.',
+      versionOrPath: `Bun v${bunVer}`,
+      details: 'Bun builds the canonical Expo web export and runs the lab scripts.',
     });
   } else {
     checks.push({
       id: 'DOC-02',
-      name: 'JavaScript / TypeScript Runtime (Bun + Node)',
+      name: 'Bun Runtime',
       status: 'BLOCKED_ENVIRONMENT',
-      versionOrPath: 'missing',
-      details: 'Bun and Node are required.',
-      remediation: 'Install Bun (https://bun.sh) and Node.js.',
+      versionOrPath: 'not found',
+      details: 'Bun is required for the E2E lab.',
+      remediation: 'Install Bun: https://bun.sh',
     });
   }
 
@@ -127,28 +129,24 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 5. Android SDK & ADB via shared resolver
-  const sdkRoot = resolveAndroidSdkRoot();
-  const androidEnv = getAndroidEnvironment();
-  const adbVer = runCmd('adb version', androidEnv);
-  const sdkExists = fs.existsSync(sdkRoot);
-
-  if (adbVer && sdkExists) {
+  // 5. Android Debug Bridge
+  const adbVer = runCmd('adb version');
+  if (adbVer) {
     checks.push({
       id: 'DOC-05',
-      name: 'Android SDK & ADB',
+      name: 'Android Debug Bridge (adb)',
       status: 'READY',
-      versionOrPath: `${sdkRoot} (${adbVer.split('\n')[0]})`,
-      details: 'Android SDK platform tools and ADB available.',
+      versionOrPath: adbVer.split('\n')[0],
+      details: 'ADB is available for the containerized Android runner.',
     });
   } else {
     checks.push({
       id: 'DOC-05',
-      name: 'Android SDK & ADB',
+      name: 'Android Debug Bridge (adb)',
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
-      details: 'Android SDK commandline-tools or ADB missing.',
-      remediation: './e2e-lab/scripts/setup-android-sdk.sh',
+      details: 'adb is required; no native Android SDK, emulator, or system image is required.',
+      remediation: packageRemediation('android-platform-tools', 'Install Android platform-tools so adb is on PATH.'),
     });
   }
 
@@ -185,7 +183,7 @@ export function runSystemDoctor(): DoctorReport {
   }
 
   // 7. Maestro CLI
-  const maestroVer = runCmd('maestro --version', androidEnv);
+  const maestroVer = runCmd('maestro --version');
   if (maestroVer) {
     checks.push({
       id: 'DOC-07',
@@ -221,8 +219,29 @@ export function runSystemDoctor(): DoctorReport {
       name: 'Rootless Podman Container Runtime',
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
-      details: 'Podman is required for running containerized daemon/provider/client topology.',
-      remediation: 'sudo apt install -y podman',
+      details: 'Podman is required for the daemon/provider E2E topology.',
+      remediation: packageRemediation('podman', 'Install Podman 4.0+ with your Linux distribution package manager.'),
+    });
+  }
+
+  // 9. Pinned ephemeral browser runner
+  const playwrightVer = runCmd('.runtime/node_modules/.bin/playwright --version', undefined, 30000);
+  if (playwrightVer) {
+    checks.push({
+      id: 'DOC-09',
+      name: 'Browser E2E Capability',
+      status: 'READY',
+      versionOrPath: playwrightVer,
+      details: 'Playwright @1.63.0 installed locally in .runtime/node_modules; Chromium cached at .runtime/browser.',
+    });
+  } else {
+    checks.push({
+      id: 'DOC-09',
+      name: 'Browser E2E Capability',
+      status: 'BLOCKED_ENVIRONMENT',
+      versionOrPath: 'not available',
+      details: 'The pinned ephemeral Playwright runner could not start.',
+      remediation: 'Ensure Bun can download @playwright/test@1.63.0 and Chromium.',
     });
   }
 

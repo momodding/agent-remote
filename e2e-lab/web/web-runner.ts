@@ -73,13 +73,23 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       testsFailed: 0,
     };
   }
-  // Always ensure fresh container topology and pairing state for web E2E
+  // Always ensure fresh daemon/provider topology and canonical exported web build.
   const upScript = path.join(__dirname, '../scripts/up.sh');
   if (fs.existsSync(upScript)) {
     try {
-      execSync(`bash "${upScript}"`, { stdio: 'pipe', timeout: 90000 });
-    } catch {
-      // ignore
+      execSync(`bash "${upScript}"`, { stdio: 'pipe', timeout: 180000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        timestamp: new Date().toISOString(),
+        suite: 'Web Client Production & Browser E2E',
+        status: 'BLOCKED_ENVIRONMENT',
+        details: `Could not start the E2E topology: ${message}`,
+        remediation: 'Missing local provider/daemon images are built by scripts/up.sh; if that build fails, run e2e-lab/scripts/build-images.sh and inspect its output.',
+        testsTotal: 0,
+        testsPassed: 0,
+        testsFailed: 0,
+      };
     }
   }
 
@@ -89,8 +99,8 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
       status: 'BLOCKED_ENVIRONMENT',
-      details: `Live Expo Web client server is not running on ${targetUrl}. Web E2E requires actual Expo web production server.`,
-      remediation: 'Start Expo web server: cd client && bun install && npx expo start --web --port 8081',
+      details: `Canonical Expo web export is not serving on ${targetUrl}.`,
+      remediation: 'Run e2e-lab/scripts/up.sh to build client/dist and start the local server.',
       testsTotal: 0,
       testsPassed: 0,
       testsFailed: 0,
@@ -159,21 +169,38 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     const cwd = path.join(__dirname, '..');
     const home = process.env.HOME || '/root';
     const extendedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${process.env.PATH || ''}`;
+    const runtimeNodeModules = path.join(cwd, '.runtime/node_modules');
 
-    execSync(
-      './node_modules/.bin/playwright test --config=playwright/playwright.config.ts',
-      {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: extendedPath,
-          CLIENT_WEB_URL: targetUrl,
-          E2E_REAL_PAIRING_PAYLOAD: realPairingPayload,
-        },
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      }
-    );
+    // Ensure local Playwright is installed in .runtime
+    const playwrightBin = path.join(cwd, '.runtime/node_modules/.bin/playwright');
+    if (!fs.existsSync(playwrightBin)) {
+      console.log('Local Playwright not found; installing into .runtime...');
+      execSync('bun install --production', {
+        cwd: path.join(cwd, '.runtime'),
+        env: { ...process.env, PATH: extendedPath },
+        stdio: 'inherit',
+      });
+    }
+
+    const browserCache = path.join(cwd, '.runtime/browser');
+    execSync(`${playwrightBin} install chromium`, {
+      env: { ...process.env, PATH: extendedPath, PLAYWRIGHT_BROWSERS_PATH: browserCache, NODE_PATH: runtimeNodeModules },
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 180000,
+    });
+    execSync(`${playwrightBin} test --config=playwright/playwright.config.ts`, {
+      env: {
+        ...process.env,
+        PATH: extendedPath,
+        NODE_PATH: runtimeNodeModules,
+        CLIENT_WEB_URL: targetUrl,
+        E2E_REAL_PAIRING_PAYLOAD: realPairingPayload,
+        PLAYWRIGHT_BROWSERS_PATH: browserCache,
+      },
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
 
     let passed = 0;
     let failed = 0;

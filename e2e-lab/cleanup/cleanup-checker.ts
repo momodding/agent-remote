@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -12,6 +12,16 @@ export interface CleanupCheckResult {
   orphanedTmuxSessions: string[];
   orphanedEmulators: number[];
   orphanedPlaywrightProcesses: number[];
+  orphanedWebServerPids: number[];
+}
+
+function podman(labDir: string, args: string[]): string {
+  return execFileSync(path.join(labDir, 'scripts', 'podman.sh'), args, {
+    encoding: 'utf8',
+    env: { ...process.env, E2E_PODMAN_NO_FALLBACK_CREATE: '1' },
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000,
+  });
 }
 
 export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
@@ -25,16 +35,14 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
     orphanedTmuxSessions: [],
     orphanedEmulators: [],
     orphanedPlaywrightProcesses: [],
+    orphanedWebServerPids: [],
   };
 
   // 1. Check Podman containers by exact name
-  const containerNames = ['agenticremote-provider', 'agenticremote-daemon', 'agenticremote-client'];
+  const androidDigest = fs.readFileSync(path.join(labDir, 'env/versions.env'), 'utf8').match(/^export ANDROID_IMAGE_DIGEST="([^"]+)"/m)?.[1];
+  const containerNames = ['agenticremote-provider', 'agenticremote-daemon'];
   try {
-    const containers = execSync('podman ps -a --format {{.Names}}', {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
-    })
+    const containers = podman(labDir, ['ps', '-a', '--format', '{{.Names}}'])
       .trim()
       .split('\n')
       .filter(Boolean);
@@ -44,15 +52,19 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
         result.allClean = false;
       }
     }
+    if (androidDigest) {
+      const androidContainers = podman(labDir, ['ps', '-a', '--filter', 'label=io.agent-remote.e2e=true', '--filter', 'label=io.agent-remote.role=android', '--filter', `label=io.agent-remote.image-digest=${androidDigest}`, '--format', '{{.Names}}'])
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      for (const name of androidContainers) if (!result.orphanedContainers.includes(name)) result.orphanedContainers.push(name);
+      if (androidContainers.length > 0) result.allClean = false;
+    }
   } catch {}
 
   // 2. Check Podman network by exact name
   try {
-    const networks = execSync('podman network ls --format {{.Name}}', {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
-    })
+    const networks = podman(labDir, ['network', 'ls', '--format', '{{.Name}}'])
       .trim()
       .split('\n')
       .filter(Boolean);
@@ -108,6 +120,12 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
         result.orphanedPlaywrightProcesses.push(pid);
         result.allClean = false;
       }
+
+      // Match the test-owned exported web server.
+      if (cmd.includes('web/static-server.ts') && cmd.includes(labDir)) {
+        result.orphanedWebServerPids.push(pid);
+        result.allClean = false;
+      }
     }
   } catch {}
 
@@ -161,6 +179,9 @@ if (import.meta.main) {
   }
   if (result.orphanedPlaywrightProcesses.length > 0) {
     console.log(`Orphaned Playwright PIDs: ${result.orphanedPlaywrightProcesses.join(', ')}`);
+  }
+  if (result.orphanedWebServerPids.length > 0) {
+    console.log(`Orphaned web server PIDs: ${result.orphanedWebServerPids.join(', ')}`);
   }
 
   if (!result.allClean) {

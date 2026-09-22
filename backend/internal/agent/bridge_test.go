@@ -173,6 +173,94 @@ func TestBridgeCommandErrorPropagation(t *testing.T) {
 	}
 }
 
+func TestBridgePromptSemanticEventIsDurableAndDeduplicated(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	hello, _ := json.Marshal(BridgeHello{Type: "hello", AgentID: agent.ID, Secret: termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"], SessionID: "session-1", SessionFile: "/path/to/session.jsonl", Capabilities: []string{"prompt"}})
+	if _, err := conn.Write(append(hello, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); !svc.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("bridge did not authenticate")
+	}
+
+	received := make(chan protocol.AgentEvent, 1)
+	unsubscribe, err := svc.Subscribe(agent.ID, func(event protocol.AgentEvent) {
+		if event.Type == "message.user" {
+			received <- event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+
+	promptErr := make(chan error, 1)
+	go func() { promptErr <- svc.SubmitPrompt(agent.ID, "prompt now") }()
+	reader := bufio.NewReader(conn)
+	commandLine, err := reader.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var command BridgeCommand
+	if err := json.Unmarshal(commandLine, &command); err != nil {
+		t.Fatal(err)
+	}
+	semantic := BridgeSemanticFrame{Type: "semantic", Event: "message.user", EventID: "bridge:prompt:" + command.RequestID, Text: "prompt now"}
+	semanticLine, _ := json.Marshal(semantic)
+	if _, err := conn.Write(append(semanticLine, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	resultLine, _ := json.Marshal(BridgeCommandResult{Type: "command.result", RequestID: command.RequestID, OK: true})
+	if _, err := conn.Write(append(resultLine, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-promptErr; err != nil {
+		t.Fatalf("SubmitPrompt() = %v", err)
+	}
+	select {
+	case event := <-received:
+		if event.EventID != semantic.EventID || event.Text != "prompt now" {
+			t.Fatalf("unexpected prompt event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prompt semantic event was not observable")
+	}
+
+	if _, err := conn.Write(append(semanticLine, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	history, err := svc.History(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 1 || history.Events[0].EventID != semantic.EventID {
+		t.Fatalf("prompt history = %+v, want one durable semantic event", history.Events)
+	}
+}
+
 func TestBridgeDisconnectMakesCommandsUnavailable(t *testing.T) {
 	stateDir := t.TempDir()
 	store, err := runtimestore.Open(stateDir)

@@ -44,7 +44,7 @@ export async function runAll(): Promise<FinalLabReport> {
   console.log(`Web Result: ${web.status}`);
 
   console.log('\n[4/5] Checking Android Mobile Runner...');
-  const android = runAndroidVerification();
+  const android = await runAndroidVerification();
   console.log(`Android Result: ${android.status}`);
 
   console.log('\n[5/5] Running Security & Secret Leak Scanner...');
@@ -60,7 +60,7 @@ export async function runAll(): Promise<FinalLabReport> {
       let normKey = c.id;
       if (c.id === 'DOC-06') normKey = 'KVM';
       if (c.id === 'DOC-07') normKey = 'MAESTRO';
-      if (c.id === 'DOC-05') normKey = 'SDK';
+      if (c.id === 'DOC-05') normKey = 'ADB';
       blockerMap.set(normKey, { desc: `[${c.id}] ${c.name}: ${c.versionOrPath}`, remedy: c.remediation || null });
     }
   }
@@ -80,11 +80,8 @@ export async function runAll(): Promise<FinalLabReport> {
         normKey = 'APK';
         remedy = 'cd client && bun run prebuild && cd android && ./gradlew assembleDebug';
       } else if (b.includes('Android Device') || b.includes('adb')) {
-        normKey = 'DEVICE';
-        remedy = 'emulator -avd omp_verify -no-audio -no-window';
-      } else if (b.includes('Android SDK')) {
-        normKey = 'SDK';
-        remedy = './e2e-lab/scripts/setup-android-sdk.sh';
+        normKey = 'ADB';
+        remedy = 'Install Android platform-tools (adb); no host SDK or AVD is required.';
       }
       if (!blockerMap.has(normKey)) {
         blockerMap.set(normKey, { desc: b, remedy });
@@ -96,7 +93,7 @@ export async function runAll(): Promise<FinalLabReport> {
   if (web.status === 'BLOCKED_ENVIRONMENT') {
     blockerMap.set('WEB_PAIRING', {
       desc: `Web Runner: ${web.details}`,
-      remedy: 'Ensure daemon container is running on port 18765 and writes pairing.json.',
+      remedy: 'The runner builds missing local provider/daemon images automatically; if that build fails, run e2e-lab/scripts/build-images.sh and inspect its output.',
     });
   }
 
@@ -223,6 +220,7 @@ export async function runAll(): Promise<FinalLabReport> {
     if (cleanupCheck.orphanedTmuxSessions.length > 0) md += `- Orphaned Tmux Sessions: \`${cleanupCheck.orphanedTmuxSessions.join(', ')}\`\n`;
     if (cleanupCheck.orphanedEmulators.length > 0) md += `- Orphaned Emulator PIDs: \`${cleanupCheck.orphanedEmulators.join(', ')}\`\n`;
     if (cleanupCheck.orphanedPlaywrightProcesses.length > 0) md += `- Orphaned Playwright PIDs: \`${cleanupCheck.orphanedPlaywrightProcesses.join(', ')}\`\n`;
+    if (cleanupCheck.orphanedWebServerPids.length > 0) md += `- Orphaned Web Server PIDs: \`${cleanupCheck.orphanedWebServerPids.join(', ')}\`\n`;
   }
   md += `\n`;
 

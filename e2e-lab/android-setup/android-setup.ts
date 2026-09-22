@@ -1,40 +1,26 @@
 import { inspectAndroidEnvironment } from '../android/env';
 
 export interface AndroidSetupStatus {
-  kvmAccessible: boolean;
-  sdkPresent: boolean;
-  avdAvailable: boolean;
-  maestroInstalled: boolean;
-  clientApkFound: boolean;
   status: 'READY' | 'BLOCKED_ENVIRONMENT';
+  blockers: string[];
   remediations: string[];
 }
 
-export function checkAndroidSetup(): AndroidSetupStatus {
-  const inspection = inspectAndroidEnvironment();
-  const isBlocked = !inspection.kvmAccessible || !inspection.maestroInstalled || !inspection.avdAvailable || !inspection.sdkPresent || !inspection.clientApkFound;
-
+/** Containerized Android E2E needs KVM, Podman, the pinned image, and Maestro; not a host SDK or AVD. */
+export async function checkAndroidSetup(): Promise<AndroidSetupStatus> {
+  const inspection = await inspectAndroidEnvironment();
   return {
-    kvmAccessible: inspection.kvmAccessible,
-    sdkPresent: inspection.sdkPresent,
-    avdAvailable: inspection.avdAvailable,
-    maestroInstalled: inspection.maestroInstalled,
-    clientApkFound: inspection.clientApkFound,
-    status: isBlocked ? 'BLOCKED_ENVIRONMENT' : 'READY',
+    status: inspection.status === 'READY' ? 'READY' : 'BLOCKED_ENVIRONMENT',
+    blockers: inspection.blockers,
     remediations: inspection.remediationSteps,
   };
 }
 
 if (import.meta.main) {
-  const s = checkAndroidSetup();
-  console.log(`Android Setup Status: ${s.status}`);
-  console.log(`  KVM accessible: ${s.kvmAccessible}`);
-  console.log(`  SDK present: ${s.sdkPresent}`);
-  console.log(`  AVD available: ${s.avdAvailable}`);
-  console.log(`  Maestro installed: ${s.maestroInstalled}`);
-  console.log(`  Client APK found: ${s.clientApkFound}`);
-  if (s.remediations.length > 0) {
-    console.log('Remediation steps:');
-    s.remediations.forEach((r, idx) => console.log(`  [${idx + 1}] ${r}`));
-  }
+  checkAndroidSetup().then(status => {
+    console.log(`Android Setup Status: ${status.status}`);
+    for (const blocker of status.blockers) console.log(`  Blocker: ${blocker}`);
+    for (const remediation of status.remediations) console.log(`  Remediation: ${remediation}`);
+    process.exit(status.status === 'READY' ? 0 : 1);
+  });
 }

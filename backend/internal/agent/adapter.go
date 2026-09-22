@@ -22,6 +22,8 @@ var (
 	ErrAgentExited   = errors.New("agent has exited")
 )
 
+const bridgeReconnectGrace = 6 * time.Second
+
 func newAgentID() (string, error) {
 	data := make([]byte, 16)
 	if _, err := rand.Read(data); err != nil {
@@ -51,22 +53,30 @@ type AgentSubscriber struct {
 	fn func(protocol.AgentEvent)
 }
 
+func transcriptFallbackDeadline(termMgr TerminalManager) time.Time {
+	if _, ok := termMgr.(terminalTTYProvider); ok {
+		return time.Now().Add(bridgeReconnectGrace)
+	}
+	return time.Time{}
+}
+
 type agentInstance struct {
-	mu           sync.RWMutex
-	tailerMu     sync.Mutex
-	meta         protocol.AgentSession
-	tailer       *TranscriptTailer
-	sessionFile  string
-	agentDir     string
-	resolvedCWD  string
-	termID       string
-	subscribers  map[int]*AgentSubscriber
-	nextSubID    int
-	stopPoll     chan struct{}
-	stopPollOnce sync.Once
-	pollDone     chan struct{}
-	stopTerminal func()
-	pollInterval time.Duration
+	mu                      sync.RWMutex
+	tailerMu                sync.Mutex
+	meta                    protocol.AgentSession
+	tailer                  *TranscriptTailer
+	sessionFile             string
+	agentDir                string
+	resolvedCWD             string
+	termID                  string
+	subscribers             map[int]*AgentSubscriber
+	nextSubID               int
+	stopPoll                chan struct{}
+	stopPollOnce            sync.Once
+	pollDone                chan struct{}
+	stopTerminal            func()
+	pollInterval            time.Duration
+	transcriptFallbackAfter time.Time
 }
 
 type Service struct {
@@ -220,7 +230,6 @@ func (s *Service) handleBridgeMetadata(agentID string, frame BridgeMetadataFrame
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 }
-
 
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
 	s.mu.RLock()
@@ -408,7 +417,6 @@ func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance
 	return nil
 }
 
-
 // Terminate explicitly terminates the running agent instance and its underlying terminal.
 func (s *Service) Terminate(agentID string) error {
 	s.mu.RLock()
@@ -453,16 +461,17 @@ func (s *Service) restorePersisted() {
 					{Name: "model", Enabled: false},
 					{Name: "thinking", Enabled: false},
 				},
-				CreatedAt:         a.CreatedAt,
-				UpdatedAt:         a.UpdatedAt,
+				CreatedAt: a.CreatedAt,
+				UpdatedAt: a.UpdatedAt,
 			},
-			resolvedCWD:  resolved,
-			sessionFile:  a.OMPSessionFile,
-			agentDir:     s.agentDir,
-			subscribers:  make(map[int]*AgentSubscriber),
-			stopPoll:     make(chan struct{}),
-			pollDone:     make(chan struct{}),
-			pollInterval: 250 * time.Millisecond,
+			resolvedCWD:             resolved,
+			sessionFile:             a.OMPSessionFile,
+			agentDir:                s.agentDir,
+			subscribers:             make(map[int]*AgentSubscriber),
+			stopPoll:                make(chan struct{}),
+			pollDone:                make(chan struct{}),
+			pollInterval:            250 * time.Millisecond,
+			transcriptFallbackAfter: transcriptFallbackDeadline(s.termMgr),
 		}
 		if a.ID == a.TerminalSessionID {
 			newID, err := newAgentID()
@@ -606,14 +615,17 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 		UpdatedAt:         now,
 	}
 
+	fallbackAfter := transcriptFallbackDeadline(s.termMgr)
+
 	inst := &agentInstance{
-		meta:         agentSession,
-		resolvedCWD:  termSummary.CWD,
-		agentDir:     s.agentDir,
-		subscribers:  make(map[int]*AgentSubscriber),
-		stopPoll:     make(chan struct{}),
-		pollDone:     make(chan struct{}),
-		pollInterval: 200 * time.Millisecond,
+		meta:                    agentSession,
+		resolvedCWD:             termSummary.CWD,
+		agentDir:                s.agentDir,
+		subscribers:             make(map[int]*AgentSubscriber),
+		stopPoll:                make(chan struct{}),
+		pollDone:                make(chan struct{}),
+		pollInterval:            200 * time.Millisecond,
+		transcriptFallbackAfter: fallbackAfter,
 	}
 
 	s.mu.Lock()
@@ -711,6 +723,18 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 	if inst.pollDone != nil {
 		defer close(inst.pollDone)
 	}
+	if !inst.transcriptFallbackAfter.IsZero() {
+		delay := time.Until(inst.transcriptFallbackAfter)
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-inst.stopPoll:
+				return
+			case <-timer.C:
+			}
+		}
+	}
 	ticker := time.NewTicker(inst.pollInterval)
 	defer ticker.Stop()
 	for {
@@ -724,9 +748,17 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 }
 
 func (s *Service) checkTranscript(inst *agentInstance) {
+	// The bridge is the authoritative live semantic stream. Tail only while it
+	// is unavailable; polling begins after bridgeReconnectGrace so startup and
+	// daemon recovery do not attach the fallback to another live OMP session.
+	s.mu.RLock()
+	bridge := s.bridgeServer
+	s.mu.RUnlock()
+	if bridge != nil && bridge.IsConnected(inst.meta.ID) {
+		return
+	}
 	inst.tailerMu.Lock()
 	defer inst.tailerMu.Unlock()
-
 	inst.mu.Lock()
 	if inst.tailer == nil {
 		if inst.sessionFile == "" {
@@ -848,21 +880,63 @@ func (s *Service) SubmitPrompt(agentID, prompt string) error {
 	if !ok {
 		return ErrAgentNotFound
 	}
-	inst.mu.RLock()
-	promptEnabled := false
-	for _, c := range inst.meta.Capabilities {
-		if c.Name == "prompt" && c.Enabled {
-			promptEnabled = true
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer waitCancel()
+
+	// OMP treats a prompt sent while a turn is already running as steering
+	// folded into that turn rather than a fresh one, so a submission that
+	// arrives mid-turn must wait for the agent to go idle - and atomically
+	// claim "working" the instant it does - before it is forwarded; this
+	// keeps concurrent submissions serialized into distinct turns instead
+	// of racing OMP into merging them.
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		inst.mu.Lock()
+		promptEnabled := false
+		for _, c := range inst.meta.Capabilities {
+			if c.Name == "prompt" && c.Enabled {
+				promptEnabled = true
+				break
+			}
+		}
+		if !promptEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
+			inst.mu.Unlock()
+			return errors.New("needs_terminal")
+		}
+		if inst.meta.State != "working" {
+			inst.meta.State = "working"
+			inst.meta.UpdatedAt = time.Now().UTC()
+			inst.mu.Unlock()
+			s.recordAgentSummary(inst, "agent.updated")
+			s.emitState(inst)
 			break
 		}
+		inst.mu.Unlock()
+		select {
+		case <-waitCtx.Done():
+			return errors.New("agent_busy")
+		case <-ticker.C:
+		}
 	}
-	inst.mu.RUnlock()
-	if !promptEnabled || s.bridgeServer == nil || !s.bridgeServer.IsConnected(agentID) {
-		return errors.New("needs_terminal")
+
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer sendCancel()
+	if err := s.bridgeServer.SendCommand(sendCtx, agentID, "prompt", map[string]any{"prompt": prompt}); err != nil {
+		// Sending failed after the state was already claimed; revert so a
+		// failed submission does not strand the agent as falsely working.
+		inst.mu.Lock()
+		if inst.meta.State == "working" {
+			inst.meta.State = "idle"
+			inst.meta.UpdatedAt = time.Now().UTC()
+		}
+		inst.mu.Unlock()
+		s.recordAgentSummary(inst, "agent.updated")
+		s.emitState(inst)
+		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return s.bridgeServer.SendCommand(ctx, agentID, "prompt", map[string]any{"prompt": prompt})
+	return nil
 }
 
 // Abort aborts the active operation through the verified OMP bridge.
@@ -941,6 +1015,7 @@ func (s *Service) SetModel(agentID, model string) error {
 	s.emitState(inst)
 	return nil
 }
+
 // SetThinking changes the thinking level through the verified OMP bridge.
 func (s *Service) SetThinking(agentID, level string) error {
 	s.mu.RLock()
@@ -1109,4 +1184,3 @@ func (s *Service) Close() error {
 
 	return nil
 }
-

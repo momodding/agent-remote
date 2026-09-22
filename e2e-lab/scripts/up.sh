@@ -4,13 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${LAB_DIR}/.." && pwd)"
+# shellcheck source=podman.sh
+source "${SCRIPT_DIR}/podman.sh"
 
 echo "=== [agenticRemote E2E Lab] Rootless Podman Topology Bringup ==="
 
-# 1. Ensure Podman binary is present
-if ! command -v podman >/dev/null 2>&1; then
-  echo "[ERROR] Podman container runtime is required for rootless container topology." >&2
-  exit 1
+e2e_podman --version >/dev/null
+
+# The web topology owns these two local images. Build them only when absent;
+# this avoids a registry pull and leaves already-built images untouched.
+if ! e2e_podman image exists localhost/agenticremote/provider:latest || ! e2e_podman image exists localhost/agenticremote/daemon:latest; then
+  echo "Building missing local E2E provider/daemon images..."
+  "${SCRIPT_DIR}/build-images.sh"
 fi
 
 # 2. Setup runtime directories
@@ -28,40 +33,56 @@ fi
 # 4. Ensure network exists
 "${LAB_DIR}/containers/podman-network.sh"
 
-# 5. Clean up old containers if running
-echo "Cleaning up prior containers..."
-podman rm -f agenticremote-provider agenticremote-daemon agenticremote-client 2>/dev/null || true
+echo "Cleaning up prior containers and exported web server..."
+e2e_podman rm -f agenticremote-provider agenticremote-daemon 2>/dev/null || true
+WEB_PID_FILE="${RUNTIME_DIR}/web-server.pid"
+if [[ -f "${WEB_PID_FILE}" ]]; then
+  web_pid=$(cat "${WEB_PID_FILE}")
+  if kill -0 "${web_pid}" 2>/dev/null; then
+    kill "${web_pid}" 2>/dev/null || true
+  fi
+  rm -f "${WEB_PID_FILE}"
+fi
 
 # 6. Start deterministic upstream provider
 echo "Starting upstream mock LLM provider container (port 19090)..."
-podman run -d \
+e2e_podman run -d \
   --name agenticremote-provider \
+  --label agenticremote.e2e=true \
   --network agent-remote-e2e \
+  --network-alias agenticremote-provider \
   -p 19090:19090 \
   localhost/agenticremote/provider:latest
+provider_ip="$(e2e_podman inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' agenticremote-provider)"
+if [[ -z "${provider_ip}" ]]; then
+  echo "Provider container has no E2E network address." >&2
+  exit 1
+fi
 
 # 7. Start real Go daemon with OMP toolchain
 echo "Starting daemon container (HTTPS port 18765, Go 1.26.4, OMP 18.1.22, tmux)..."
-podman run -d \
+  # Fresh E2E state has no interactive OMP setup; skip it so the real bridge can reach session_start.
+e2e_podman run -d \
   --name agenticremote-daemon \
+  --label agenticremote.e2e=true \
   --network agent-remote-e2e \
+  --add-host "agenticremote-provider:${provider_ip}" \
   -p 18765:18765 \
+  -e OMP_SKIP_SETUP=1 \
   -v "${TLS_DIR}:/app/.agenticremote/state/tls:Z" \
   localhost/agenticremote/daemon:latest
 
-# 8. Start Expo web client container
-echo "Starting web client container (port 8081)..."
-podman run -d \
-  --name agenticremote-client \
-  --network agent-remote-e2e \
-  -p 8081:8081 \
-  localhost/agenticremote/client:latest
+# 8. Export and serve the canonical client web build
+echo "Exporting canonical Expo web client to client/dist (port 8081)..."
+(cd "${ROOT_DIR}/client" && EXPO_PUBLIC_API_URL="https://127.0.0.1:18765" bun run build:web)
+CLIENT_WEB_PORT=8081 bun "${LAB_DIR}/web/static-server.ts" >"${LOGS_DIR}/web-server.log" 2>&1 &
+echo $! > "${WEB_PID_FILE}"
 
 # 9. Health checks
 echo "Waiting for services to become healthy (up to 180s)..."
 PROVIDER_HEALTHY=0
 DAEMON_HEALTHY=0
-CLIENT_HEALTHY=0
+WEB_HEALTHY=0
 
 for i in $(seq 1 180); do
   # Check Provider
@@ -81,38 +102,38 @@ for i in $(seq 1 180); do
     fi
   fi
 
-  # Check Client
-  if [[ ${CLIENT_HEALTHY} -eq 0 ]]; then
-    CLIENT_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8081/" 2>/dev/null || echo "000")
-    if [[ "${CLIENT_CODE}" == "200" ]]; then
-      echo "  [HEALTHY] Web client on http://127.0.0.1:8081"
-      CLIENT_HEALTHY=1
+  # Check exported web client
+  if [[ ${WEB_HEALTHY} -eq 0 ]]; then
+    WEB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8081/" 2>/dev/null || echo "000")
+    if [[ "${WEB_CODE}" == "200" ]]; then
+      echo "  [HEALTHY] Exported web client on http://127.0.0.1:8081"
+      WEB_HEALTHY=1
     fi
   fi
 
-  if [[ ${PROVIDER_HEALTHY} -eq 1 && ${DAEMON_HEALTHY} -eq 1 && ${CLIENT_HEALTHY} -eq 1 ]]; then
+  if [[ ${PROVIDER_HEALTHY} -eq 1 && ${DAEMON_HEALTHY} -eq 1 && ${WEB_HEALTHY} -eq 1 ]]; then
     break
   fi
 
   sleep 1
 done
 
-if [[ ${PROVIDER_HEALTHY} -eq 0 || ${DAEMON_HEALTHY} -eq 0 || ${CLIENT_HEALTHY} -eq 0 ]]; then
+if [[ ${PROVIDER_HEALTHY} -eq 0 || ${DAEMON_HEALTHY} -eq 0 || ${WEB_HEALTHY} -eq 0 ]]; then
   echo "[ERROR] Service health checks timed out:" >&2
   echo "  Provider: ${PROVIDER_HEALTHY}" >&2
   echo "  Daemon:   ${DAEMON_HEALTHY}" >&2
-  echo "  Client:   ${CLIENT_HEALTHY}" >&2
+  echo "  Web:      ${WEB_HEALTHY}" >&2
   echo "--- Provider Logs ---" >&2
-  podman logs agenticremote-provider 2>&1 | tail -n 20 >&2 || true
+  e2e_podman logs agenticremote-provider 2>&1 | tail -n 20 >&2 || true
   echo "--- Daemon Logs ---" >&2
-  podman logs agenticremote-daemon 2>&1 | tail -n 20 >&2 || true
-  echo "--- Client Logs ---" >&2
-  podman logs agenticremote-client 2>&1 | tail -n 20 >&2 || true
+  e2e_podman logs agenticremote-daemon 2>&1 | tail -n 20 >&2 || true
+  echo "--- Web Logs ---" >&2
+  tail -n 20 "${LOGS_DIR}/web-server.log" >&2 || true
   exit 1
 fi
 
 # 10. Extract real temporary pairing payload from daemon logs
-PAIRING_JSON=$(podman logs agenticremote-daemon 2>&1 | grep -E '^{"v":2,' | tail -n 1 || true)
+PAIRING_JSON=$(e2e_podman logs agenticremote-daemon 2>&1 | grep -E '^{"v":2,' | tail -n 1 || true)
 if [[ -n "${PAIRING_JSON}" ]]; then
   mkdir -p "${RUNTIME_DIR}"
   echo "${PAIRING_JSON}" > "${RUNTIME_DIR}/pairing.json"
@@ -123,6 +144,6 @@ else
 fi
 
 # 11. Ensure test files exist in daemon workspace
-podman exec agenticremote-daemon bash -c "echo 'Hello from sample.txt in project1' > /app/workspace/sample.txt && mkdir -p /app/workspace/project1 && echo 'Hello from sample.txt in project1' > /app/workspace/project1/sample.txt" || true
+e2e_podman exec agenticremote-daemon bash -c "echo 'Hello from sample.txt in project1' > /app/workspace/sample.txt && mkdir -p /app/workspace/project1 && echo 'Hello from sample.txt in project1' > /app/workspace/project1/sample.txt" || true
 
 echo "=== Podman Topology Started Successfully ==="
