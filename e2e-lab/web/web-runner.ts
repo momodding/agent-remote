@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { getRealPairingPayload } from '../playwright/pairing-payload';
 
 export interface WebRunnerReport {
   timestamp: string;
@@ -77,15 +78,14 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   const upScript = path.join(__dirname, '../scripts/up.sh');
   if (fs.existsSync(upScript)) {
     try {
-      execSync(`bash "${upScript}"`, { stdio: 'pipe', timeout: 180000 });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      execFileSync('bash', [upScript], { stdio: 'pipe', timeout: 180000 });
+    } catch {
       return {
         timestamp: new Date().toISOString(),
         suite: 'Web Client Production & Browser E2E',
         status: 'BLOCKED_ENVIRONMENT',
-        details: `Could not start the E2E topology: ${message}`,
-        remediation: 'Missing local provider/daemon images are built by scripts/up.sh; if that build fails, run e2e-lab/scripts/build-images.sh and inspect its output.',
+        details: 'Could not start the E2E topology.',
+        remediation: 'Inspect the E2E topology startup output and ensure required images are available.',
         testsTotal: 0,
         testsPassed: 0,
         testsFailed: 0,
@@ -107,45 +107,16 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     };
   }
 
-  // Check for real daemon pairing payload (forged localStorage auth is strictly disallowed)
-  const pairingFile = path.join(__dirname, '../.runtime/pairing.json');
-  let realPairingPayload = '';
-
-  try {
-    const output = execSync('podman logs agenticremote-daemon 2>&1 | grep -E "^{\\"v\\":2," | tail -n 1', {
-      encoding: 'utf-8',
-      timeout: 3000,
-    }).trim();
-    if (output) {
-      realPairingPayload = output;
-      fs.mkdirSync(path.dirname(pairingFile), { recursive: true });
-      fs.writeFileSync(pairingFile, output, { mode: 0o600 });
-    }
-  } catch {
-    // ignore
-  }
-
-  if (!realPairingPayload && process.env.E2E_REAL_PAIRING_PAYLOAD) {
-    realPairingPayload = process.env.E2E_REAL_PAIRING_PAYLOAD;
-  }
-
-  if (!realPairingPayload && fs.existsSync(pairingFile)) {
-    try {
-      realPairingPayload = fs.readFileSync(pairingFile, 'utf-8').trim();
-    } catch {
-      // ignore
-    }
-  }
+  // Pairing payloads remain in memory and are passed only to Playwright's environment.
+  const realPairingPayload = getRealPairingPayload();
 
   if (!realPairingPayload) {
     return {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
       status: 'BLOCKED_ENVIRONMENT',
-      details:
-        'Web browser E2E blocked: Real daemon pairing payload (Auth-v2) is not emitted by container topology. Injected/fake localStorage authentication is disabled.',
-      remediation:
-        'Export real temporary pairing payload from daemon container to .runtime/pairing.json or set E2E_REAL_PAIRING_PAYLOAD so Playwright can perform authentic Auth-v2 pairing.',
+      details: 'Web browser E2E blocked: no current Auth-v2 pairing payload is available from the daemon topology.',
+      remediation: 'Ensure the daemon topology is running and emitting a current Auth-v2 pairing payload.',
       testsTotal: 0,
       testsPassed: 0,
       testsFailed: 0,
@@ -175,7 +146,7 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     const playwrightBin = path.join(cwd, '.runtime/node_modules/.bin/playwright');
     if (!fs.existsSync(playwrightBin)) {
       console.log('Local Playwright not found; installing into .runtime...');
-      execSync('bun install --production', {
+      execFileSync('bun', ['install', '--production'], {
         cwd: path.join(cwd, '.runtime'),
         env: { ...process.env, PATH: extendedPath },
         stdio: 'inherit',
@@ -183,13 +154,13 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     }
 
     const browserCache = path.join(cwd, '.runtime/browser');
-    execSync(`${playwrightBin} install chromium`, {
+    execFileSync(playwrightBin, ['install', 'chromium'], {
       env: { ...process.env, PATH: extendedPath, PLAYWRIGHT_BROWSERS_PATH: browserCache, NODE_PATH: runtimeNodeModules },
       encoding: 'utf-8',
       stdio: 'pipe',
       timeout: 180000,
     });
-    execSync(`${playwrightBin} test --config=playwright/playwright.config.ts`, {
+    execFileSync(playwrightBin, ['test', '--config=playwright/playwright.config.ts'], {
       env: {
         ...process.env,
         PATH: extendedPath,
@@ -233,8 +204,7 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       testsPassed: passed,
       testsFailed: failed,
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch {
     let passed = 0;
     let failed = 0;
     let total = 0;
@@ -261,7 +231,7 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       timestamp: new Date().toISOString(),
       suite: 'Web Client Production & Browser E2E',
       status: 'FAIL',
-      details: `Playwright tests failed (${passed}/${total} passed): ${message}`,
+      details: `Playwright tests failed (${passed}/${total} passed).`,
       testsTotal: total,
       testsPassed: passed,
       testsFailed: failed,

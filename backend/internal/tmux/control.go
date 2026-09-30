@@ -72,8 +72,8 @@ func (c *ControlClient) Start(ctx context.Context) error {
 		if fi.IsDir() || (fi.Mode()&os.ModeSocket) == 0 {
 			return fmt.Errorf("socket path exists but is not a socket")
 		}
-		stat := fi.Sys().(*syscall.Stat_t)
-		if stat.Uid != uint32(os.Getuid()) {
+		stat, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Getuid()) {
 			return fmt.Errorf("socket exists but not owned by us")
 		}
 		// Socket exists and is ours; tmux will attach to it

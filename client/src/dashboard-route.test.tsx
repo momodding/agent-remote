@@ -333,7 +333,7 @@ describe('dashboard tab deck actions', () => {
 });
 
 describe('dashboard capability gating', () => {
-  it('hides New Agent and New Desktop when the daemon reports those capabilities disabled', async () => {
+  it('keeps New Agent available when a connected daemon reports agent capability disabled', async () => {
     mockReconcileDaemon.mockImplementationOnce((_connection: Connection, update: (runtime: { snapshot: { cursor: number; terminals: never[]; agents: never[]; topology: never[]; desktops: never[] }; capabilities: Array<{ name: string; enabled: boolean }>; status: 'ready' }) => void) => {
       update({
         snapshot: { cursor: 0, terminals: [], agents: [], topology: [], desktops: [] },
@@ -355,7 +355,7 @@ describe('dashboard capability gating', () => {
 
 		expect(() => tree.root.findByProps({ accessibilityLabel: `New Terminal ${first.endpoint}` })).toThrow();
 		expect(() => tree.root.findByProps({ accessibilityLabel: `New Files ${first.endpoint}` })).toThrow();
-		expect(() => tree.root.findByProps({ accessibilityLabel: `New Agent ${first.endpoint}` })).toThrow();
+		expect(tree.root.findByProps({ accessibilityLabel: `New Agent ${first.endpoint}` })).toBeTruthy();
 		expect(() => tree.root.findByProps({ accessibilityLabel: `New Desktop ${first.endpoint}` })).toThrow();
 
     act(() => tree.unmount());

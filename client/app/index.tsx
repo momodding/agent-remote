@@ -286,7 +286,7 @@ export default function TabDeckScreen() {
 					  <Feather name="terminal" size={16} color="#F0F0F0" />
 					</Pressable>
 				  )}
-				  {hasCapability(runtime, 'agent.omp') && (
+				  {runtime?.status === 'ready' && (
 					<Pressable accessibilityLabel={`New Agent ${connection.endpoint}`} style={styles.tabCreateBtn} onPress={() => spawnTab(connection.hostId, 'agent')}>
 					  <Feather name="cpu" size={16} color="#F0F0F0" />
 					</Pressable>

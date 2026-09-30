@@ -1,3 +1,10 @@
+/**
+ * System Doctor: Environment Audit and E2E Preflight
+ *
+ * E2E control path: no bare podman (Compose routing only).
+ * Audit section: optional read-only rootless contamination detection.
+ */
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -17,10 +24,12 @@ export interface DoctorReport {
   overallEnvironmentStatus: 'READY' | 'BLOCKED_ENVIRONMENT';
 }
 
+const E2E_PODMAN_BIN = process.env.E2E_PODMAN_BIN || '/home/linuxbrew/.linuxbrew/bin/podman';
+
 function runCmd(cmd: string, env?: Record<string, string>, timeoutMs = 15000): string | null {
   const home = process.env.HOME || '/root';
   const baseEnvPath = env?.PATH || process.env.PATH || '';
-  const resolvedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${home}/.maestro/bin:${baseEnvPath}`;
+  const resolvedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${home}/.maestro/bin:${path.join(__dirname, '../.runtime/platform-tools')}:${baseEnvPath}`;
   try {
     const out = execSync(cmd, {
       encoding: 'utf8',
@@ -40,6 +49,19 @@ function runCmd(cmd: string, env?: Record<string, string>, timeoutMs = 15000): s
 
 function packageRemediation(formula: string, linuxInstruction: string): string {
   return process.platform === 'darwin' ? `Install with Homebrew: brew install ${formula}` : linuxInstruction;
+}
+
+// Rootful preflight: authorize and verify the exact Podman/Compose command path.
+function checkRootfulPodman(): { ok: boolean; version?: string; blockedReason?: string } {
+  const podmanVersion = runCmd(`sudo -n -- ${E2E_PODMAN_BIN} --version`, undefined, 3000);
+  const composeVersion = runCmd(`sudo -n -- ${E2E_PODMAN_BIN} compose version`, undefined, 3000);
+  if (podmanVersion && composeVersion) {
+    return { ok: true, version: `${podmanVersion}; ${composeVersion}` };
+  }
+  return {
+    ok: false,
+    blockedReason: `sudo -n cannot run ${E2E_PODMAN_BIN} --version and compose version (BLOCKED_EXTERNAL): Host admin must configure passwordless sudoers. Add via visudo: momodding ALL=(ALL) NOPASSWD: ${E2E_PODMAN_BIN}`,
+  };
 }
 
 export function runSystemDoctor(): DoctorReport {
@@ -104,7 +126,7 @@ export function runSystemDoctor(): DoctorReport {
       status: 'BLOCKED_ENVIRONMENT',
       versionOrPath: 'not found',
       details: 'tmux is required by the backend daemon for terminal session management.',
-      remediation: 'sudo apt install -y tmux',
+      remediation: 'Install via package manager: apt install -y tmux (or equivalent)',
     });
   }
 
@@ -167,8 +189,8 @@ export function runSystemDoctor(): DoctorReport {
         name: 'Hardware Virtualization (/dev/kvm)',
         status: 'BLOCKED_ENVIRONMENT',
         versionOrPath: '/dev/kvm (permission denied)',
-        details: 'User does not have read/write access to /dev/kvm. Android emulator fails with accel 11.',
-        remediation: 'sudo usermod -aG kvm $USER && newgrp kvm',
+        details: 'User does not have read/write access to /dev/kvm. Android emulator fails without access.',
+        remediation: 'BLOCKED_EXTERNAL: Enable via rootful Podman or contact host administrator for KVM ACL adjustment. Do NOT use chmod 666 /dev/kvm.',
       });
     }
   } else {
@@ -203,46 +225,66 @@ export function runSystemDoctor(): DoctorReport {
     });
   }
 
-  // 8. Podman Container Runtime
-  const podmanVer = runCmd('podman --version');
+  // 8. Rootful Podman runtime, using the same command path as compose.sh.
+  const podmanVer = runCmd(`sudo -n -- ${E2E_PODMAN_BIN} --version`);
   if (podmanVer) {
     checks.push({
       id: 'DOC-08',
-      name: 'Rootless Podman Container Runtime',
+      name: 'Rootful Podman Container Runtime',
       status: 'READY',
       versionOrPath: podmanVer,
-      details: 'Podman is available for running hermetic multi-container E2E topology.',
+      details: `Rootful Podman available at ${E2E_PODMAN_BIN} for the hermetic multi-container E2E topology.`,
     });
   } else {
     checks.push({
       id: 'DOC-08',
-      name: 'Rootless Podman Container Runtime',
+      name: 'Rootful Podman Container Runtime',
       status: 'BLOCKED_ENVIRONMENT',
-      versionOrPath: 'not found',
-      details: 'Podman is required for the daemon/provider E2E topology.',
-      remediation: packageRemediation('podman', 'Install Podman 4.0+ with your Linux distribution package manager.'),
+      versionOrPath: E2E_PODMAN_BIN,
+      details: 'The configured rootful Podman command is unavailable or unauthorized.',
+      remediation: `BLOCKED_EXTERNAL: Configure sudoers NOPASSWD for ${E2E_PODMAN_BIN}.`,
     });
   }
 
-  // 9. Pinned ephemeral browser runner
-  const playwrightVer = runCmd('.runtime/node_modules/.bin/playwright --version', undefined, 30000);
-  if (playwrightVer) {
+  // 9. Compose/Rootful Preflight (compose.sh + sudo -n capability)
+  const composeScript = path.join(__dirname, '../scripts/compose.sh');
+  let composeAvailable = false;
+  try {
+    const stat = fs.statSync(composeScript);
+    composeAvailable = fs.existsSync(composeScript) && (stat.mode & 0o111) !== 0;
+  } catch {
+    composeAvailable = false;
+  }
+
+  if (!composeAvailable) {
     checks.push({
       id: 'DOC-09',
-      name: 'Browser E2E Capability',
-      status: 'READY',
-      versionOrPath: playwrightVer,
-      details: 'Playwright @1.63.0 installed locally in .runtime/node_modules; Chromium cached at .runtime/browser.',
+      name: 'Compose/Rootful Script',
+      status: 'BLOCKED_ENVIRONMENT',
+      versionOrPath: 'not found',
+      details: 'compose.sh script not found or not executable.',
+      remediation: 'BLOCKED_EXTERNAL: Verify e2e-lab/scripts/compose.sh exists and is executable.',
     });
   } else {
-    checks.push({
-      id: 'DOC-09',
-      name: 'Browser E2E Capability',
-      status: 'BLOCKED_ENVIRONMENT',
-      versionOrPath: 'not available',
-      details: 'The pinned ephemeral Playwright runner could not start.',
-      remediation: 'Ensure Bun can download @playwright/test@1.63.0 and Chromium.',
-    });
+    const rootfulPodman = checkRootfulPodman();
+    if (!rootfulPodman.ok) {
+      checks.push({
+        id: 'DOC-09',
+        name: 'Rootful Compose via sudo -n',
+        status: 'BLOCKED_ENVIRONMENT',
+        versionOrPath: E2E_PODMAN_BIN,
+        details: 'The configured rootful Podman or Podman Compose command is unavailable or unauthorized.',
+        remediation: rootfulPodman.blockedReason,
+      });
+    } else {
+      checks.push({
+        id: 'DOC-09',
+        name: 'Rootful Compose Setup',
+        status: 'READY',
+        versionOrPath: rootfulPodman.version!,
+        details: `Compose script and ${E2E_PODMAN_BIN} authorization configured for rootful E2E.`,
+      });
+    }
   }
 
   // Treat any MISSING or BLOCKED_ENVIRONMENT check as blocking the environment
@@ -269,7 +311,10 @@ export function runSystemDoctor(): DoctorReport {
 
 if (import.meta.main) {
   const report = runSystemDoctor();
-  console.log(`System Doctor Status: ${report.overallEnvironmentStatus}`);
+  console.log(`\n=== System Doctor Report ===`);
+  console.log(`Timestamp: ${report.timestamp}`);
+  console.log(`Status: ${report.overallEnvironmentStatus}`);
+  console.log(`\n=== Checks ===`);
   for (const c of report.checks) {
     console.log(`[${c.status}] ${c.id}: ${c.name} -> ${c.versionOrPath}`);
     if (c.remediation && c.status !== 'READY') {

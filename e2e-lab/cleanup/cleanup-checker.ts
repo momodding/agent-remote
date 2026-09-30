@@ -5,8 +5,10 @@ import * as path from 'node:path';
 export interface CleanupCheckResult {
   allClean: boolean;
   orphanedContainers: string[];
+  legacyRootlessContainers: string[];
   orphanedNetwork: boolean;
   orphanedPairingFile: boolean;
+  inspectionErrors: string[];
   orphanedDaemonPids: number[];
   orphanedOmpPids: number[];
   orphanedTmuxSessions: string[];
@@ -15,21 +17,31 @@ export interface CleanupCheckResult {
   orphanedWebServerPids: number[];
 }
 
-function podman(labDir: string, args: string[]): string {
-  return execFileSync(path.join(labDir, 'scripts', 'podman.sh'), args, {
+function compose(labDir: string, args: string[]): string {
+  return execFileSync(path.join(labDir, 'scripts', 'compose.sh'), args, {
     encoding: 'utf8',
-    env: { ...process.env, E2E_PODMAN_NO_FALLBACK_CREATE: '1' },
     stdio: ['ignore', 'pipe', 'ignore'],
     timeout: 5000,
   });
 }
+
+function rootlessPodman(args: string[]): string {
+  return execFileSync('podman', ['--remote=false', ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000,
+  });
+}
+
 
 export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
   const result: CleanupCheckResult = {
     allClean: true,
     orphanedContainers: [],
     orphanedNetwork: false,
+    legacyRootlessContainers: [],
     orphanedPairingFile: false,
+    inspectionErrors: [],
     orphanedDaemonPids: [],
     orphanedOmpPids: [],
     orphanedTmuxSessions: [],
@@ -37,44 +49,66 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
     orphanedPlaywrightProcesses: [],
     orphanedWebServerPids: [],
   };
+  const inspectionError = (scope: string, error: unknown) => {
+    result.inspectionErrors.push(`${scope}: ${error instanceof Error ? error.message : String(error)}`);
+    result.allClean = false;
+  };
 
-  // 1. Check Podman containers by exact name
-  const androidDigest = fs.readFileSync(path.join(labDir, 'env/versions.env'), 'utf8').match(/^export ANDROID_IMAGE_DIGEST="([^"]+)"/m)?.[1];
-  const containerNames = ['agenticremote-provider', 'agenticremote-daemon'];
+  // 1. Compose owns the rootful project and limits this inspection to it.
   try {
-    const containers = podman(labDir, ['ps', '-a', '--format', '{{.Names}}'])
-      .trim()
-      .split('\n')
-      .filter(Boolean);
-    for (const name of containerNames) {
-      if (containers.includes(name)) {
-        result.orphanedContainers.push(name);
-        result.allClean = false;
+    const services = JSON.parse(compose(labDir, ['ps', '--all', '--format', 'json'])) as unknown;
+    if (!Array.isArray(services)) throw new Error('Compose ps returned a non-array JSON value');
+    for (const service of services) {
+      if (typeof service !== 'object' || service === null || !('Name' in service) || !('Labels' in service)) continue;
+      const labels = service.Labels;
+      const labelOwned = typeof labels === 'string'
+        ? labels.split(',').includes('io.agent-remote.e2e=true')
+        : typeof labels === 'object' && labels !== null && (labels as Record<string, unknown>)['io.agent-remote.e2e'] === 'true';
+      if (typeof service.Name === 'string' && labelOwned) {
+        result.orphanedContainers.push(service.Name);
       }
     }
-    if (androidDigest) {
-      const androidContainers = podman(labDir, ['ps', '-a', '--filter', 'label=io.agent-remote.e2e=true', '--filter', 'label=io.agent-remote.role=android', '--filter', `label=io.agent-remote.image-digest=${androidDigest}`, '--format', '{{.Names}}'])
-        .trim()
-        .split('\n')
-        .filter(Boolean);
-      for (const name of androidContainers) if (!result.orphanedContainers.includes(name)) result.orphanedContainers.push(name);
-      if (androidContainers.length > 0) result.allClean = false;
-    }
-  } catch {}
+    if (result.orphanedContainers.length > 0) result.allClean = false;
+  } catch (error) {
+    inspectionError('rootful Compose project inspection', error);
+  }
 
-  // 2. Check Podman network by exact name
+  // 2. Rootless resources are read-only legacy contamination, not Compose-owned cleanup.
   try {
-    const networks = podman(labDir, ['network', 'ls', '--format', '{{.Name}}'])
-      .trim()
-      .split('\n')
-      .filter(Boolean);
-    if (networks.includes('agent-remote-e2e')) {
+    const containers = rootlessPodman([
+      'ps', '-a',
+      '--filter', 'label=io.podman.compose.project=agent-remote-e2e',
+      '--format', '{{.Names}}',
+    ]).trim().split('\n').filter(Boolean);
+    for (const name of ['agenticremote-provider', 'agenticremote-daemon']) {
+      const match = rootlessPodman(['ps', '-a', '--filter', `name=^${name}$`, '--format', '{{.Names}}']).trim();
+      if (match) containers.push(match);
+    }
+    const seen: Record<string, true> = {};
+    const legacyContainers = containers.filter((name) => {
+      if (seen[name]) return false;
+      seen[name] = true;
+      return true;
+    });
+    if (legacyContainers.length > 0) {
+      result.legacyRootlessContainers = legacyContainers;
+      result.allClean = false;
+    }
+  } catch (error) {
+    inspectionError('legacy rootless container inspection', error);
+  }
+
+  try {
+    const network = rootlessPodman(['network', 'ls', '--filter', 'name=^agent-remote-e2e$', '--format', '{{.Name}}']).trim();
+    if (network) {
       result.orphanedNetwork = true;
       result.allClean = false;
     }
-  } catch {}
+  } catch (error) {
+    inspectionError('legacy rootless network inspection', error);
+  }
 
-  // 3. Check pairing.json file
+  // 3. This is a legacy rootless pairing artifact; current pairing stays in memory.
   const pairingJsonPath = path.join(labDir, '.runtime', 'pairing.json');
   if (fs.existsSync(pairingJsonPath)) {
     result.orphanedPairingFile = true;
@@ -127,11 +161,13 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
         result.allClean = false;
       }
     }
-  } catch {}
+  } catch (error) {
+    inspectionError('process inspection', error);
+  }
 
   // 5. Check for test-created tmux sessions
   try {
-    const tmuxSessions = execSync('tmux list-sessions -F #{session_name} 2>/dev/null || true', {
+    const tmuxSessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
@@ -144,7 +180,9 @@ export function verifyE2eCleanup(labDir: string): CleanupCheckResult {
       result.orphanedTmuxSessions = testSessions;
       result.allClean = false;
     }
-  } catch {}
+  } catch (error) {
+    if (!(typeof error === 'object' && error !== null && 'status' in error && error.status === 1)) inspectionError('tmux session inspection', error);
+  }
 
   return result;
 }
@@ -157,13 +195,19 @@ if (import.meta.main) {
   console.log(`Overall: ${result.allClean ? 'PASS' : 'FAIL'}`);
 
   if (result.orphanedContainers.length > 0) {
-    console.log(`Orphaned Podman containers: ${result.orphanedContainers.join(', ')}`);
+    console.log(`Rootful Compose orphan resources: ${result.orphanedContainers.join(', ')}`);
+  }
+  if (result.legacyRootlessContainers.length > 0) {
+    console.log(`Read-only legacy rootless contamination (containers): ${result.legacyRootlessContainers.join(', ')}`);
   }
   if (result.orphanedNetwork) {
-    console.log(`Orphaned Podman network: agent-remote-e2e`);
+    console.log('Read-only legacy rootless contamination (network): agent-remote-e2e');
   }
   if (result.orphanedPairingFile) {
-    console.log(`Orphaned pairing file: .runtime/pairing.json`);
+    console.log('Read-only legacy contamination (pairing file): .runtime/pairing.json');
+  }
+  if (result.inspectionErrors.length > 0) {
+    console.log(`Read-only inspection failures: ${result.inspectionErrors.join('; ')}`);
   }
   if (result.orphanedDaemonPids.length > 0) {
     console.log(`Orphaned daemon PIDs: ${result.orphanedDaemonPids.join(', ')}`);

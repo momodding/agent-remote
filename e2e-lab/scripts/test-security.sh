@@ -6,4 +6,4 @@ LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 mkdir -p "${LAB_DIR}/artifacts"
 cd "${LAB_DIR}"
-bun run security/leak-scanner.ts
+exec "${SCRIPT_DIR}/test-security-wrapper.sh"

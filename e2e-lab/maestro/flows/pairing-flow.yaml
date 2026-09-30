@@ -1,23 +1,28 @@
+# Supply a fresh v2 payload in safe transport-sized chunks (170 chars maximum).
+# The caller must enable “Skip fingerprint verification” in the visible switch
+# before running this flow; it is required for the emulator's self-signed daemon.
 appId: com.paperplain.agenticremote
 ---
 - launchApp
 
 - tapOn:
-    text: Pair
+    text: Connect daemon
+
+- assertVisible:
+    text: Connect a daemon
 
 - tapOn:
-    text: Manual Input
+    text: Paste pairing JSON
 
-# Android emulator accesses host loopback via 10.0.2.2 over HTTPS
-- inputText: https://10.0.2.2:18765
+- inputText: ${PAIRING_PAYLOAD_CHUNK_1}
+- inputText: ${PAIRING_PAYLOAD_CHUNK_2}
+
+- assertVisible:
+    text: Skip fingerprint verification
 
 - tapOn:
     text: Connect
 
-- wait:
-    duration: 2000
-
-- assertVisible:
-    text: Paired
-
-- screenshot
+# Successful pairing dismisses the sheet and renders the daemon deck.
+- assertNotVisible:
+    text: Connect a daemon

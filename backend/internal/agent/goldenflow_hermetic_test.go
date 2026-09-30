@@ -7,6 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/agenticremote/agenticremote/backend/internal/config"
+	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
+	"github.com/agenticremote/agenticremote/backend/internal/security"
+	"github.com/agenticremote/agenticremote/backend/internal/session"
+	"github.com/coder/websocket"
 	"io"
 	"net"
 	"net/http"
@@ -18,12 +24,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-	"github.com/agenticremote/agenticremote/backend/internal/config"
-	"github.com/agenticremote/agenticremote/backend/internal/protocol"
-	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
-	"github.com/agenticremote/agenticremote/backend/internal/security"
-	"github.com/agenticremote/agenticremote/backend/internal/session"
-	"github.com/coder/websocket"
 )
 
 // TestGoldenFlowHermeticPhase1to4 exercises the full GF-PHASE-1-4 flow against
@@ -48,6 +48,205 @@ func getProcessPPID(pid int) int {
 	return ppid
 }
 
+func writeHermeticArtifact(dir, name, data string) {
+	if dir == "" {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600)
+}
+
+func captureHermeticCommand(dir, name, command string, args ...string) {
+	if dir == "" {
+		return
+	}
+	output, err := exec.Command(command, args...).CombinedOutput()
+	result := "$ " + strings.Join(append([]string{command}, args...), " ") + "\n"
+	if err != nil {
+		result += fmt.Sprintf("error: %v\n", err)
+	}
+	writeHermeticArtifact(dir, name, result+string(output))
+}
+
+func isHermeticOMPCandidate(executable, environment, agentID string) bool {
+	return filepath.Base(executable) == "omp" && strings.Contains(environment, "AGENTIC_REMOTE_BRIDGE_AGENT_ID="+agentID)
+}
+
+func TestIsHermeticOMPCandidate(t *testing.T) {
+	const agentID = "agent-123"
+	for _, tc := range []struct {
+		name        string
+		executable  string
+		environment string
+		want        bool
+	}{
+		{"omp bridge", "/usr/local/bin/omp", "AGENTIC_REMOTE_BRIDGE_AGENT_ID=" + agentID, true},
+		{"inherited bridge environment", "/usr/bin/git", "AGENTIC_REMOTE_BRIDGE_AGENT_ID=" + agentID, false},
+		{"omp for another agent", "/usr/local/bin/omp", "AGENTIC_REMOTE_BRIDGE_AGENT_ID=agent-456", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHermeticOMPCandidate(tc.executable, tc.environment, agentID); got != tc.want {
+				t.Fatalf("isHermeticOMPCandidate() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func hermeticOMPPIDCandidates(agentID string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		executable, executableErr := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		env, envErr := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
+		if executableErr == nil && envErr == nil && isHermeticOMPCandidate(executable, string(env), agentID) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func captureHermeticPIDArtifact(dir string, pid int) {
+	pidDir := filepath.Join(dir, fmt.Sprintf("pid-%d", pid))
+	if err := os.MkdirAll(pidDir, 0o700); err != nil {
+		return
+	}
+	for _, name := range []string{"stat", "status", "cmdline", "cgroup"} {
+		data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), name))
+		if err != nil {
+			data = []byte(fmt.Sprintf("error: %v\n", err))
+		}
+		writeHermeticArtifact(pidDir, "proc-"+name, string(data))
+	}
+	for _, name := range []string{"exe", "cwd"} {
+		target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), name))
+		if err != nil {
+			target = "error: " + err.Error()
+		}
+		writeHermeticArtifact(pidDir, name, target+"\n")
+	}
+	entries, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "fd"))
+	var fds strings.Builder
+	if err != nil {
+		fds.WriteString("error: " + err.Error() + "\n")
+	} else {
+		for _, entry := range entries {
+			target, linkErr := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", entry.Name()))
+			if linkErr != nil {
+				target = "error: " + linkErr.Error()
+			}
+			fmt.Fprintf(&fds, "%s -> %s\n", entry.Name(), target)
+		}
+	}
+	writeHermeticArtifact(pidDir, "fd", fds.String())
+	captureHermeticCommand(pidDir, "ps.txt", "ps", "-ww", "-p", strconv.Itoa(pid), "-o", "pid,ppid,pgid,sid,lstart,etime,stat,user,uid,gid,args")
+	captureHermeticCommand(pidDir, "pstree.txt", "pstree", "-ap", strconv.Itoa(pid))
+}
+
+func captureHermeticStep7Artifacts(t *testing.T, dir, tempDir, stateDir, agentID, terminalSessionID string, daemonCmd *exec.Cmd) []int {
+	t.Helper()
+	if dir == "" {
+		return nil
+	}
+	candidates := hermeticOMPPIDCandidates(agentID)
+	metadata := map[string]any{
+		"test":               t.Name(),
+		"command":            os.Args,
+		"tempDir":            tempDir,
+		"stateDir":           stateDir,
+		"agentID":            agentID,
+		"terminalSessionID":  terminalSessionID,
+		"tmuxSocket":         filepath.Join(stateDir, "tmux", "tmux.sock"),
+		"step7PIDCandidates": candidates,
+	}
+	candidateExecutables := make(map[string]string, len(candidates))
+	bridgeAgentEnvMatch := make(map[string]bool, len(candidates))
+	for _, pid := range candidates {
+		executable, _ := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+		candidateExecutables[strconv.Itoa(pid)] = executable
+		bridgeAgentEnvMatch[strconv.Itoa(pid)] = true
+	}
+	metadata["candidateExecutable"] = candidateExecutables
+	metadata["bridgeAgentEnvMatch"] = bridgeAgentEnvMatch
+	if daemonCmd != nil {
+		metadata["daemonArgs"] = daemonCmd.Args
+		if daemonCmd.Process != nil {
+			metadata["daemonPID"] = daemonCmd.Process.Pid
+		}
+	}
+	data, _ := json.MarshalIndent(metadata, "", "  ")
+	writeHermeticArtifact(dir, "metadata.json", string(data)+"\n")
+	captureHermeticCommand(dir, "host-process-forest.txt", "ps", "-eo", "pid,ppid,pgid,sid,tty,stat,lstart,args", "--forest")
+	captureHermeticCommand(dir, "pgrep-omp.txt", "pgrep", "-a", "-f", "omp")
+	tmuxSocket := filepath.Join(stateDir, "tmux", "tmux.sock")
+	captureHermeticCommand(dir, "tmux-sessions.txt", "tmux", "-S", tmuxSocket, "list-sessions", "-F", "#{session_id}:#{session_name}:#{session_path}")
+	captureHermeticCommand(dir, "tmux-panes.txt", "tmux", "-S", tmuxSocket, "list-panes", "-a", "-F", "#{session_id}:#{session_name}:#{window_id}:#{pane_id}:#{pane_tty}:#{pane_current_command}:#{pane_current_path}")
+	for _, pid := range candidates {
+		captureHermeticPIDArtifact(dir, pid)
+	}
+	return candidates
+}
+
+func captureHermeticTerminationArtifact(dir string, originalOMPPID int) {
+	if dir == "" {
+		return
+	}
+	data, _ := json.MarshalIndent(map[string]any{
+		"originalOMPPID":      originalOMPPID,
+		"originalOMPPIDAlive": isPIDAlive(originalOMPPID),
+		"capturedAt":          time.Now().UTC(),
+	}, "", "  ")
+	writeHermeticArtifact(dir, "termination.json", string(data)+"\n")
+}
+
+func logHermeticOMPPIDDiagnostics(t *testing.T, agentID string) {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Logf("OMP PID diagnostics: read /proc: %v", err)
+		return
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || !entry.IsDir() {
+			continue
+		}
+		executable, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		env, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
+		if err != nil || !isHermeticOMPCandidate(executable, string(env), agentID) {
+			continue
+		}
+		ancestry := make([]int, 0, 16)
+		for ancestor := pid; ancestor > 1 && len(ancestry) < 16; ancestor = getProcessPPID(ancestor) {
+			ancestry = append(ancestry, ancestor)
+		}
+		stat, _ := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
+		startTicks := "unavailable"
+		if end := strings.LastIndex(string(stat), ")"); end >= 0 {
+			fields := strings.Fields(string(stat)[end+2:])
+			if len(fields) > 19 {
+				startTicks = fields[19]
+			}
+		}
+		t.Logf("OMP PID diagnostic: pid=%d ppid=%d start_ticks=%s executable=%q bridge_agent_env_match=true cmdline=%q ancestry=%v", pid, getProcessPPID(pid), startTicks, executable, strings.ReplaceAll(string(cmdline), "\x00", " "), ancestry)
+	}
+}
+
 func findHermeticOMPPIDs(agentID string) []int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -62,20 +261,15 @@ func findHermeticOMPPIDs(agentID string) []int {
 		if err != nil {
 			continue
 		}
-		cmdlineBytes, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		executable, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
 		if err != nil {
-			continue
-		}
-		cmdline := string(cmdlineBytes)
-		if !strings.Contains(cmdline, "omp") {
 			continue
 		}
 		envBytes, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
 		if err != nil {
 			continue
 		}
-		envStr := string(envBytes)
-		if strings.Contains(envStr, "AGENTIC_REMOTE_BRIDGE_AGENT_ID="+agentID) {
+		if isHermeticOMPCandidate(executable, string(envBytes), agentID) {
 			matchedPIDs = append(matchedPIDs, pid)
 		}
 	}
@@ -100,7 +294,18 @@ func findHermeticOMPPIDForAgent(t *testing.T, agentID string) int {
 	t.Helper()
 	pids := findHermeticOMPPIDs(agentID)
 	if len(pids) != 1 {
+		logHermeticOMPPIDDiagnostics(t, agentID)
 		t.Fatalf("expected exactly 1 root OMP process for agent %s, found %d (pids: %v)", agentID, len(pids), pids)
+	}
+	return pids[0]
+}
+
+func findHermeticOMPPIDForAgentWithArtifacts(t *testing.T, agentID, artifactDir string) int {
+	t.Helper()
+	pids := findHermeticOMPPIDs(agentID)
+	if len(pids) != 1 {
+		logHermeticOMPPIDDiagnostics(t, agentID)
+		t.Fatalf("expected exactly 1 root OMP process for agent %s, found %d (pids: %v; Step 7 artifacts: %s)", agentID, len(pids), pids, artifactDir)
 	}
 	return pids[0]
 }
@@ -180,6 +385,19 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 	})
 
 	tempDir := t.TempDir()
+	artifactDir := ""
+	if artifactRoot := os.Getenv("AGENTICREMOTE_STEP7_ARTIFACT_DIR"); artifactRoot != "" {
+		if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+			t.Fatalf("create Step 7 artifact root: %v", err)
+		}
+		var createErr error
+		artifactDir, createErr = os.MkdirTemp(artifactRoot, "TestGoldenFlowHermeticPhase1to4-")
+		if createErr != nil {
+			t.Fatalf("create Step 7 artifact directory: %v", createErr)
+		}
+		t.Logf("Step 7 artifacts: %s", artifactDir)
+		t.Cleanup(func() { t.Logf("Step 7 artifacts retained at %s", artifactDir) })
+	}
 
 	// STEP 0: Set up hermetic OMP config with mock server URL
 	t.Log(">>> STEP 0: Setting up hermetic OMP configuration")
@@ -573,7 +791,7 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 	})
 	rawTermCancel()
 	if rawTermErr != nil {
-		t.Fatalf("raw terminal WebSocket dial failed: %v", rawTermErr)
+		t.Fatalf("raw terminal WebSocket dial failed (Step 7 artifacts: %s): %v", artifactDir, rawTermErr)
 	}
 	// Authenticate raw terminal stream
 	authCtx, authCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -582,15 +800,19 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 		"token": sessionToken,
 	}); err != nil {
 		authCancel()
-		t.Fatalf("raw terminal auth.token write failed: %v", err)
+		t.Fatalf("raw terminal auth.token write failed (Step 7 artifacts: %s): %v", artifactDir, err)
 	}
 	authCancel()
 	// Cleanly close raw terminal WS connection
 	_ = rawTermConn.Close(websocket.StatusNormalClosure, "")
+	step7Candidates := captureHermeticStep7Artifacts(t, artifactDir, tempDir, stateDir, agentID1, terminalSessionID1, daemonCmd)
+	if artifactDir != "" {
+		t.Logf("STEP 7 diagnostics captured at %s (PID candidates: %v)", artifactDir, step7Candidates)
+	}
 
-	postTurnPID := findHermeticOMPPIDForAgent(t, agentID1)
+	postTurnPID := findHermeticOMPPIDForAgentWithArtifacts(t, agentID1, artifactDir)
 	if postTurnPID != ompPID1 {
-		t.Fatalf("OMP PID changed after turn: was %d, now %d", ompPID1, postTurnPID)
+		t.Fatalf("OMP PID changed after turn (Step 7 artifacts: %s): was %d, now %d", artifactDir, ompPID1, postTurnPID)
 	}
 	t.Logf("STEP 7 PASS: Chat and Raw Terminal address same OMP PID: %d", postTurnPID)
 
@@ -727,6 +949,7 @@ func TestGoldenFlowHermeticPhase1to4(t *testing.T) {
 	for isPIDAlive(ompPID1) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
+	captureHermeticTerminationArtifact(artifactDir, ompPID1)
 	if isPIDAlive(ompPID1) {
 		t.Fatalf("OMP PID %d still alive 10s after explicit terminate", ompPID1)
 	}

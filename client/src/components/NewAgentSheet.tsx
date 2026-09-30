@@ -65,6 +65,8 @@ export function NewAgentSheet({ visible, onDismiss, onSubmit, api }: Props) {
   const [directories, setDirectories] = useState<FileEntry[]>([]);
   const [loadingDirs, setLoadingDirs] = useState(false);
   const [backend, setBackend] = useState<'auto' | 'tmux' | 'pty'>('auto');
+  const [harnessAvailability, setHarnessAvailability] = useState<boolean | null>(null);
+  const [loadingHarnesses, setLoadingHarnesses] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const loadDirectories = useCallback(
@@ -83,16 +85,30 @@ export function NewAgentSheet({ visible, onDismiss, onSubmit, api }: Props) {
     },
     [api]
   );
+  const loadHarnesses = useCallback(async () => {
+    if (!api || typeof api.capabilities !== 'function') return;
+    setLoadingHarnesses(true);
+    try {
+      const { capabilities } = await api.capabilities();
+      setHarnessAvailability(capabilities.some((capability) => capability.name === 'agent.omp' && capability.enabled));
+    } catch {
+      setHarnessAvailability(null);
+    } finally {
+      setLoadingHarnesses(false);
+    }
+  }, [api]);
 
   useEffect(() => {
     if (visible) {
       setCwd('');
       setBrowsePath('');
+      setHarnessAvailability(null);
       if (api) {
         loadDirectories('');
+        void loadHarnesses();
       }
     }
-  }, [visible, api, loadDirectories]);
+  }, [visible, api, loadDirectories, loadHarnesses]);
 
   const handleNavigate = (path: string) => {
     setBrowsePath(path);
@@ -142,140 +158,75 @@ export function NewAgentSheet({ visible, onDismiss, onSubmit, api }: Props) {
               </Pressable>
             </View>
 
-            {/* Workspace Directory Browser */}
-            <View style={styles.field}>
-              <Text style={[styles.label, { color: palette.text }]}>Workspace Directory</Text>
-
-              {api ? (
-                <View style={[styles.browserCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
-                  {/* Browser Nav / Breadcrumb */}
-                  <View style={styles.browserHeader}>
-                    <View style={styles.browserPathRow}>
-                      <Pressable
-                        accessibilityLabel="Workspace Root"
-                        style={styles.navRootBtn}
-                        onPress={() => handleNavigate('')}
-                      >
-                        <Feather name="home" size={14} color={palette.accent} />
-                        <Text style={[styles.navRootText, { color: palette.accent }]}>root</Text>
-                      </Pressable>
-                      {browsePath ? (
-                        <Text style={[styles.browserPathText, { color: palette.textSecondary }]} numberOfLines={1}>
-                          / {browsePath}
-                        </Text>
-                      ) : null}
+            {loadingHarnesses ? (
+              <View style={styles.emptyHarness} accessibilityLabel="Loading Agent Harnesses">
+                <ActivityIndicator size="small" color={palette.accent} />
+                <Text style={[styles.emptyHarnessText, { color: palette.textSecondary }]}>Checking available agent harnesses…</Text>
+              </View>
+            ) : harnessAvailability === false ? (
+              <View style={styles.emptyHarness} accessibilityLabel="No Agent Harnesses">
+                <Text style={[styles.emptyHarnessTitle, { color: palette.text }]}>OMP is not available on this daemon</Text>
+                <Text style={[styles.emptyHarnessText, { color: palette.textSecondary }]}>Install OMP on the daemon, then retry discovery.</Text>
+                <Pressable accessibilityLabel="Retry Agent Harness Discovery" style={[styles.retryBtn, { borderColor: palette.accent }]} onPress={() => void loadHarnesses()}>
+                  <Text style={[styles.retryText, { color: palette.accent }]}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <>
+                {harnessAvailability && (
+                  <View style={styles.field} accessibilityLabel="Available Agent Harnesses">
+                    <Text style={[styles.label, { color: palette.text }]}>Agent Harness</Text>
+                    <View style={[styles.harnessOption, { backgroundColor: palette.card, borderColor: palette.accent }]}>
+                      <Text style={[styles.harnessTitle, { color: palette.text }]}>OMP</Text>
+                      <Text style={[styles.harnessText, { color: palette.textSecondary }]}>Uses the installed OMP harness on this daemon.</Text>
                     </View>
-
-                    {browsePath ? (
-                      <Pressable
-                        accessibilityLabel="Navigate up"
-                        style={[styles.upBtn, { borderColor: palette.border }]}
-                        onPress={handleNavigateUp}
-                      >
-                        <Feather name="corner-left-up" size={14} color={palette.text} />
-                        <Text style={[styles.upBtnText, { color: palette.text }]}>Up</Text>
-                      </Pressable>
-                    ) : null}
                   </View>
+                )}
 
-                  {/* Directory list */}
-                  {loadingDirs ? (
-                    <View style={styles.loadingContainer}>
-                      <ActivityIndicator size="small" color={palette.accent} />
-                    </View>
-                  ) : (
-                    <View style={styles.dirList}>
-                      {directories.length === 0 ? (
-                        <Text style={[styles.emptyDirsText, { color: palette.textSecondary }]}>
-                          No subdirectories found
-                        </Text>
-                      ) : (
-                        directories.map((dir) => (
-                          <Pressable
-                            key={dir.path}
-                            accessibilityLabel={`Directory ${dir.name}`}
-                            style={[styles.dirItem, { borderColor: palette.border }]}
-                            onPress={() => handleNavigate(dir.path)}
-                          >
-                            <Feather name="folder" size={16} color={palette.accent} />
-                            <Text style={[styles.dirName, { color: palette.text }]} numberOfLines={1}>
-                              {dir.name}
-                            </Text>
-                            <Feather name="chevron-right" size={14} color={palette.textSecondary} />
+                <View style={styles.field}>
+                  <Text style={[styles.label, { color: palette.text }]}>Workspace Directory</Text>
+
+                  {api ? (
+                    <View style={[styles.browserCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+                      <View style={styles.browserHeader}>
+                        <View style={styles.browserPathRow}>
+                          <Pressable accessibilityLabel="Workspace Root" style={styles.navRootBtn} onPress={() => handleNavigate('')}>
+                            <Feather name="home" size={14} color={palette.accent} />
+                            <Text style={[styles.navRootText, { color: palette.accent }]}>root</Text>
                           </Pressable>
-                        ))
+                          {browsePath ? <Text style={[styles.browserPathText, { color: palette.textSecondary }]} numberOfLines={1}>/ {browsePath}</Text> : null}
+                        </View>
+                        {browsePath ? <Pressable accessibilityLabel="Navigate up" style={[styles.upBtn, { borderColor: palette.border }]} onPress={handleNavigateUp}><Feather name="corner-left-up" size={14} color={palette.text} /><Text style={[styles.upBtnText, { color: palette.text }]}>Up</Text></Pressable> : null}
+                      </View>
+                      {loadingDirs ? <View style={styles.loadingContainer}><ActivityIndicator size="small" color={palette.accent} /></View> : (
+                        <View style={styles.dirList}>
+                          {directories.length === 0 ? <Text style={[styles.emptyDirsText, { color: palette.textSecondary }]}>No subdirectories found</Text> : directories.map((dir) => (
+                            <Pressable key={dir.path} accessibilityLabel={`Directory ${dir.name}`} style={[styles.dirItem, { borderColor: palette.border }]} onPress={() => handleNavigate(dir.path)}>
+                              <Feather name="folder" size={16} color={palette.accent} /><Text style={[styles.dirName, { color: palette.text }]} numberOfLines={1}>{dir.name}</Text><Feather name="chevron-right" size={14} color={palette.textSecondary} />
+                            </Pressable>
+                          ))}
+                        </View>
                       )}
+                      <View style={styles.selectRow}><Pressable accessibilityLabel="Select Current Directory" style={[styles.selectDirBtn, { backgroundColor: palette.accent + '22', borderColor: palette.accent }]} onPress={() => setCwd(browsePath)}><Text style={[styles.selectDirText, { color: palette.accent }]}>{browsePath ? `Use "${browsePath}"` : 'Use Workspace Root'}</Text></Pressable></View>
                     </View>
-                  )}
-
-                  {/* Quick selection confirmation */}
-                  <View style={styles.selectRow}>
-                    <Pressable
-                      accessibilityLabel="Select Current Directory"
-                      style={[styles.selectDirBtn, { backgroundColor: palette.accent + '22', borderColor: palette.accent }]}
-                      onPress={() => setCwd(browsePath)}
-                    >
-                      <Text style={[styles.selectDirText, { color: palette.accent }]}>
-                        {browsePath ? `Use "${browsePath}"` : 'Use Workspace Root'}
-                      </Text>
-                    </Pressable>
+                  ) : null}
+                  <View style={styles.manualField}>
+                    <Text style={[styles.manualLabel, { color: palette.textSecondary }]}>Selected Relative Path:</Text>
+                    <TextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} placeholder="e.g. src or leave empty for root" placeholderTextColor={palette.textSecondary} value={cwd} onChangeText={setCwd} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Workspace Path" />
+                    <Text style={[styles.hint, { color: palette.textSecondary }]}>Relative path inside daemon workspace root. Absolute paths and '..' are rejected.</Text>
                   </View>
                 </View>
-              ) : null}
 
-              {/* Manual input / override */}
-              <View style={styles.manualField}>
-                <Text style={[styles.manualLabel, { color: palette.textSecondary }]}>Selected Relative Path:</Text>
-                <TextInput
-                  style={[styles.input, { color: palette.text, borderColor: palette.border }]}
-                  placeholder="e.g. src or leave empty for root"
-                  placeholderTextColor={palette.textSecondary}
-                  value={cwd}
-                  onChangeText={setCwd}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  accessibilityLabel="Workspace Path"
-                />
-                <Text style={[styles.hint, { color: palette.textSecondary }]}>
-                  Relative path inside daemon workspace root. Absolute paths and '..' are rejected.
-                </Text>
-              </View>
-            </View>
-
-            {/* Runtime Backend selection */}
-            <View style={styles.field}>
-              <Text style={[styles.label, { color: palette.text }]}>Runtime Backend</Text>
-              <View style={styles.backendRow}>
-                {(['auto', 'tmux', 'pty'] as const).map((b) => {
-                  const selected = backend === b;
-                  return (
-                    <Pressable
-                      key={b}
-                      accessibilityLabel={`Backend ${b}`}
-                      style={[
-                        styles.backendOption,
-                        { borderColor: palette.border },
-                        selected && { borderColor: palette.accent, backgroundColor: palette.accent + '22' },
-                      ]}
-                      onPress={() => setBackend(b)}
-                    >
-                      <Text style={[styles.backendText, { color: selected ? palette.accent : palette.text }]}>
-                        {b.toUpperCase()}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <Pressable
-              accessibilityLabel="Create Agent"
-              style={[styles.submitBtn, { backgroundColor: palette.accent }, busy && { opacity: 0.6 }]}
-              disabled={busy}
-              onPress={handleCreate}
-            >
-              <Text style={styles.submitText}>Start Agent</Text>
-            </Pressable>
+                <View style={styles.field}>
+                  <Text style={[styles.label, { color: palette.text }]}>Runtime Backend</Text>
+                  <View style={styles.backendRow}>{(['auto', 'tmux', 'pty'] as const).map((b) => {
+                    const selected = backend === b;
+                    return <Pressable key={b} accessibilityLabel={`Backend ${b}`} style={[styles.backendOption, { borderColor: palette.border }, selected && { borderColor: palette.accent, backgroundColor: palette.accent + '22' }]} onPress={() => setBackend(b)}><Text style={[styles.backendText, { color: selected ? palette.accent : palette.text }]}>{b.toUpperCase()}</Text></Pressable>;
+                  })}</View>
+                </View>
+                <Pressable accessibilityLabel="Create Agent" style={[styles.submitBtn, { backgroundColor: palette.accent }, busy && { opacity: 0.6 }]} disabled={busy} onPress={handleCreate}><Text style={styles.submitText}>Start Agent</Text></Pressable>
+              </>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -399,6 +350,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   backendText: { fontWeight: '600', fontSize: 14 },
+  emptyHarness: { gap: 10, padding: 20, alignItems: 'center', borderRadius: 8 },
+  emptyHarnessTitle: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  emptyHarnessText: { fontSize: 14, textAlign: 'center' },
+  retryBtn: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 14, paddingVertical: 8 },
+  retryText: { fontWeight: '600' },
+  harnessOption: { borderWidth: 1, borderRadius: 8, padding: 12, gap: 4 },
+  harnessTitle: { fontSize: 15, fontWeight: '700' },
+  harnessText: { fontSize: 13 },
   submitBtn: { borderRadius: 8, height: 48, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
   submitText: { color: '#0A0A0A', fontSize: 16, fontWeight: '600' },
 });

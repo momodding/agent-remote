@@ -1,0 +1,109 @@
+name: agenticremote-e2e
+
+services:
+  provider:
+    build:
+      context: ..
+      dockerfile: e2e-lab/containers/Containerfile.provider
+    image: localhost/agenticremote-e2e-provider:local
+    labels:
+      io.agent-remote.e2e: "true"
+      io.agent-remote.role: provider
+    networks: [e2e]
+    ports:
+      - "127.0.0.1:19090:19090"
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"const response = await fetch('http://127.0.0.1:19090/health'); process.exit(response.ok ? 0 : 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  daemon:
+    build:
+      context: ..
+      dockerfile: e2e-lab/containers/Containerfile.daemon
+    image: localhost/agenticremote-e2e-daemon:local
+    depends_on:
+      provider:
+        condition: service_healthy
+    labels:
+      io.agent-remote.e2e: "true"
+      io.agent-remote.role: daemon
+    environment:
+      OMP_SKIP_SETUP: "1"
+    networks: [e2e]
+    ports:
+      - "127.0.0.1:18765:18765"
+    volumes:
+      - daemon-state:/app/.agenticremote/state
+      - ./.runtime/tls:/app/.agenticremote/state/tls:Z
+      - daemon-workspace:/app/workspace
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:18765/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+
+  android-emulator:
+    image: budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894
+    labels:
+      io.agent-remote.e2e: "true"
+      io.agent-remote.role: android-emulator
+      io.agent-remote.image-digest: sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894
+    devices:
+      - /dev/kvm:/dev/kvm:rwm
+    shm_size: 2g
+    environment:
+      EMULATOR_NO_SKIN: "true"
+      WEB_VNC: "true"
+      EMULATOR_ADDITIONAL_ARGS: "-no-audio -no-boot-anim -gpu swiftshader_indirect"
+    networks: [e2e]
+    ports:
+      - "127.0.0.1:5555:5555"
+    volumes:
+      - android-runtime:/tmp/agenticremote-e2e
+      - type: bind
+        source: ./.runtime/android/source
+        target: /workspace/source
+        read_only: true
+        bind:
+          selinux: Z
+      - type: bind
+        source: ../client/node_modules
+        target: /workspace/source/node_modules
+        read_only: true
+        bind:
+          selinux: Z
+      - android-build:/workspace/build
+      - type: bind
+        source: ./android/patches/emulator-kvm-fix.py
+        target: /home/androidusr/docker-android/cli/src/device/emulator.py
+        read_only: true
+        bind:
+          selinux: Z
+    healthcheck:
+      test: ["CMD-SHELL", "adb wait-for-device && test \"$(adb shell getprop sys.boot_completed | tr -d '\\r')\" = 1"]
+      interval: 10s
+      timeout: 10s
+      start_period: 2m
+      retries: 30
+
+networks:
+  e2e:
+    name: agenticremote-e2e-rootful-net
+    labels:
+      io.agent-remote.e2e: "true"
+
+volumes:
+  daemon-state:
+    labels:
+      io.agent-remote.e2e: "true"
+  daemon-workspace:
+    labels:
+      io.agent-remote.e2e: "true"
+  android-runtime:
+    labels:
+      io.agent-remote.e2e: "true"
+  android-build:
+    labels:
+      io.agent-remote.e2e: "true"

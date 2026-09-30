@@ -1,0 +1,13 @@
+.agenticremote/
+backend/bin/
+client/build/
+builds/
+.dart_tool/
+.packages
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+backend/agenticRemote
+/e2e-lab/.runtime/

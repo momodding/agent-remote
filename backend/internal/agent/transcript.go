@@ -39,6 +39,7 @@ type tailerState struct {
 	lastMtime   int64
 	fingerprint string
 }
+
 func (t *TranscriptTailer) snapshot() tailerState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -103,14 +104,14 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 		return nil, err
 	}
 
-	// Detect rotation: inode changed, size decreased, or mtime went backward
-	stat := info.Sys().(*syscall.Stat_t)
+	// Detect rotation: inode changed, size decreased, or mtime went backward.
+	inode := info.Sys().(*syscall.Stat_t).Ino
 	size := info.Size()
 	mtime := info.ModTime().UnixNano()
-	if t.lastInode != 0 && (stat.Ino != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime != t.lastMtime && size == t.lastSize)) {
+	if t.lastInode != 0 && (inode != t.lastInode || size < t.offset || (t.lastMtime != 0 && mtime != t.lastMtime && size == t.lastSize)) {
 		t.offset, t.pending, t.seen, t.fingerprint = 0, nil, map[string]struct{}{}, ""
 	}
-	t.lastInode = stat.Ino
+	t.lastInode = inode
 	t.lastSize = size
 	t.lastMtime = mtime
 
@@ -220,6 +221,7 @@ type transcriptContent struct {
 	Name       string          `json:"name"`
 	Arguments  json.RawMessage `json:"arguments"`
 }
+
 func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if e.ID == "" {
 		return nil

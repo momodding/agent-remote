@@ -11,6 +11,12 @@ DAEMON_CONFIG_DIR ?= /etc/agenticremote
 RELEASE_TARGETS ?= linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DAEMON_BUILD_DIR ?= builds/daemon
+DAEMON_RELEASE_DIR ?= builds/release
+CLIENT_ANDROID_OUTPUT ?= builds/client-android.apk
+DAEMON_BUILD_OUTPUT_DIR := $(abspath $(DAEMON_BUILD_DIR))
+DAEMON_RELEASE_OUTPUT_DIR := $(abspath $(DAEMON_RELEASE_DIR))
+CLIENT_ANDROID_OUTPUT_PATH := $(abspath $(CLIENT_ANDROID_OUTPUT))
 
 DAEMON_BUILD_TARGETS := $(strip $(if $(DAEMON_TARGET),$(DAEMON_TARGET),$(DAEMON_TARGETS)))
 CLIENT_BUILD_TARGETS := $(strip $(if $(CLIENT_TARGET),$(CLIENT_TARGET),$(CLIENT_TARGETS)))
@@ -43,27 +49,26 @@ daemon-build:
 		goarch=$${target#*-}; \
 		exe=; \
 		if [ "$$goos" = windows ]; then exe=.exe; fi; \
-		mkdir -p builds/daemon/$$target; \
-		cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o ../builds/daemon/$$target/agenticRemote$$exe ./cmd/agenticRemote && cd ..; \
+		mkdir -p "$(DAEMON_BUILD_OUTPUT_DIR)/$$target"; \
+		cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o "$(DAEMON_BUILD_OUTPUT_DIR)/$$target/agenticRemote$$exe" ./cmd/agenticRemote && cd ..; \
 	done
 
 daemon-release:
 	@set -eu; \
-	rm -rf builds/release; \
-	mkdir -p builds/release; \
-	$(MAKE) daemon-build DAEMON_TARGETS="$(RELEASE_TARGETS)"; \
-	cd builds/release; \
+	rm -rf "$(DAEMON_RELEASE_OUTPUT_DIR)"; \
+	mkdir -p "$(DAEMON_RELEASE_OUTPUT_DIR)"; \
+	$(MAKE) daemon-build DAEMON_TARGETS="$(RELEASE_TARGETS)" DAEMON_BUILD_DIR="$(DAEMON_BUILD_DIR)"; \
+	cd "$(DAEMON_RELEASE_OUTPUT_DIR)"; \
 	for target in $(RELEASE_TARGETS); do \
 		goos=$${target%%-*}; \
 		goarch=$${target#*-}; \
 		exe=; \
 		if [ "$$goos" = windows ]; then exe=.exe; fi; \
 		archive="agenticRemote_$(VERSION)_$${goos}_$${goarch}.tar.gz"; \
-		tar -czf "$$archive" -C "../daemon/$$target" "agenticRemote$$exe"; \
+		tar -czf "$$archive" -C "$(DAEMON_BUILD_OUTPUT_DIR)/$$target" "agenticRemote$$exe"; \
 	done; \
 	sha256sum agenticRemote_*.tar.gz > SHA256SUMS; \
-	cd ../..; \
-	echo "release artifacts written to builds/release/ (version $(VERSION), commit $(COMMIT))"
+	echo "release artifacts written to $(DAEMON_RELEASE_DIR) (version $(VERSION), commit $(COMMIT))"
 
 daemon-install:
 	@set -eu; \
@@ -165,7 +170,7 @@ client-build:
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
 			web) cd client && bun install && EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bun run build:web && cd .. ;; \
-			android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p builds && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform android --profile preview --local --non-interactive --output ../builds/client-android.apk && cd .. ;; \
+		android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p "$(dir $(CLIENT_ANDROID_OUTPUT_PATH))" && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EAS_SKIP_AUTO_FINGERPRINT=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform android --profile preview --local --non-interactive --output "$(CLIENT_ANDROID_OUTPUT_PATH)" && cd .. ;; \
 			ios) cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform ios --local && cd .. ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \

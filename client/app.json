@@ -36,12 +36,12 @@
       "expo-router",
       "expo-camera",
       "expo-secure-store",
-      "expo-build-properties",
       "expo-sharing",
       [
         "expo-build-properties",
         {
           "android": {
+            "buildArchs": ["arm64-v8a", "x86_64"],
             "extraGradleProps": {
               "org.gradle.jvmargs": "-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC -XX:+ParallelRefProcEnabled",
               "org.gradle.parallel": "true",

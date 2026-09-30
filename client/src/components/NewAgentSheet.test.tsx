@@ -67,6 +67,45 @@ describe('NewAgentSheet', () => {
     expect(onDismiss).toHaveBeenCalled();
   });
 
+  it('discovers the installed OMP harness and starts it with the selected workspace', async () => {
+    const api = {
+      capabilities: jest.fn().mockResolvedValue({ capabilities: [{ name: 'agent.omp', enabled: true }] }),
+    } as unknown as AgenticRemoteAPI;
+    const onSubmit = jest.fn().mockResolvedValue(undefined);
+    const onDismiss = jest.fn();
+    let tree: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      tree = create(<NewAgentSheet visible onDismiss={onDismiss} onSubmit={onSubmit} api={api} />);
+      await Promise.resolve();
+    });
+
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Available Agent Harnesses' })).toBeTruthy();
+    const input = tree!.root.findByProps({ accessibilityLabel: 'Workspace Path' });
+    await act(async () => { input.props.onChangeText('client'); });
+    await act(async () => { await tree!.root.findByProps({ accessibilityLabel: 'Create Agent' }).props.onPress(); });
+
+    expect(onSubmit).toHaveBeenCalledWith({ cwd: 'client', backend: 'auto' });
+  });
+
+  it('shows a recoverable empty state when the daemon has no supported harness', async () => {
+    const capabilities = jest.fn().mockResolvedValue({ capabilities: [{ name: 'agent.omp', enabled: false }] });
+    const api = { capabilities } as unknown as AgenticRemoteAPI;
+    let tree: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      tree = create(<NewAgentSheet visible onDismiss={jest.fn()} onSubmit={jest.fn()} api={api} />);
+      await Promise.resolve();
+    });
+
+    expect(tree!.root.findByProps({ accessibilityLabel: 'No Agent Harnesses' })).toBeTruthy();
+    expect(tree!.root.findByProps({ children: 'OMP is not available on this daemon' })).toBeTruthy();
+    expect(tree!.root.findByProps({ children: 'Install OMP on the daemon, then retry discovery.' })).toBeTruthy();
+    await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Retry Agent Harness Discovery' }).props.onPress(); });
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    expect(() => tree!.root.findByProps({ accessibilityLabel: 'Create Agent' })).toThrow();
+  });
+
   it('browses directories using api and selects directory', async () => {
     const rootEntries: FileEntry[] = [
       { name: 'src', path: 'src', isDir: true, size: 0, mode: 'drwxr-xr-x' },
@@ -79,6 +118,7 @@ describe('NewAgentSheet', () => {
     ];
 
     const mockApi = {
+      capabilities: jest.fn().mockResolvedValue({ capabilities: [{ name: 'agent.omp', enabled: true }] }),
       files: jest.fn().mockImplementation(async (path: string) => {
         if (path === '') return rootEntries;
         if (path === 'src') return srcEntries;

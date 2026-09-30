@@ -53,7 +53,7 @@ RUN echo '{\n\
   "maxScrollbackBytes": 1048576,\n\
   "allowDestructiveFiles": true,\n\
   "skipFingerprintVerification": false,\n\
-  "pairingRotationSeconds": 300,\n\
+  "pairingRotationSeconds": 900,\n\
   "terminalBackend": "tmux"\n\
 }' > /app/.agenticremote/config.json
 
