@@ -1,0 +1,40 @@
+# Android Runtime UX Remediation — Evidence Index
+
+## Validated revision range
+
+- **Pre-archive remediation HEAD:** `1c92e2eef015901661173e06fb519dbecac03ff8` — `omp(android-runtime-ux-remediation): Resolve final flow-audit layout P1s`.
+- **Recorded baseline:** `2248bda36e5e9d60821363f110c35da55437868f` in the remediation ledger.
+- **Range represented by this archive:** `2248bda..1c92e2e`.
+
+## APK provenance
+
+The remediation ledger records two APK artifacts, neither built from the final remediation commit:
+
+| Artifact | Recorded provenance | Final-HEAD match |
+|---|---|---|
+| `builds/client-android.apk` | 52,115,902 bytes; SHA-256 `30bad937e02ed694fe7ec4f9ad00abe385fbc676d6ab338ffe0f446c0c4d1623`; built 2026-09-23 for `arm64-v8a`. | **NO** — predates `2248bda`. |
+| `builds/android-build-retry.apk` | 78,943,691 bytes; SHA-256 `278d81a0926d31b7e91c70e62c05c4e0235be7ff27bfb3a7f1ec0ab42abeba6c`; built 2026-09-30 for `arm64-v8a`, `x86_64`. | **SOURCE_EQUIVALENT** to the changes in `2248bda`, not a final-HEAD APK. |
+
+Source: `plans/android-runtime-ux-remediation.md`, “APK Artifacts & Provenance Analysis” and “HEAD Match Verification.”
+
+## Recorded successful gates
+
+| Command | Outcome recorded in the remediation ledger |
+|---|---|
+| `make backend-test` | **PASS** — exit 0; `go test ./...` completed successfully. The final-code gate records 36.69s; a later full backend run after the WSS correction also passed. |
+| `make client-build-web` | **PASS** — exit 0 in 57.41s; `expo export --platform web` bundled 1,486 modules. |
+| `bun --cwd client test --runInBand` | **PASS** — exit 0 in 67.34s; 27/27 suites and 207/207 tests at that gate. |
+| `bun jest --runInBand` (from `client`) | **PASS** — 27/27 suites and 211/211 tests in the post-remediation gate. |
+| `bunx tsc --noEmit -p .` (from `client`) | **PASS** — exit 0 with no output. |
+
+## Current source dispositions
+
+- **Oracle review:** `plans/oracle-review-a01-a10.md` reports **PASS** for A01–A10 only as source/committed-test-contract evidence. Its runtime/device disposition remains **UNRESOLVED**.
+- **Flow audit:** `plans/android-flow-auditor-review-20261001.md` records all four source-observable P1 findings as resolved at `1c92e2e`; no source-observable P1 remains in that focused re-review.
+- **Android release:** **NO-GO** pending runtime evidence. The source dispositions above do not establish Android device behavior.
+
+## Blocked runtime gates
+
+- **Browser E2E:** `bash e2e-lab/scripts/test-web.sh` is **BLOCKED_ENVIRONMENT**, not PASS/FAIL/flaky. The recorded result is topology startup failure with **0 Playwright tests executed** (0 passed, 0 failed). See `plans/android-runtime-ux-remediation.md`, “Final Code Acceptance Gates.”
+- **Android Golden Flow:** **not rerun against the final remediation commit**. The retained historical 2026-09-30 rootful-capacity failure remains evidence only, not a final-run result. See `plans/android-runtime-ux-remediation.md`, “Golden Flow status,” and `e2e-lab/ANDROID_E2E_TODO.md`.
+- **Prerequisite:** the retained Android E2E log requires passwordless rootful Podman authorization for `/home/linuxbrew/.linuxbrew/bin/podman`; its earlier entry also records missing ADB. The exact required rerun sequence and failure evidence are retained in `e2e-lab/ANDROID_E2E_TODO.md` (iterations 23–25).
