@@ -130,3 +130,56 @@ Agent Chat is a semantic projection, **not a second OMP agent or an alternate pr
 - **Root-cause proof:** the leakage mechanism is proven: a displayed internal/hook record can cross both live-bridge and transcript-fallback paths as `message.system`, then is rendered by the client fallback. The manual report is needed to identify which particular displayed record leaked; source alone cannot classify every OMP `display: true` payload as unsafe.
 - **Narrow regression-test candidates:** table-driven bridge and transcript tests with undisplayed and displayed custom/hook fixtures; assert no user-visible Agent Chat event for prohibited internal/hook provenance. A focused AgentScreen test should render only an explicit semantic allowlist and reject an injected `message.system` sentinel. The allowed user-facing custom-message policy must be decided before changing behavior.
 - **Required runtime evidence:** sanitized raw session entries (type, role, `display`, custom type/provenance, no sensitive text), bridge semantic frame, persisted agent-history entry/cursor, and screenshot of the matching chat bubble. This establishes whether the leak starts in OMP record marking, bridge projection, fallback tailing, or client rendering.
+
+---
+
+## Root-Cause Tranche: A02 — Real Android Terminal Transport (2026-10-01)
+
+**Scope.** This traces Raw Terminal only, so a semantic Agent Chat failure cannot be misdiagnosed as a PTY transport failure. No Android golden flow, implementation, or mock was run.
+
+### Deterministic marker reproduction
+
+1. Open a newly created **Raw Terminal** direct-PTY session; record the daemon endpoint and terminal session ID. Wait until the initial `pty.baseline` and shell prompt render.
+2. Choose a unique ASCII nonce, for example `A02_20261001_001`. Focus the xterm WebView using the Android software keyboard and enter `printf '__AR_A02_A02_20261001_001__\n'`, then press the IME Enter key.
+3. Acceptance at the surface is two ordered occurrences: the terminal's echo of the typed command, followed by the shell's standalone `__AR_A02_A02_20261001_001__` output line. Capture the screen with the IME visible and again after it is hidden.
+4. Repeat exactly once through the app’s paste/shortcut path, then rotate or otherwise resize once and send a second, different nonce. These isolate IME focus/input, Clipboard/WebView messaging, resize, and return-output without using shell mutation or external network access.
+
+### End-to-end facts
+
+```text
+Android IME / WebView xterm input
+  -> ReactNativeWebView.postMessage({ type: "input", data })
+  -> Terminal.onMessage -> TerminalScreen -> ShortcutKeyboard.input
+  -> DaemonChannel.send({ type: "pty.input", base64(UTF-8 bytes) })
+  -> wss /v1/ws/sessions/:terminalSessionId (auth.token first)
+  -> server.handlePTYWS -> session.Manager.Input -> PTY/tmux backend.Write
+  -> backend.readOutput -> pty.output (base64, monotonic seq)
+  -> DaemonChannel decode/dedupe -> TerminalScreen TextDecoder/output state
+  -> Terminal injectJavaScript MessageEvent({ type: "output", data }) -> xterm DOM
+```
+
+- `Terminal` is a native `react-native-webview` on Android. Its `onMessage` forwards WebView `input` and `resize`, handles clipboard copy/paste, and injects output into generated xterm HTML. On load it reinjects accumulated output (`client/src/components/Terminal.tsx`).
+- Raw Terminal wires that component’s input through the `ShortcutKeyboard` imperative input method; its supplied `onInput` base64-encodes UTF-8 and sends `pty.input` on the daemon-scoped channel. Resize follows the same channel as `pty.resize` (`client/app/terminal/[id].tsx`, `client/src/lib/bytes.ts`).
+- `WebSocketDaemonChannel` opens one authenticated socket per terminal session. It treats `pty.baseline` as viewport replacement, drops duplicate/out-of-order `pty.output` by sequence, and reconnects active subscriptions (`client/src/lib/daemon-channel.ts`).
+- The server requires the auth token, subscribes before accepting `pty.input`, decodes base64, forwards bytes to `session.Manager.Input`, and writes PTY output/state back over the same socket (`backend/internal/server/server.go`). `session.Manager.readOutput` records output, publishes state, and marks an ended backend exited (`backend/internal/session/manager.go`).
+
+### Proven boundaries and hypotheses
+
+- **Proven behavior:** while a socket is unavailable, `WebSocketDaemonChannel.send` deliberately drops `pty.input`; only the newest pending resize is queued for reconnect. A marker typed during reconnect therefore has no delivery guarantee. This is a concrete transport-loss boundary, but source review alone does not prove it caused the manual A02 report.
+- **Proven observability gap:** server `handlePTYWS` ignores the error returned by `sessions.Input` and `sessions.Resize`; a valid frame sent to a dead/non-running backend can have no explicit client error. `Terminal.onMessage` also parses WebView JSON without a local malformed-message/error report. Neither fact proves the keyboard/WebView is the failing boundary.
+- **Hypotheses to discriminate:** (1) Android IME cannot focus or deliver to xterm/WebView; (2) WebView-to-native input arrives but the shortcut forwarding path loses it; (3) the socket is reconnecting and drops the marker; (4) PTY write succeeds but output is lost by state/sequence/reinjection; (5) terminal is visually unusable despite transport success (keyboard/viewport/selection). The marker trace resolves these without conflating them.
+
+### Boundary instrumentation plan (not implemented)
+
+Use a development-only, opt-in `terminal.trace` correlation ID based on the marker nonce. At each boundary record timestamp, session ID, direction, byte length, and a digest—not raw terminal content: (a) Android IME/WebView postMessage received; (b) `Terminal` callback/ShortcutKeyboard forwarding; (c) daemon socket open/close, send/drop/reconnect, and output sequence; (d) server decoded input and `Manager.Input` result; (e) PTY output sequence; (f) native decode and WebView output injection. Pair that trace with Android logcat/WebView console and the two screenshots above. This is instrumentation design only; no new telemetry is authorized in this tranche.
+
+### Narrow regression-test candidates
+
+1. Extend `client/src/lib/daemon-channel.test.ts`: a `pty.input` marker during an intentional reconnect is either queued and delivered under an explicitly chosen contract or surfaced as a deterministic input-unavailable error—never silently ambiguous.
+2. Add a focused `Terminal` bridge test with a WebView message fixture for input, resize, paste, malformed input, and output reinjection; no Android emulator is required.
+3. Extend the server PTY WebSocket tests around `TestPTYExecutesRealCommandAndSeedsNewSubscriber` to assert marker input reaches a real PTY and its output returns after auth, plus an error-contract test for `Manager.Input` failure.
+4. Keep an Android device smoke route, not a golden flow: execute the deterministic marker through IME and paste after the above boundaries are observable.
+
+### Required runtime evidence
+
+For each marker attempt retain the nonce, terminal session ID, socket open/close/reconnect timeline, outbound input decision (sent/dropped), server input result, PTY output sequence and bytes digest, client sequence/decode decision, WebView injection result, and device screenshot/logcat. Missing evidence at any boundary means classify A02 only as an unresolved transport hypothesis, not a terminal implementation conclusion.
