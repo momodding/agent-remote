@@ -132,6 +132,14 @@ describe('AgenticRemoteAPI createDesktopSession', () => {
       headers: expect.objectContaining({ Authorization: 'Bearer session-token', 'X-AgenticRemote-Desktop-Attempt': 'desktop-attempt-1' }),
     }));
   });
+
+  it('omits the diagnostic header unless an attempt is explicitly supplied', async () => {
+    const fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'ticket', wsUrl: 'wss://daemon.example/rfb', expiresAt: '2026-10-01T00:00:00Z' }) } as Response);
+    Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
+    const { AgenticRemoteAPI } = loadModule();
+    await new AgenticRemoteAPI(connection).createDesktopSession();
+    expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('X-AgenticRemote-Desktop-Attempt');
+  });
 });
 
 

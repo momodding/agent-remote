@@ -1,3 +1,4 @@
+const mockKeyboardListeners = new Map<string, (event: { endCoordinates: { screenY: number } }) => void>();
 jest.mock('react-native', () => {
   const React = require('react');
   const element = (name: string) => ({ children, ...props }: { children?: React.ReactNode }) => React.createElement(name, props, children);
@@ -8,7 +9,7 @@ jest.mock('react-native', () => {
       const key = keyExtractor ? keyExtractor(item, index) : String(index);
       return React.isValidElement(el) ? React.cloneElement(el, { key }) : el;
     }) : ListEmptyComponent),
-    Keyboard: { addListener: () => ({ remove: jest.fn() }), dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
+    Keyboard: { addListener: (name: string, callback: (event: { endCoordinates: { screenY: number } }) => void) => { mockKeyboardListeners.set(name, callback); return { remove: jest.fn(() => mockKeyboardListeners.delete(name)) }; }, dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
     useColorScheme: () => 'dark',
     useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
@@ -113,6 +114,7 @@ beforeEach(() => {
   mockAgentHistory.mockResolvedValue({ cursor: 0, events: [] });
   mockDispatch.mockClear();
   mockCloseTab.mockClear();
+  mockKeyboardListeners.clear();
 });
 
 describe('AgentScreen capability gates', () => {
@@ -260,6 +262,24 @@ describe('AgentScreen capability gates', () => {
   });
 });
 
+describe('A06 – Android chat composer IME avoidance', () => {
+  it('adds the measured Android keyboard inset to the chat container and clears it when hidden', async () => {
+    const { Platform } = require('react-native');
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: 'android' });
+    try {
+      const tree = await renderScreen();
+      await act(async () => { mockKeyboardListeners.get('keyboardDidShow')?.({ endCoordinates: { screenY: 600 } }); });
+      expect(tree.root.findByType('KeyboardAvoidingView' as never).props.style).toEqual(expect.arrayContaining([{ paddingBottom: 244 }]));
+      await act(async () => { mockKeyboardListeners.get('keyboardDidHide')?.({ endCoordinates: { screenY: 844 } }); });
+      expect(tree.root.findByType('KeyboardAvoidingView' as never).props.style).not.toEqual(expect.arrayContaining([{ paddingBottom: expect.any(Number) }]));
+      act(() => tree.unmount());
+    } finally {
+      Object.defineProperty(Platform, 'OS', { value: originalOS });
+    }
+  });
+});
+
 describe('A05 – durable activity event rendering', () => {
   it('renders activity.turn.started as distinct activity row, not user/assistant bubble', async () => {
     mockAgentHistory.mockResolvedValue({
@@ -280,6 +300,19 @@ describe('A05 – durable activity event rendering', () => {
       mockHandleEvent?.({ type: 'activity.tool.started', eventId: 'act-2', agentId: 'agent-1', toolName: 'bash' });
     });
     expect(tree.root.findAll((node) => node.props?.children === 'Running bash').length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+  });
+
+  it.each([
+    ['activity.tool.completed', { toolName: 'bash' }, 'bash completed'],
+    ['activity.tool.failed', { toolName: 'bash' }, 'bash failed'],
+    ['activity.approval.requested', {}, 'Approval requested'],
+    ['activity.approval.resolved', {}, 'Approval resolved'],
+  ])('renders %s as a labelled activity row', async (type, detail, label) => {
+    mockAgentHistory.mockResolvedValue({ cursor: 1, events: [{ eventId: `activity-${type}`, agentId: 'agent-1', type, ...detail, cursor: 1 } as AgentEvent] });
+    const tree = await renderScreen();
+    expect(tree.root.findAll((node) => node.props?.children === label).length).toBeGreaterThan(0);
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'User' })).toThrow();
     act(() => tree.unmount());
   });
 
