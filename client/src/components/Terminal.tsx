@@ -50,7 +50,13 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ on
 
   const onMessage = useCallback(
     async ({ nativeEvent }: WebViewMessageEvent) => {
-      const message = JSON.parse(nativeEvent.data) as TerminalMessage;
+      let message: TerminalMessage;
+      try {
+        message = JSON.parse(nativeEvent.data) as TerminalMessage;
+      } catch (err) {
+        console.warn('Terminal: discarding malformed WebView message', err);
+        return;
+      }
       if (message.type === 'input') onInput(message.data);
       if (message.type === 'resize') onResize(message.cols, message.rows);
       if (message.type === 'copy') await Clipboard.setStringAsync(message.data);
