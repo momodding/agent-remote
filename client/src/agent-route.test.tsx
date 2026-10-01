@@ -3,6 +3,7 @@ jest.mock('react-native', () => {
   const React = require('react');
   const element = (name: string) => ({ children, ...props }: { children?: React.ReactNode }) => React.createElement(name, props, children);
   const View = element('View');
+  const dimensionsState = { current: { width: 390, height: 844, scale: 1, fontScale: 1 } };
   return {
     ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, data, renderItem, keyExtractor, ...props }: { ListEmptyComponent?: React.ReactNode; data?: unknown[]; renderItem?: (info: { item: unknown; index: number }) => React.ReactNode; keyExtractor?: (item: unknown, index: number) => string }) => React.createElement('FlatList', props, data && renderItem ? data.map((item, index) => {
       const el = renderItem({ item, index });
@@ -12,7 +13,8 @@ jest.mock('react-native', () => {
     Keyboard: { addListener: (name: string, callback: (event: { endCoordinates: { screenY: number } }) => void) => { mockKeyboardListeners.set(name, callback); return { remove: jest.fn(() => mockKeyboardListeners.delete(name)) }; }, dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Modal: ({ visible, children, ...props }: { visible?: boolean; children?: React.ReactNode }) => (visible ? React.createElement('Modal', props, children) : null), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
     useColorScheme: () => 'dark',
-    useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
+    useWindowDimensions: () => dimensionsState.current,
+    __setWindowDimensions: (next: { width: number; height: number; scale?: number; fontScale?: number }) => { dimensionsState.current = { scale: 1, fontScale: 1, ...next }; },
   };
 });
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'generated-tab' }));
@@ -117,6 +119,8 @@ beforeEach(() => {
   mockCloseTab.mockClear();
   mockKeyboardListeners.clear();
   mockPTYHandler = undefined;
+  mockTab.state = 'working';
+  require('react-native').__setWindowDimensions({ width: 390, height: 844 });
 });
 
 describe('AgentScreen capability gates', () => {
@@ -297,6 +301,29 @@ describe('Agent header overflow at narrow Android widths', () => {
     expect(tree.root.findByProps({ accessibilityLabel: 'Open Files' })).toBeTruthy();
     expect(tree.root.findByProps({ accessibilityLabel: 'Terminate Agent' })).toBeTruthy();
     expect(tree.root.findByProps({ accessibilityLabel: 'Close View' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
+
+  it.each<{ state: AgentWorkspaceTab['state']; capabilities: AgentCapability[]; menuAction: string }>([
+    { state: 'working', capabilities: [{ name: 'abort', enabled: true }], menuAction: 'Abort' },
+    { state: 'needsYou', capabilities: [], menuAction: 'Open Files' },
+    { state: 'idle', capabilities: [{ name: 'model', enabled: true }], menuAction: 'Model and Thinking' },
+  ])('keeps title/status usable and secondary actions in overflow at 320dp for $state', async ({ state, capabilities, menuAction }) => {
+    require('react-native').__setWindowDimensions({ width: 320, height: 640 });
+    mockTab.state = state;
+    mockCapabilities = capabilities;
+    const tree = await renderScreen();
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Agent title and status' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Back' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Chat View' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminal View' })).toBeTruthy();
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'Abort' })).toThrow();
+
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: 'More actions' }).props.onPress();
+    });
+    expect(tree.root.findByProps({ accessibilityLabel: menuAction })).toBeTruthy();
     act(() => tree.unmount());
   });
 });

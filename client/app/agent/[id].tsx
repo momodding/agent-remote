@@ -95,7 +95,7 @@ export default function AgentScreen() {
   const [loadingThinking, setLoadingThinking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const { height: windowHeight } = useWindowDimensions();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
   const modelThinkingSheetRef = useRef<ModelThinkingSheetHandle>(null);
@@ -409,6 +409,7 @@ export default function AgentScreen() {
   const abortEnabled = capabilities.some((c) => c.name === 'abort' && c.enabled);
   const modelEnabled = capabilities.some((c) => c.name === 'model' && c.enabled);
   const thinkingEnabled = capabilities.some((c) => c.name === 'thinking' && c.enabled);
+  const compactHeader = windowWidth <= 360;
 
   const handleSelectModel = useCallback(
     async (modelId: string) => {
@@ -623,19 +624,19 @@ export default function AgentScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, compactHeader && styles.headerCompact]}>
         <Pressable accessibilityLabel="Back" style={styles.headerIcon} onPress={() => router.replace('/')}>
           <Feather name="arrow-left" size={20} color="#F0F0F0" />
         </Pressable>
-        <View style={styles.headerTitleContainer}>
-          <View style={styles.headerTitleRow}>
-            <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
-            <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
-            <Text style={[styles.statusText, { color: stateColor }]}>{tab?.state || 'idle'}</Text>
+        {!compactHeader && (
+          <View style={styles.headerTitleContainer}>
+            <View style={styles.headerTitleRow}>
+              <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
+              <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
+              <Text style={[styles.statusText, { color: stateColor }]}>{tab?.state || 'idle'}</Text>
+            </View>
           </View>
-        </View>
-
-        {/* View switcher: Chat / Terminal */}
+        )}
         <View style={styles.viewSwitcher}>
           <Pressable
             accessibilityLabel="Chat View"
@@ -652,7 +653,7 @@ export default function AgentScreen() {
             <Feather name="terminal" size={16} color={viewMode === 'terminal' ? '#0A0A0A' : '#A0A0A0'} />
           </Pressable>
         </View>
-        {abortEnabled && (
+        {!compactHeader && abortEnabled && (
           <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
             <Feather name="slash" size={18} color="#EF4444" />
           </Pressable>
@@ -660,6 +661,15 @@ export default function AgentScreen() {
         <Pressable accessibilityLabel="More actions" style={styles.headerIcon} onPress={() => setMenuOpen(true)}>
           <Feather name="more-vertical" size={18} color="#F0F0F0" />
         </Pressable>
+        {compactHeader && (
+          <View accessibilityLabel="Agent title and status" style={styles.compactHeaderTitleContainer}>
+            <View style={styles.headerTitleRow}>
+              <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
+              <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
+              <Text style={[styles.statusText, { color: stateColor }]}>{tab?.state || 'idle'}</Text>
+            </View>
+          </View>
+        )}
       </View>
 
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
@@ -673,6 +683,16 @@ export default function AgentScreen() {
               <Feather name="columns" size={18} color="#D19A2C" />
               <Text style={styles.menuItemText}>Switch pane</Text>
             </Pressable>
+            {compactHeader && abortEnabled && (
+              <Pressable
+                accessibilityLabel="Abort"
+                style={styles.menuItem}
+                onPress={() => { setMenuOpen(false); void abortAgent(); }}
+              >
+                <Feather name="slash" size={18} color="#EF4444" />
+                <Text style={styles.menuItemText}>Abort</Text>
+              </Pressable>
+            )}
             {(modelEnabled || thinkingEnabled || Boolean(currentModel)) && (
               <Pressable
                 accessibilityLabel="Model and Thinking"
@@ -835,6 +855,8 @@ export default function AgentScreen() {
 }
 
 const styles = StyleSheet.create({
+  headerCompact: { flexWrap: 'wrap', paddingVertical: 4 },
+  compactHeaderTitleContainer: { flexBasis: '100%', justifyContent: 'center', minHeight: 24 },
   screen: { flex: 1, backgroundColor: '#0A0A0A' },
   header: {
     minHeight: 56,
@@ -855,7 +877,7 @@ const styles = StyleSheet.create({
   },
   headerTitleContainer: { flex: 1, justifyContent: 'center' },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  title: { color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
+  title: { flexShrink: 1, color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontSize: 12, fontWeight: '600', textTransform: 'capitalize' },
   viewSwitcher: {

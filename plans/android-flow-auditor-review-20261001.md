@@ -82,3 +82,56 @@ The remediation ledger accurately distinguishes source/targeted-test coverage fr
 2. Unblock rootful Android execution/storage prerequisites.
 3. Run the device Golden Flow and the runtime matrix above, including narrow phone, font scale, IME, portrait/landscape where supported, and sanitized noVNC diagnostics.
 4. Re-audit the installed APK; do not promote source-only or web-focused tests to Android runtime evidence.
+
+---
+
+## Post-fix source re-review — 2026-10-02
+
+**Audited revision:** `71394079c29b29437c4888c926568195da84c721` (includes the mobile P1 remediation at `4575446` and later A01/A02/A08 remediation through `7139407`). This is a focused source-and-targeted-test re-review only. No Android runtime gate, emulator, or physical device was run.
+
+### Post-fix disposition
+
+**NO-GO for Android release remains.** P1-02 and P1-03 are resolved at the source level. P1-01 and P1-04 are only partially remediated: their headline 48 dp/action-density fixes landed, but their compact-width and gesture-separation acceptance conditions do not hold by construction. A01–A10 retain source-level regression coverage, not Android acceptance evidence.
+
+| Prior finding | Post-fix source result | Evidence |
+|---|---|---|
+| P1-01 — narrow Agent header | **Still P1 (partial fix)** | Secondary actions moved into a 48 dp minimum overflow menu, but a working/abort-enabled header still has 24 dp horizontal padding; Back 48; switcher about 102 (two 48 dp buttons plus its padding/border); Abort 48; More actions 48; and four 8 dp gaps. Those fixed elements consume about **302 dp before the title/status**. Thus at 320 dp the title/status region has only about 18 dp, too little even for the status dot/text; at 360 dp it has only about 58 dp before any title text. `headerTitleContainer: { flex: 1 }` does not reserve a viable title/status width. The focused test only proves the menu composition, not 320/360 dp working/abort-enabled layout. |
+| P1-02 — Desktop/noVNC recovery | **Resolved in source** | Pre-WebView recovery now presents bounded status, Back, and Retry; Retry changes `retryNonce` and the effect mints a fresh UUID/ticket attempt. In-WebView disconnect/security/load failure states render bounded recovery with Retry. The native message handler continues to ignore structured diagnostic payloads, preserving the secret-redaction boundary while surfacing status text. |
+| P1-03 — Desktop controls | **Resolved in source** | Back, Retry, and each dock key declare a 48 dp minimum; the dock has a 10 dp gap. |
+| P1-04 — MultiTerminal target/gesture space | **Still P1 (partial fix)** | Select/minimize/close controls now declare 48 dp minimums, but minimize and close are immediately adjacent (`tabClose` controls have no gap) and each has `hitSlop={8}`. Their enlarged hit rectangles overlap by 16 dp, so the required 8 dp separation is not present and close/minimize disambiguation remains source-unproven. Also, a 48 + 48 control pair plus the 88 dp select minimum totals 184 dp inside a `maxWidth: 180` tab. |
+
+### Required verification performed
+
+- **Narrow Agent header:** Reviewed `client/app/agent/[id].tsx` fixed-width arithmetic and the focused header-overflow test. The overflow relocation is valid, but the abort-enabled compact header remains non-viable as described above.
+- **Desktop recovery/actions and targets:** Reviewed `client/app/desktop.tsx` and focused tests. Source supports sanitized Back/Retry recovery and 48 dp targets with 10 dp dock separation.
+- **MultiTerminal target/gesture space:** Reviewed `client/src/components/MultiTerminal.tsx` and its focused test. The minimum target assertion passes, but adjacent enlarged hit areas overlap and the tab width contract is internally inconsistent.
+- **A01–A10 regressions:** Reviewed the ledger's focused coverage map and source boundaries including lifecycle surfaces, terminal error/inactivation, allowlisted Agent Chat rendering, IME/sheet policies, noVNC attempt-ID/redaction handling, and WSS-only ticket remediation. No deterministic source regression beyond the two remaining P1 usability findings was found.
+
+### Targeted source verification
+
+Passed at this revision (source/component tests only):
+
+```text
+bun --cwd client test --runInBand src/agent-route.test.tsx src/desktop-route.test.tsx src/components/MultiTerminal.test.tsx src/lib/session-surface.test.ts src/terminal-route.test.tsx
+
+5 passed suites, 59 passed tests
+```
+
+This result does not establish Android rendering, touch dispatch, long-press drag arbitration, IME, lifecycle, WebView RFB, or device accessibility behavior.
+
+### Remaining release requirements
+
+1. Rework the abort-enabled Agent header so its title/status has a defined usable width at 320/360 dp; move Abort into overflow or use an Android-validated compact pattern. Add focused coverage for working/needs-you/model states without treating it as device-layout proof.
+2. Separate MultiTerminal minimize and close hit areas by at least 8 dp without overlapping `hitSlop`, and reconcile the tab's 180 dp maximum with its 184 dp child minimums. Device-check tap vs. long-press behavior in portrait and landscape.
+3. Keep the Android Golden Flow blocked/unverified until the documented rootful topology/storage prerequisites are actually satisfied, then run the runtime matrix in the preceding blocker section against the installed APK. Do not treat the focused source suite as a substitute for that evidence.
+
+## Final layout P1 correction — 2026-10-02
+
+**Disposition:** P1-01 and P1-04 are resolved at the source level by `omp(android-runtime-ux-remediation): Resolve final flow-audit layout P1s`. This does not change the Android release disposition: the documented Android Golden Flow/storage and runtime-evidence blockers remain unresolved.
+
+| Finding | Final source correction | Regression evidence |
+|---|---|---|
+| P1-01 — narrow Agent header | At widths ≤360dp, the header wraps into a primary control row (Back, Chat/Terminal, More actions) plus a full-width title/status row. Abort is no longer inline at compact width; it is an accessible overflow action with model/pane/files/terminate/close. | `agent-route.test.tsx` renders 320dp working/abort-enabled, needsYou, and model-enabled states; it verifies title/status, Back and Chat/Terminal primary controls, hidden inline Abort, and the relevant overflow action. |
+| P1-04 — MultiTerminal target/gesture space | Active minimize and close actions have separate 48dp boxes in an 8dp-gap group with no `hitSlop`. The tab maximum is 200dp, sufficient for its 192dp minimum child row. | `MultiTerminal.test.tsx` verifies 48dp action floors, absent `hitSlop`, the 8dp group gap, and the 200dp parent maximum. |
+
+Focused source/component coverage is not Android device evidence. Do not run or report the Android Golden Flow until its existing environment/storage blocker is resolved.

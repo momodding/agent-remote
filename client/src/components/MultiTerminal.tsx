@@ -153,12 +153,17 @@ function DraggableTab({
     <Pressable onPress={onSelect} accessibilityLabel={active ? `Show ${session.name}` : `Restore ${session.name}`} style={styles.tabSelect}>
       <Text style={[styles.tabName, active && styles.tabNameActive]} numberOfLines={1}>{session.name}</Text>
     </Pressable>
-    {active && <Pressable onPress={onMinimize} accessibilityLabel={`Minimize ${session.name}`} hitSlop={8} style={styles.tabClose}>
-      <Feather name="minus" size={14} color="#B8B8B8" />
-    </Pressable>}
-    <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} hitSlop={8} style={styles.tabClose}>
+    {active && <View testID={`tab-actions-${session.sessionId}`} style={styles.tabActions}>
+      <Pressable onPress={onMinimize} accessibilityLabel={`Minimize ${session.name}`} style={styles.tabClose}>
+        <Feather name="minus" size={14} color="#B8B8B8" />
+      </Pressable>
+      <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} style={styles.tabClose}>
+        <Feather name="x" size={14} color="#B8B8B8" />
+      </Pressable>
+    </View>}
+    {!active && <Pressable onPress={onClose} accessibilityLabel={`Close ${session.name}`} style={styles.tabClose}>
       <Feather name="x" size={14} color="#B8B8B8" />
-    </Pressable>
+    </Pressable>}
   </Draggable>;
 }
 
@@ -269,11 +274,12 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   tabs: { maxHeight: 64, borderBottomWidth: 1, borderColor: '#262626', backgroundColor: '#181818' },
   tabsContent: { paddingHorizontal: 8, alignItems: 'center', gap: 8 },
-  tab: { minHeight: 48, maxWidth: 180, flexDirection: 'row', alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#0A0A0A', overflow: 'hidden' },
+  tab: { minHeight: 48, maxWidth: 200, flexDirection: 'row', alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#0A0A0A', overflow: 'hidden' },
   tabActive: { borderColor: '#46B8C4', backgroundColor: '#264E54' },
   tabSelect: { minWidth: 88, minHeight: 48, flex: 1, justifyContent: 'center', paddingLeft: 12, overflow: 'hidden' },
   tabName: { color: '#B8B8B8', fontSize: 13, fontWeight: '700' },
   tabNameActive: { color: '#F0F0F0' },
+  tabActions: { flexDirection: 'row', gap: 8 },
   tabClose: { width: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   terminalRegion: { flex: 1, gap: 1, backgroundColor: '#262626' },
   webGrid: { flexDirection: 'row', flexWrap: 'wrap' },

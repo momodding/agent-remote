@@ -406,6 +406,8 @@ Source: `plans/android-flow-auditor-review-20261001.md` (4 P1 findings).
 
 **Tests:** `client/src/agent-route.test.tsx` `describe('Agent header overflow at narrow Android widths')` — asserts Back/Chat View/Terminal View/More actions buttons are present inline; asserts secondary action labels throw (hidden) before menu open; presses More actions; asserts Switch pane/Open Files/Terminate Agent/Close View are now findable. `opens Files tab` test updated to open overflow menu before pressing Open Files.
 
+**Final layout correction (2026-10-02):** at widths ≤360dp, the header is a real wrapped compact layout: Back, the Chat/Terminal control, and More actions remain on the control row; title and status get their own full-width row. Abort moves into the overflow menu at compact width alongside model/pane/files/terminate/close actions. `agent-route.test.tsx` now renders a 320dp width for working (abort-enabled), needsYou, and model-enabled states and verifies the title/status row, retained primary controls, and reachable overflow action. This is source/test evidence only; the Android Golden Flow blocker remains unchanged.
+
 ### P1-02/03 — Desktop/noVNC native terminal error recovery + ≥48dp touch targets
 
 **Finding:** Desktop error state shows raw status text with no recovery path or bounded diagnostics; Back and remote-key buttons below 48dp minimum.
@@ -426,6 +428,8 @@ Source: `plans/android-flow-auditor-review-20261001.md` (4 P1 findings).
 **Fix:** `client/src/components/MultiTerminal.tsx` — `tabs` container `maxHeight: 64`; `tab` row `minHeight: 48`; `tabSelect` `minWidth: 88, minHeight: 48`; `tabClose` `48×48`.
 
 **Tests:** `client/src/components/MultiTerminal.test.tsx` `'keeps tab select, minimize, and close controls at the Android 48dp floor'`.
+
+**Final layout correction (2026-10-02):** active minimize/close controls are grouped with an 8dp gap and no `hitSlop`, so their 48dp touch boxes cannot overlap. The tab maximum is 200dp, accommodating `88 + 48 + 8 + 48 = 192dp` minimum children without overflow. The MultiTerminal regression verifies the 48dp floors, absent `hitSlop`, 8dp action gap, and 200dp parent maximum. This is source/test evidence only; physical Android gesture validation remains blocked with the broader runtime matrix.
 
 ### Post-remediation gate results
 

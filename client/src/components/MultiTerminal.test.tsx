@@ -198,10 +198,18 @@ describe('MultiTerminal', () => {
     expect(onClose).toHaveBeenCalledWith('s1');
   });
 
-  it('keeps tab select, minimize, and close controls at the Android 48dp floor', () => {
+  it('keeps tab select, minimize, and close controls at the Android 48dp floor without overlapping hit areas', () => {
     const tree = render({ s1: session('s1') });
-    expect(tree.root.findByProps({ accessibilityLabel: 'Show Shell s1' }).props.style).toMatchObject({ minHeight: 48 });
-    expect(tree.root.findByProps({ accessibilityLabel: 'Minimize Shell s1' }).props.style).toMatchObject({ width: 48, minHeight: 48 });
-    expect(tree.root.findByProps({ accessibilityLabel: 'Close Shell s1' }).props.style).toMatchObject({ width: 48, minHeight: 48 });
+    const select = tree.root.findByProps({ accessibilityLabel: 'Show Shell s1' });
+    const minimize = tree.root.findByProps({ accessibilityLabel: 'Minimize Shell s1' });
+    const close = tree.root.findByProps({ accessibilityLabel: 'Close Shell s1' });
+
+    expect(select.props.style).toMatchObject({ minWidth: 88, minHeight: 48 });
+    expect(minimize.props.style).toMatchObject({ width: 48, minHeight: 48 });
+    expect(close.props.style).toMatchObject({ width: 48, minHeight: 48 });
+    expect(minimize.props.hitSlop).toBeUndefined();
+    expect(close.props.hitSlop).toBeUndefined();
+    expect(tree.root.findByProps({ testID: 'tab-actions-s1' }).props.style).toMatchObject({ flexDirection: 'row', gap: 8 });
+    expect(tree.root.findByProps({ testID: 'tab-s1' }).props.style[0]).toMatchObject({ maxWidth: 200 });
   });
 });
