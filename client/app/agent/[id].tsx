@@ -83,6 +83,8 @@ export default function AgentScreen() {
   const [capabilities, setCapabilities] = useState<AgentCapability[]>([]);
   const [terminalOutput, setTerminalOutput] = useState('');
   const [agentCwd, setAgentCwd] = useState<string>(tab?.cwd ?? '');
+  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [terminalInactive, setTerminalInactive] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [currentModel, setCurrentModel] = useState<AgentModelInfo | undefined>();
   const [currentThinking, setCurrentThinking] = useState<string | undefined>();
@@ -281,6 +283,8 @@ export default function AgentScreen() {
     if (!tab || !connection || !daemonChannelRef.current) return;
     const daemon = daemonChannelRef.current;
     setTerminalOutput('');
+    setTerminalError(null);
+    setTerminalInactive(false);
     let decoder = new TextDecoder();
     let lastSeq = -1;
     ptyUnsubRef.current = daemon.subscribe(tab.terminalSessionId, (msg) => {
@@ -292,13 +296,29 @@ export default function AgentScreen() {
         lastSeq = msg.seq;
         const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
         if (chunk) setTerminalOutput((prev) => prev + chunk);
+      } else if (msg.type === 'session.state' && msg.state === 'exited') {
+        setTerminalError('Terminal session ended');
+        setTerminalInactive(true);
+        setCapabilities([]);
+        dispatch((previous) => updateTab(previous, tab.tabId, { state: 'exited' }));
+        ptyUnsubRef.current?.();
+      } else if (msg.type === 'error') {
+        if (msg.code === 'session_not_found') {
+          setTerminalError('Terminal session ended');
+          setTerminalInactive(true);
+          setCapabilities([]);
+          dispatch((previous) => updateTab(previous, tab.tabId, { state: 'exited' }));
+          ptyUnsubRef.current?.();
+        } else {
+          setTerminalError(msg.message);
+        }
       }
     });
 
     return () => {
       ptyUnsubRef.current?.();
     };
-  }, [tab?.terminalSessionId, connection]);
+  }, [tab?.terminalSessionId, tab?.tabId, connection, dispatch]);
 
   // Keyboard inset handling for mobile
   useEffect(() => {
@@ -735,19 +755,20 @@ export default function AgentScreen() {
         </KeyboardAvoidingView>
       ) : (
         <View style={styles.terminalContainer}>
+          {terminalError && <View style={styles.terminalError} accessibilityLabel="Terminal transport error"><Text style={styles.terminalErrorText}>{terminalError}</Text></View>}
           {connection && tab ? (
             <Terminal
               ref={terminalRef}
               output={terminalOutput}
-              onInput={(data) => shortcutKeyboardRef.current?.input(data)}
+              onInput={(data) => !terminalInactive && shortcutKeyboardRef.current?.input(data)}
               onResize={(cols, rows) =>
-                tab && daemonChannelRef.current?.send({ channelId: tab.terminalSessionId, kind: 'terminal', type: 'pty.resize', cols, rows })
+                !terminalInactive && tab && daemonChannelRef.current?.send({ channelId: tab.terminalSessionId, kind: 'terminal', type: 'pty.resize', cols, rows })
               }
             />
           ) : (
             <Text style={styles.connectingText}>Connecting…</Text>
           )}
-          <ShortcutKeyboard
+          {!terminalInactive && <ShortcutKeyboard
             ref={shortcutKeyboardRef}
             onInput={(data) =>
               tab && daemonChannelRef.current?.send({ channelId: tab.terminalSessionId, kind: 'terminal', type: 'pty.input', data: base64(utf8(data)) })
@@ -759,7 +780,7 @@ export default function AgentScreen() {
             onSelectAll={() => terminalRef.current?.selectAll()}
             onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }}
             onCollapse={() => terminalRef.current?.focus()}
-          />
+          />}
         </View>
       )}
       <TmuxPaneSheet ref={paneSheetRef} panes={panes} currentPaneId={tab?.tmuxPaneId} onSelect={selectPane} />
@@ -916,6 +937,8 @@ const styles = StyleSheet.create({
   terminalFallback: { flexDirection: 'row', minHeight: 48, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
   terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
   terminalContainer: { flex: 1 },
+  terminalError: { margin: 12, padding: 12, borderRadius: 6, backgroundColor: '#3A1515', borderWidth: 1, borderColor: '#DC2626' },
+  terminalErrorText: { color: '#FECACA', fontSize: 14 },
   connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
   needsYouBanner: {
     backgroundColor: '#2A1F05',

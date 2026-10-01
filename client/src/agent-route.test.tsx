@@ -9,7 +9,7 @@ jest.mock('react-native', () => {
       const key = keyExtractor ? keyExtractor(item, index) : String(index);
       return React.isValidElement(el) ? React.cloneElement(el, { key }) : el;
     }) : ListEmptyComponent),
-    Keyboard: { addListener: (name: string, callback: (event: { endCoordinates: { screenY: number } }) => void) => { mockKeyboardListeners.set(name, callback); return { remove: jest.fn(() => mockKeyboardListeners.delete(name)) }; }, dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
+    Keyboard: { addListener: (name: string, callback: (event: { endCoordinates: { screenY: number } }) => void) => { mockKeyboardListeners.set(name, callback); return { remove: jest.fn(() => mockKeyboardListeners.delete(name)) }; }, dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Modal: ({ visible, children, ...props }: { visible?: boolean; children?: React.ReactNode }) => (visible ? React.createElement('Modal', props, children) : null), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
     useColorScheme: () => 'dark',
     useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
@@ -70,8 +70,9 @@ jest.mock('./lib/api', () => ({
   })),
   APIError: class APIError extends Error {},
 }));
+let mockPTYHandler: ((message: { type: string; state?: string; code?: string; message?: string }) => void) | undefined;
 jest.mock('./lib/daemon-channel', () => ({
-  createDaemonChannel: jest.fn(() => ({ subscribe: jest.fn(() => jest.fn()), send: jest.fn(), closeChannel: jest.fn() })),
+  createDaemonChannel: jest.fn(() => ({ subscribe: jest.fn((_channel: string, handler: typeof mockPTYHandler) => { mockPTYHandler = handler; return jest.fn(); }), send: jest.fn(), closeChannel: jest.fn() })),
 }));
 let mockHandleEvent: ((event: AgentEvent) => void) | undefined;
 let mockHandleCursorExpired: (() => Promise<number>) | undefined;
@@ -115,6 +116,7 @@ beforeEach(() => {
   mockDispatch.mockClear();
   mockCloseTab.mockClear();
   mockKeyboardListeners.clear();
+  mockPTYHandler = undefined;
 });
 
 describe('AgentScreen capability gates', () => {
@@ -178,7 +180,7 @@ describe('AgentScreen capability gates', () => {
     mockAgentHistory
       .mockRejectedValueOnce(new Error('transient history failure'))
       .mockResolvedValueOnce({
-        cursor: 12,
+        cursor: 13,
         events: [
           {
             eventId: 'evt-rec-1',
@@ -187,6 +189,13 @@ describe('AgentScreen capability gates', () => {
             text: 'Resynced after transient error',
             state: 'idle',
             cursor: 12,
+          },
+          {
+            eventId: 'evt-rec-activity',
+            agentId: 'agent-1',
+            type: 'activity.tool.completed',
+            toolName: 'bash',
+            cursor: 13,
           },
         ],
       });
@@ -202,12 +211,13 @@ describe('AgentScreen capability gates', () => {
     });
 
     const cursor = await cursorPromise!;
-    expect(cursor).toBe(12);
+    expect(cursor).toBe(13);
     expect(mockAgentHistory).toHaveBeenCalledTimes(3);
 
     expect(
       tree.root.findAll((node) => node.props?.children === 'Resynced after transient error').length,
     ).toBeGreaterThan(0);
+    expect(tree.root.findAll((node) => node.props?.children === 'bash completed').length).toBeGreaterThan(0);
     expect(mockDispatch).toHaveBeenCalledWith(expect.any(Function));
 
     act(() => tree.unmount());
@@ -236,6 +246,10 @@ describe('AgentScreen capability gates', () => {
     mockTab.cwd = 'src/components';
     const tree = await renderScreen();
 
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: 'More actions' }).props.onPress();
+    });
+
     const openFilesBtn = tree.root.findByProps({ accessibilityLabel: 'Open Files' });
     expect(openFilesBtn).toBeTruthy();
 
@@ -259,6 +273,49 @@ describe('AgentScreen capability gates', () => {
       params: { id: 'generated-tab' },
     });
     act(() => tree.unmount());
+  });
+});
+
+describe('Agent header overflow at narrow Android widths', () => {
+  it('keeps only Back, status, view switcher, and a single overflow trigger inline, moving secondary actions behind the menu', async () => {
+    const tree = await renderScreen();
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Back' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Chat View' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminal View' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'More actions' })).toBeTruthy();
+
+    for (const label of ['Switch pane', 'Model and Thinking', 'Open Files', 'Terminate Agent', 'Close View']) {
+      expect(() => tree.root.findByProps({ accessibilityLabel: label })).toThrow();
+    }
+
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: 'More actions' }).props.onPress();
+    });
+
+    expect(tree.root.findByProps({ accessibilityLabel: 'Switch pane' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Open Files' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminate Agent' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Close View' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
+});
+
+describe('embedded Agent terminal transport errors', () => {
+  it('shows transport errors and inactivates an exited terminal session', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: 'Terminal View' }).props.onPress();
+      mockPTYHandler?.({ type: 'error', code: 'session_not_running', message: 'Terminal is no longer running' });
+    });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminal transport error' }).findByType('Text' as never).props.children).toBe('Terminal is no longer running');
+
+    await act(async () => {
+      mockPTYHandler?.({ type: 'session.state', state: 'exited' });
+    });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Terminal transport error' }).findByType('Text' as never).props.children).toBe('Terminal session ended');
+    expect(mockDispatch).toHaveBeenCalledWith(expect.any(Function));
+    expect(() => tree.root.findByType(require('./components/ShortcutKeyboard').ShortcutKeyboard)).toThrow();
   });
 });
 
