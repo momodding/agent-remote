@@ -1497,22 +1497,32 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 }
 
 func desktopDiagnosticAttempt(value string) string {
-	if len(value) == 0 || len(value) > 64 {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' || value[14] < '1' || value[14] > '8' || !isUUIDVariant(value[19]) {
 		return ""
 	}
-	for _, char := range value {
-		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_') {
+	for index := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !isHex(value[index]) {
 			return ""
 		}
 	}
 	return value
 }
 
+func isHex(char byte) bool {
+	return char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F'
+}
+func isUUIDVariant(char byte) bool {
+	return char == '8' || char == '9' || char == 'a' || char == 'b' || char == 'A' || char == 'B'
+}
+
 func desktopDiagnostic(attemptID, stage string, details ...any) {
 	if attemptID == "" {
 		return
 	}
-	log.Printf("[desktop diagnostic] attempt=%s stage=%s %v", attemptID, stage, details)
+	log.Printf("[desktop diagnostic] attempt=%q stage=%s %v", attemptID, stage, details)
 }
 
 func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {

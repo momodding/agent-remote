@@ -1387,6 +1387,30 @@ func TestHandleRFBProxyReusedTicket(t *testing.T) {
 	}
 }
 
+func TestDesktopDiagnosticAttemptAcceptsOnlyCanonicalUUIDs(t *testing.T) {
+	for _, valid := range []string{"550e8400-e29b-41d4-a716-446655440000", "550E8400-E29B-41D4-A716-446655440000"} {
+		if got := desktopDiagnosticAttempt(valid); got != valid {
+			t.Fatalf("valid UUID = %q", got)
+		}
+	}
+	for _, invalid := range []string{
+		"attempt=forged stage=closed", "550e8400--29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-44665544000_",
+		"550e8400-e29b-01d4-a716-446655440000", "550e8400-e29b-41d4-c716-446655440000", strings.Repeat("a", 64),
+	} {
+		if got := desktopDiagnosticAttempt(invalid); got != "" {
+			t.Fatalf("invalid attempt %q accepted as %q", invalid, got)
+		}
+	}
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previousWriter)
+	desktopDiagnostic(desktopDiagnosticAttempt("attempt=forged stage=closed"), "ticket_issued")
+	if output.Len() != 0 {
+		t.Fatalf("invalid attempt emitted a diagnostic: %s", output.String())
+	}
+}
+
 func TestHandleRFBProxyBytesFlow(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	token := testBearerToken(t, srv, pairings)
@@ -1428,7 +1452,7 @@ func TestHandleRFBProxyBytesFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-AgenticRemote-Desktop-Attempt", "desktop-attempt-42")
+	req.Header.Set("X-AgenticRemote-Desktop-Attempt", "550e8400-e29b-41d4-a716-446655440000")
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1464,7 +1488,7 @@ func TestHandleRFBProxyBytesFlow(t *testing.T) {
 	}
 	output := diagnostics.String()
 	for _, stage := range []string{"ticket_issued", "ticket_validated", "vnc_dialed", "websocket_upgraded", "ticket_consumed"} {
-		if !strings.Contains(output, "attempt=desktop-attempt-42 stage="+stage) {
+		if !strings.Contains(output, "attempt=\"550e8400-e29b-41d4-a716-446655440000\" stage="+stage) {
 			t.Fatalf("missing diagnostic stage %q: %s", stage, output)
 		}
 	}
