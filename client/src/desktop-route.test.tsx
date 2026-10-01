@@ -191,6 +191,8 @@ describe('web (iframe) desktop', () => {
     expect(html).not.toContain('BridgeWebSocket');
     expect(html).toContain('new window.RFB(screen, "wss://daemon.test:8765/v1/ws/rfb?ticket=test-ticket-123")');
     expect(html).toContain('Creating RFB…');
+    expect(AgenticRemoteAPI.prototype.createDesktopSession).toHaveBeenCalledWith('generated-tab');
+    expect(html).toContain('type: \'diagnostic\', attemptID: "generated-tab", stage');
   });
 
   it('renders shortcut dock parity and posts key messages into the iframe window', async () => {

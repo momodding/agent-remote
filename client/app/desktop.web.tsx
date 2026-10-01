@@ -1,5 +1,6 @@
 // ponytail: web path uses the same generated noVNC bundle as native.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as Crypto from 'expo-crypto';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,7 +11,7 @@ import { AgenticRemoteAPI } from '../src/lib/api';
 import type { DesktopWorkspaceTab } from '../src/lib/tabs/types';
 import noVNCScript from '../src/generated/novnc_script';
 
-function buildDesktopHTML(wsUrl: string): string {
+function buildDesktopHTML(wsUrl: string, attemptID: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -23,12 +24,13 @@ html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;back
 <script>
 const screen = document.getElementById('screen');
 const status = document.getElementById('status');
-const report = (message) => {
+const report = (message, stage) => {
   status.textContent = message;
   window.parent.postMessage({ type: 'status', message }, '*');
+  window.parent.postMessage({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage }, '*');
 };
-window.addEventListener('error', () => report('Desktop view failed'));
-window.addEventListener('unhandledrejection', () => report('Desktop view failed'));
+window.addEventListener('error', () => report('Desktop view failed', 'window_error'));
+window.addEventListener('unhandledrejection', () => report('Desktop view failed', 'unhandled_rejection'));
 
 window.addEventListener('message', (event) => {
   if (event.data?.type === 'key') window.rfb?.sendKey(event.data.keysym, event.data.name);
@@ -37,16 +39,16 @@ window.addEventListener('message', (event) => {
 });
 
 try {
-  report('Creating RFB…');
+  report('Creating RFB…', 'rfb_creating');
   const rfb = window.rfb = new window.RFB(screen, ${JSON.stringify(wsUrl)});
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
-  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
-  window.parent.postMessage({ type: 'status', message: 'RFB initialized' }, '*');
-} catch (err) {
-  report('Could not load noVNC client');
+  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
+  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly', 'rfb_disconnected'));
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed', 'rfb_security_failure'));
+  window.parent.postMessage({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage: 'rfb_initialized' }, '*');
+} catch {
+  report('Could not load noVNC client', 'rfb_load_failed');
 }
 </script></body></html>`;
 }
@@ -59,6 +61,7 @@ export default function DesktopScreenWeb() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const attemptID = useRef(Crypto.randomUUID()).current;
 
   useEffect(() => {
     if (!tab) return;
@@ -69,7 +72,7 @@ export default function DesktopScreenWeb() {
       setConnection(conn);
       try {
         const api = new AgenticRemoteAPI(conn);
-        const session = await api.createDesktopSession();
+        const session = await api.createDesktopSession(attemptID);
         if (active) {
           setWsUrl(session.wsUrl);
         }
@@ -84,7 +87,7 @@ export default function DesktopScreenWeb() {
     };
   }, [tab?.tabId]);
 
-  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl) : ''), [wsUrl]);
+  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl, attemptID) : ''), [wsUrl, attemptID]);
 
   const send = (message: object) => iframeRef.current?.contentWindow?.postMessage(message, '*');
 
