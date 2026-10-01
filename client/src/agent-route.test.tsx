@@ -324,3 +324,36 @@ describe('A07 – tool payload expand/collapse', () => {
     act(() => tree.unmount());
   });
 });
+
+describe('A10 – internal content never reaches chat', () => {
+  it('rejects a message.system sentinel: internal/hook provenance must never render even under a hypothetical backend regression', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({ type: 'message.system', eventId: 'sentinel-1', agentId: 'agent-1', text: 'INTERNAL_SYSTEM_SENTINEL_DO_NOT_RENDER' } as unknown as AgentEvent);
+    });
+    expect(
+      tree.root.findAll((node) => typeof node.props?.children === 'string' && node.props.children.includes('INTERNAL_SYSTEM_SENTINEL_DO_NOT_RENDER')).length,
+    ).toBe(0);
+    act(() => tree.unmount());
+  });
+
+  it('rejects any unrecognized event type carrying text: the renderer is an allowlist, not a wildcard fallback', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({ type: 'custom_message', eventId: 'unknown-1', agentId: 'agent-1', text: 'unexpected internal payload' } as unknown as AgentEvent);
+    });
+    expect(
+      tree.root.findAll((node) => typeof node.props?.children === 'string' && node.props.children.includes('unexpected internal payload')).length,
+    ).toBe(0);
+    act(() => tree.unmount());
+  });
+
+  it('still renders an allowlisted message.fileMention as chat-visible content (positive control)', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({ type: 'message.fileMention', eventId: 'file-1', agentId: 'agent-1', text: 'README.md' } as unknown as AgentEvent);
+    });
+    expect(tree.root.findAll((node) => node.props?.children === 'README.md').length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+  });
+});

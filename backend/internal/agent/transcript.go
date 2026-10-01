@@ -226,26 +226,21 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if e.ID == "" {
 		return nil
 	}
+	// INTERNAL_ONLY: a top-level custom_message entry is always extension/hook
+	// provenance. It is never promoted to a chat-visible or activity-visible
+	// event type, regardless of its display flag.
 	if e.Type == "custom_message" {
-		isDisplayed := e.Display || (e.Message != nil && e.Message.Display)
-		if !isDisplayed {
-			return nil
-		}
-		text, _ := transcriptText(e.Content)
-		if text == "" && e.Message != nil {
-			text, _ = transcriptText(e.Message.Content)
-		}
-		if text == "" {
-			return nil
-		}
-		return []protocol.AgentEvent{{Type: "message.system", EventID: e.ID + ":message", AgentID: agentID, MessageID: e.ID, Text: text}}
+		return nil
 	}
 	if e.Type != "message" || e.Message == nil {
 		return nil
 	}
 	message := e.Message
-	isDisplayed := e.Display || message.Display
-	if (message.Role == "custom" || message.Role == "hookMessage") && !isDisplayed {
+	// INTERNAL_ONLY: a nested message with custom/hookMessage role is always
+	// extension/hook provenance. It is never promoted to a chat-visible event
+	// type, regardless of its display flag. No allowlisted user-facing
+	// custom-message policy has been specified, so these are dropped entirely.
+	if message.Role == "custom" || message.Role == "hookMessage" {
 		return nil
 	}
 	text, contents := transcriptText(message.Content)
@@ -274,9 +269,10 @@ func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if role == "" {
 		role = "user"
 	}
-	if role == "fileMention" || role == "custom" || role == "hookMessage" {
-		role = "system"
-	}
+	// CHAT_VISIBLE: fileMention is legitimate first-party user content (a file
+	// attachment reference), kept under its own distinct type rather than
+	// folded into the generic "system" role.
+
 	isAborted := message.Aborted || strings.EqualFold(message.StopReason, "aborted")
 	if role != "assistant" || len(contents) == 0 {
 		if text == "" && !(role == "assistant" && isAborted) {

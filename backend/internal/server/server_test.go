@@ -1707,9 +1707,17 @@ func TestAgentReplayAllowsThinkingEvents(t *testing.T) {
 	}
 }
 
-func TestAgentReplayAllowsSystemEvents(t *testing.T) {
-	if !isAgentEventKind("message.system") {
-		t.Fatal("message.system must survive Agent replay")
+func TestAgentReplayAllowsFileMentionEvents(t *testing.T) {
+	if !isAgentEventKind("message.fileMention") {
+		t.Fatal("message.fileMention must survive Agent replay")
+	}
+}
+
+func TestAgentReplayRejectsInternalOnlyKinds(t *testing.T) {
+	for _, kind := range []string{"message.system", "message.custom", "message.hookMessage", "custom_message"} {
+		if isAgentEventKind(kind) {
+			t.Fatalf("%s must not survive Agent replay: internal/hook provenance must never reach a chat-visible channel", kind)
+		}
 	}
 }
 

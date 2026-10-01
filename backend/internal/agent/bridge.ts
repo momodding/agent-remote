@@ -252,6 +252,9 @@ export default function (pi: ExtensionAPI) {
 		if (!entry || !entry.id) return;
 		const id = String(entry.id);
 
+		// INTERNAL_ONLY: a top-level custom_message entry is always extension/hook
+		// provenance. It is never promoted to a chat-visible or activity-visible
+		// event type, regardless of its display flag.
 		if (entry.type === "custom_message") return;
 
 		if (entry.type !== "message" || !entry.message) {
@@ -259,6 +262,10 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const msg = entry.message;
+		// INTERNAL_ONLY: a nested message with custom/hookMessage role is always
+		// extension/hook provenance. It is never promoted to a chat-visible event
+		// type, regardless of its display flag. No allowlisted user-facing
+		// custom-message policy has been specified, so these are dropped entirely.
 		if (msg.role === "custom" || msg.role === "hookMessage") return;
 
 		let { text, contents } = extractTextAndContents(msg.content);
@@ -306,7 +313,10 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const role = !msg.role || msg.role === "user" ? "user" : msg.role === "fileMention" ? "system" : msg.role;
+		// CHAT_VISIBLE: fileMention is legitimate first-party user content (a file
+		// attachment reference), kept under its own distinct type rather than
+		// folded into the generic "system" role.
+		const role = !msg.role || msg.role === "user" ? "user" : msg.role;
 		if (role === "user") {
 			const submittedIndex = submittedUserMessages.indexOf(text);
 			if (submittedIndex !== -1) {

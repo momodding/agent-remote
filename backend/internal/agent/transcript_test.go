@@ -159,14 +159,14 @@ func TestTranscriptProjectsSpecialMessages(t *testing.T) {
 		{"file", transcriptEntry{Type: "message", ID: "file", Message: &transcriptMessage{Role: "fileMention", Files: []struct {
 			Path string `json:"path"`
 		}{{Path: "README.md"}}}}, []string{"file:message"}},
-		{"displayed custom", transcriptEntry{Type: "custom_message", ID: "custom", Display: true, Content: json.RawMessage(`"notice"`)}, []string{"custom:message"}},
-		{"hidden custom", transcriptEntry{Type: "custom_message", ID: "hidden", Display: false, Content: json.RawMessage(`"secret"`)}, nil},
-		{"displayed custom nested", transcriptEntry{Type: "message", ID: "c_vis", Message: &transcriptMessage{Role: "custom", Display: true, Content: json.RawMessage(`"custom info"`)}}, []string{"c_vis:message"}},
-		{"hidden custom nested", transcriptEntry{Type: "message", ID: "c_hid", Message: &transcriptMessage{Role: "custom", Display: false, Content: json.RawMessage(`"custom hidden"`)}}, nil},
-		{"custom omitted display", transcriptEntry{Type: "message", ID: "c_none", Message: &transcriptMessage{Role: "custom", Content: json.RawMessage(`"custom omitted"`)}}, nil},
-		{"displayed hook", transcriptEntry{Type: "message", ID: "h_vis", Message: &transcriptMessage{Role: "hookMessage", Display: true, Content: json.RawMessage(`"hook info"`)}}, []string{"h_vis:message"}},
-		{"hidden hook", transcriptEntry{Type: "message", ID: "h_hid", Message: &transcriptMessage{Role: "hookMessage", Display: false, Content: json.RawMessage(`"hook hidden"`)}}, nil},
-		{"hook omitted display", transcriptEntry{Type: "message", ID: "h_none", Message: &transcriptMessage{Role: "hookMessage", Content: json.RawMessage(`"hook omitted"`)}}, nil},
+		{"displayed custom_message still dropped: INTERNAL_ONLY never promoted regardless of display", transcriptEntry{Type: "custom_message", ID: "custom", Display: true, Content: json.RawMessage(`"notice"`)}, nil},
+		{"hidden custom_message dropped", transcriptEntry{Type: "custom_message", ID: "hidden", Display: false, Content: json.RawMessage(`"secret"`)}, nil},
+		{"displayed custom nested still dropped: INTERNAL_ONLY never promoted regardless of display", transcriptEntry{Type: "message", ID: "c_vis", Message: &transcriptMessage{Role: "custom", Display: true, Content: json.RawMessage(`"custom info"`)}}, nil},
+		{"hidden custom nested dropped", transcriptEntry{Type: "message", ID: "c_hid", Message: &transcriptMessage{Role: "custom", Display: false, Content: json.RawMessage(`"custom hidden"`)}}, nil},
+		{"custom omitted display dropped", transcriptEntry{Type: "message", ID: "c_none", Message: &transcriptMessage{Role: "custom", Content: json.RawMessage(`"custom omitted"`)}}, nil},
+		{"displayed hookMessage still dropped: INTERNAL_ONLY never promoted regardless of display", transcriptEntry{Type: "message", ID: "h_vis", Message: &transcriptMessage{Role: "hookMessage", Display: true, Content: json.RawMessage(`"hook info"`)}}, nil},
+		{"hidden hookMessage dropped", transcriptEntry{Type: "message", ID: "h_hid", Message: &transcriptMessage{Role: "hookMessage", Display: false, Content: json.RawMessage(`"hook hidden"`)}}, nil},
+		{"hookMessage omitted display dropped", transcriptEntry{Type: "message", ID: "h_none", Message: &transcriptMessage{Role: "hookMessage", Content: json.RawMessage(`"hook omitted"`)}}, nil},
 		{"aborted", transcriptEntry{Type: "message", ID: "aborted", Message: &transcriptMessage{Role: "assistant", Aborted: true, Content: json.RawMessage(`"`)}}, []string{"aborted:message"}},
 		{"aborted stopReason", transcriptEntry{Type: "message", ID: "aborted_stop", Message: &transcriptMessage{Role: "assistant", StopReason: "aborted", Content: json.RawMessage(`""`)}}, []string{"aborted_stop:message"}},
 		{"aborted stopReason empty turn", transcriptEntry{Type: "message", ID: "aborted_empty", Message: &transcriptMessage{Role: "assistant", StopReason: "aborted"}}, []string{"aborted_empty:message"}},
@@ -188,6 +188,9 @@ func TestTranscriptProjectsSpecialMessages(t *testing.T) {
 					t.Fatalf("execution ToolInput = %v (%T), want json.RawMessage", events[0].ToolInput, events[0].ToolInput)
 				}
 			}
+			if test.name == "file" && events[0].Type != "message.fileMention" {
+				t.Fatalf("file mention Type = %q, want message.fileMention: CHAT_VISIBLE fileMention must stay a distinct type, never folded into the generic system role", events[0].Type)
+			}
 		})
 	}
 
@@ -204,6 +207,27 @@ func TestTranscriptProjectsSpecialMessages(t *testing.T) {
 	abortedStop := transcriptEntry{Type: "message", ID: "a_stop", Message: &transcriptMessage{Role: "assistant", StopReason: "aborted"}}.events("agent")
 	if len(abortedStop) != 1 || !abortedStop[0].Aborted {
 		t.Fatalf("abortedStop result = %+v", abortedStop)
+	}
+}
+
+// TestTranscriptNeverPromotesInternalContentToChatVisible is the A10 regression
+// contract: a sentinel appearing in any internal/hook-provenance shape (a
+// top-level custom_message entry, or a nested custom/hookMessage role),
+// displayed or not, must never surface as any AgentEvent the client could
+// render as chat. It must never reach /v1/agents/:id/history.
+func TestTranscriptNeverPromotesInternalContentToChatVisible(t *testing.T) {
+	const sentinel = "INTERNAL_SYSTEM_SENTINEL_DO_NOT_RENDER"
+	fixtures := []transcriptEntry{
+		{Type: "custom_message", ID: "s1", Display: true, Content: json.RawMessage(`"` + sentinel + `"`)},
+		{Type: "custom_message", ID: "s2", Display: false, Content: json.RawMessage(`"` + sentinel + `"`)},
+		{Type: "message", ID: "s3", Message: &transcriptMessage{Role: "custom", Display: true, Content: json.RawMessage(`"` + sentinel + `"`)}},
+		{Type: "message", ID: "s4", Message: &transcriptMessage{Role: "hookMessage", Display: true, Content: json.RawMessage(`"` + sentinel + `"`)}},
+	}
+	for _, fixture := range fixtures {
+		events := fixture.events("agent")
+		if len(events) != 0 {
+			t.Fatalf("entry %q leaked %d event(s) carrying internal/hook sentinel: %+v", fixture.ID, len(events), events)
+		}
 	}
 }
 

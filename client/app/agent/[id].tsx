@@ -581,12 +581,18 @@ export default function AgentScreen() {
             <Text style={styles.systemText}>Status changed to: {item.state}</Text>
           </View>
         );
-      default:
-        return item.text ? (
+      case 'message.fileMention':
+        return (
           <View style={styles.systemBubble}>
             <Text style={styles.systemText}>{item.text}</Text>
           </View>
-        ) : null;
+        );
+      default:
+        // A10: no allowlist entry above means this type is not a known
+        // CHAT_VISIBLE or ACTIVITY_VISIBLE event. Render nothing rather than
+        // falling back to a generic text bubble: an unrecognized type must
+        // never reach the user, regardless of whether it carries text.
+        return null;
     }
   };
 
