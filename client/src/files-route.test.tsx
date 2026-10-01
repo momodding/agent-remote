@@ -9,6 +9,7 @@ jest.mock('react-native', () => {
     Modal: RN.Modal,
     Platform: RN.Platform,
     Pressable: RN.Pressable,
+    ScrollView: RN.ScrollView,
     StyleSheet: RN.StyleSheet,
     Text: RN.Text,
     TextInput: RN.TextInput,
@@ -19,7 +20,7 @@ jest.mock('react-native', () => {
 });
 
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, Platform, Pressable, Text } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, Text } from 'react-native';
 import { router } from 'expo-router';
 import FilesScreen from '../app/files/[id]';
 import type { FilesWorkspaceTab } from './lib/tabs/types';
@@ -249,6 +250,26 @@ it('renames sibling files and rejects invalid names from the long-press menu', a
   act(() => press(tree, 'Save rename'));
   expect(alertSpy).toHaveBeenCalledWith('Invalid name');
   alertSpy.mockRestore();
+});
+
+it('makes the Files rename modal Android keyboard-safe and internally scrollable', async () => {
+  const originalOS = Platform.OS;
+  Object.defineProperty(Platform, 'OS', { value: 'android' });
+  let tree: ReactTestRenderer | undefined;
+  try {
+    tree = await renderScreen();
+    await act(async () => { press(tree!, 'Open folder docs'); await Promise.resolve(); });
+    act(() => longPress(tree!, 'Open file readme.txt'));
+    act(() => press(tree!, 'More actions readme.txt'));
+    act(() => press(tree!, 'Rename readme.txt'));
+
+    expect(tree!.root.findByType(KeyboardAvoidingView).props.behavior).toBe('height');
+    const renameScroll = tree!.root.findByProps({ testID: 'files-rename-scroll' });
+    expect(renameScroll.props.keyboardShouldPersistTaps).toBe('handled');
+  } finally {
+    Object.defineProperty(Platform, 'OS', { value: originalOS });
+    await act(async () => { tree?.unmount(); });
+  }
 });
 
 it('downloads and opens files with native sharing from the long-press menu', async () => {

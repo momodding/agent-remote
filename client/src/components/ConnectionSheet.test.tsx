@@ -1,7 +1,7 @@
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: jest.requireActual("react-native").View }));
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, Linking, Modal, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
+import { Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, Switch, type AlertButton, TextInput } from 'react-native';
 
 let mockPermission: { granted: boolean; canAskAgain: boolean } | null = { granted: true, canAskAgain: true };
 const mockRequestPermission = jest.fn();
@@ -223,3 +223,18 @@ describe('ConnectionSheet editor', () => {
     expect(mockRequestPermission).not.toHaveBeenCalled();
     act(() => tree.unmount());
   });
+
+describe('ConnectionSheet Android layout', () => {
+  it('uses height avoidance rather than disabling keyboard avoidance on Android', async () => {
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: 'android' });
+    let tree: ReactTestRenderer | undefined;
+    try {
+      tree = await renderSheet(makeProps());
+      expect(tree.root.findByType(KeyboardAvoidingView).props.behavior).toBe('height');
+    } finally {
+      Object.defineProperty(Platform, 'OS', { value: originalOS });
+      await act(async () => { tree?.unmount(); });
+    }
+  });
+});

@@ -1,5 +1,5 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, TextInput } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, TextInput } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => ({
   SafeAreaView: jest.requireActual('react-native').View,
@@ -175,6 +175,30 @@ describe('NewAgentSheet', () => {
     });
 
     expect(onSubmit).toHaveBeenCalledWith({ cwd: '', backend: 'auto' });
+  });
+
+  it('uses Android keyboard avoidance and an internally scrollable directory list', async () => {
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: 'android' });
+    const api = {
+      capabilities: jest.fn().mockResolvedValue({ capabilities: [{ name: 'agent.omp', enabled: true }] }),
+      files: jest.fn().mockResolvedValue(Array.from({ length: 20 }, (_, index) => ({ name: `dir-${index}`, path: `dir-${index}`, isDir: true, size: 0, mode: 'drwxr-xr-x' }))),
+    } as unknown as AgenticRemoteAPI;
+    let tree: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        tree = create(<NewAgentSheet visible onDismiss={jest.fn()} onSubmit={jest.fn().mockResolvedValue(undefined)} api={api} />);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(tree!.root.findByType(KeyboardAvoidingView).props.behavior).toBe('height');
+      const directoryList = tree!.root.findByProps({ testID: 'new-agent-directory-list' });
+      expect(directoryList.props.nestedScrollEnabled).toBe(true);
+      expect(directoryList.props.keyboardShouldPersistTaps).toBe('handled');
+    } finally {
+      Object.defineProperty(Platform, 'OS', { value: originalOS });
+      await act(async () => { tree?.unmount(); });
+    }
   });
 
   it('rejects absolute paths with client-side validation', async () => {

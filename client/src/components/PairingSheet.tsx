@@ -157,7 +157,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={dismiss}>
       <SafeAreaView style={[styles.sheet, { backgroundColor: palette.surface }]}>
-        <KeyboardAvoidingView style={styles.sheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.sheet} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
             <View style={styles.titleRow}>
               <Text style={[styles.title, { color: palette.text }]}>Connect a daemon</Text>

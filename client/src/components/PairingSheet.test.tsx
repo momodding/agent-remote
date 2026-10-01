@@ -1,5 +1,5 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, Linking } from 'react-native';
+import { Alert, KeyboardAvoidingView, Linking, Platform } from 'react-native';
 jest.mock('@expo/vector-icons/Feather', () => ({ __esModule: true, default: () => null }));
 
 jest.mock('react-native-safe-area-context', () => ({
@@ -237,5 +237,20 @@ describe('PairingSheet connect failures', () => {
     });
 
     expect(onDismiss).toHaveBeenCalled();
+  });
+});
+
+describe('PairingSheet Android layout', () => {
+  it('uses height avoidance rather than disabling keyboard avoidance on Android', async () => {
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: 'android' });
+    let tree: ReactTestRenderer | undefined;
+    try {
+      tree = await renderSheet();
+      expect(tree.root.findByType(KeyboardAvoidingView).props.behavior).toBe('height');
+    } finally {
+      Object.defineProperty(Platform, 'OS', { value: originalOS });
+      await act(async () => { tree?.unmount(); });
+    }
   });
 });

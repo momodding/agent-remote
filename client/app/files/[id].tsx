@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Directory, File, Paths } from 'expo-file-system';
@@ -276,13 +276,15 @@ export default function FilesScreen() {
     />
     <Modal visible={renameTarget != null} animationType="slide" onRequestClose={() => setRenameTarget(null)}>
       <SafeAreaView style={styles.screen}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBody}>
-          <Text style={styles.modalTitle}>Rename {renameTarget?.name}</Text>
-          <TextInput accessibilityLabel="New name" style={styles.input} value={renameText} onChangeText={setRenameText} autoCapitalize="none" autoCorrect={false} />
-          <View style={styles.modalActions}>
-            <Pressable accessibilityLabel="Cancel rename" style={styles.ghostBtn} onPress={() => setRenameTarget(null)}><Text style={styles.ghostBtnText}>Cancel</Text></Pressable>
-            <Pressable accessibilityLabel="Save rename" style={styles.smallBtn} onPress={() => void saveRename()}><Text style={styles.smallBtnText}>Save</Text></Pressable>
-          </View>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBody}>
+          <ScrollView testID="files-rename-scroll" contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
+            <Text style={styles.modalTitle}>Rename {renameTarget?.name}</Text>
+            <TextInput accessibilityLabel="New name" style={styles.input} value={renameText} onChangeText={setRenameText} autoCapitalize="none" autoCorrect={false} />
+            <View style={styles.modalActions}>
+              <Pressable accessibilityLabel="Cancel rename" style={styles.ghostBtn} onPress={() => setRenameTarget(null)}><Text style={styles.ghostBtnText}>Cancel</Text></Pressable>
+              <Pressable accessibilityLabel="Save rename" style={styles.smallBtn} onPress={() => void saveRename()}><Text style={styles.smallBtnText}>Save</Text></Pressable>
+            </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
@@ -400,7 +402,8 @@ const styles = StyleSheet.create({
   menuTitle: { color: '#F0F0F0', fontSize: 16, fontWeight: '700', padding: 12 },
   menuItem: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, borderRadius: 8 },
   menuText: { color: '#F0F0F0', fontSize: 15, fontWeight: '600' },
-  modalBody: { flex: 1, justifyContent: 'center', gap: 14, padding: 20 },
+  modalBody: { flex: 1 },
+  modalScrollContent: { flexGrow: 1, justifyContent: 'center', gap: 14, padding: 20 },
   modalTitle: { color: '#F0F0F0', fontSize: 20, fontWeight: '700' },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   editor: { flex: 1, padding: 16, color: '#F0F0F0', fontSize: 15, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

@@ -149,7 +149,7 @@ export function NewAgentSheet({ visible, onDismiss, onSubmit, api }: Props) {
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onDismiss}>
       <SafeAreaView style={[styles.sheet, { backgroundColor: palette.surface }]}>
-        <KeyboardAvoidingView style={styles.sheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.sheet} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
             <View style={styles.titleRow}>
               <Text style={[styles.title, { color: palette.text }]}>New OMP Agent</Text>
@@ -199,13 +199,13 @@ export function NewAgentSheet({ visible, onDismiss, onSubmit, api }: Props) {
                         {browsePath ? <Pressable accessibilityLabel="Navigate up" style={[styles.upBtn, { borderColor: palette.border }]} onPress={handleNavigateUp}><Feather name="corner-left-up" size={14} color={palette.text} /><Text style={[styles.upBtnText, { color: palette.text }]}>Up</Text></Pressable> : null}
                       </View>
                       {loadingDirs ? <View style={styles.loadingContainer}><ActivityIndicator size="small" color={palette.accent} /></View> : (
-                        <View style={styles.dirList}>
+                        <ScrollView testID="new-agent-directory-list" style={styles.dirList} contentContainerStyle={styles.dirListContent} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                           {directories.length === 0 ? <Text style={[styles.emptyDirsText, { color: palette.textSecondary }]}>No subdirectories found</Text> : directories.map((dir) => (
                             <Pressable key={dir.path} accessibilityLabel={`Directory ${dir.name}`} style={[styles.dirItem, { borderColor: palette.border }]} onPress={() => handleNavigate(dir.path)}>
                               <Feather name="folder" size={16} color={palette.accent} /><Text style={[styles.dirName, { color: palette.text }]} numberOfLines={1}>{dir.name}</Text><Feather name="chevron-right" size={14} color={palette.textSecondary} />
                             </Pressable>
                           ))}
-                        </View>
+                        </ScrollView>
                       )}
                       <View style={styles.selectRow}><Pressable accessibilityLabel="Select Current Directory" style={[styles.selectDirBtn, { backgroundColor: palette.accent + '22', borderColor: palette.accent }]} onPress={() => setCwd(browsePath)}><Text style={[styles.selectDirText, { color: palette.accent }]}>{browsePath ? `Use "${browsePath}"` : 'Use Workspace Root'}</Text></Pressable></View>
                     </View>
@@ -294,8 +294,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   dirList: {
-    gap: 6,
     maxHeight: 180,
+  },
+  dirListContent: {
+    gap: 6,
   },
   emptyDirsText: {
     fontSize: 13,
