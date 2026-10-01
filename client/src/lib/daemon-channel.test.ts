@@ -144,4 +144,23 @@ describe('WebSocketDaemonChannel raw terminal reconnect', () => {
       JSON.stringify({ type: 'pty.resize', sessionId: 'term-1', cols: 120, rows: 40 }),
     ]);
   });
+
+  it('surfaces a deterministic input-unavailable error instead of silently dropping pty.input during reconnect', () => {
+    const channel = createDaemonChannel({ ...conn, hostId: 'reconnect-host' }) as WebSocketDaemonChannel;
+    const received: unknown[] = [];
+    channel.subscribe('term-1', (msg) => received.push(msg));
+    const first = FakeSocket.instances[0];
+    first.open();
+    first.close();
+
+    channel.send({ channelId: 'term-1', kind: 'terminal', type: 'pty.input', data: 'bWFya2Vy' });
+
+    expect(received).toContainEqual({
+      channelId: 'term-1',
+      kind: 'terminal',
+      type: 'error',
+      code: 'input_unavailable',
+      message: expect.any(String),
+    });
+  });
 });

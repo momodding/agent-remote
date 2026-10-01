@@ -126,6 +126,7 @@ export class WebSocketDaemonChannel implements DaemonChannel {
           this.queuePending(channelId, wireFrame);
           this.ensureSocket(channelId);
         } else {
+          this.dispatch(channelId, { channelId, kind: 'terminal', type: 'error', code: 'input_unavailable', message: 'Terminal input could not be delivered: connection is reconnecting' });
           this.ensureSocket(channelId);
         }
       }
