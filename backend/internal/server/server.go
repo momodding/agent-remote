@@ -943,12 +943,16 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
 					continue
 				}
-				_ = s.sessions.Input(sessionID, data)
+				if err := s.sessions.Input(sessionID, data); err != nil {
+					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "session_not_running", Message: err.Error()})
+				}
 			}
 		case "pty.resize":
 			var env protocol.PTYResizeEnvelope
 			if err := mapToStruct(frame, &env); err == nil {
-				_ = s.sessions.Resize(sessionID, env.Cols, env.Rows)
+				if err := s.sessions.Resize(sessionID, env.Cols, env.Rows); err != nil {
+					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "session_not_running", Message: err.Error()})
+				}
 			}
 		default:
 			_ = write(protocol.ErrorEnvelope{Type: "error", Code: "unsupported", Message: "unsupported frame"})

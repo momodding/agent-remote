@@ -625,7 +625,7 @@ func (m *Manager) Input(id string, b []byte) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	if runtime.backend == nil || !runtime.backend.Alive() {
+	if runtime.meta.State == StateExited || runtime.backend == nil || !runtime.backend.Alive() {
 		return errors.New("session not running")
 	}
 	_, err := runtime.backend.Write(b)
@@ -642,8 +642,8 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return errors.New("invalid terminal size")
 	}
-	if runtime.backend == nil || !runtime.backend.Alive() {
-		return nil
+	if runtime.meta.State == StateExited || runtime.backend == nil || !runtime.backend.Alive() {
+		return errors.New("session not running")
 	}
 	return runtime.backend.Resize(cols, rows)
 }

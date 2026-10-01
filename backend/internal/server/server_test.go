@@ -829,6 +829,68 @@ func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
 	}
 }
 
+func TestSessionWSSurfacesErrorForInputToExitedSession(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
+		Name:    "short-lived",
+		Command: "sh",
+		Args:    []string{"-c", "exit 0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		list := srv.sessions.List(context.Background())
+		if len(list) == 1 && list[0].State == "exited" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if list := srv.sessions.List(context.Background()); len(list) != 1 || list[0].State != "exited" {
+		t.Fatalf("session did not reach exited state before timeout: %+v", list)
+	}
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	var baseline protocol.PTYOutputEnvelope
+	if err := wsReadJSON(ctx, conn, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Type != "pty.baseline" {
+		t.Fatalf("expected baseline frame, got %+v", baseline)
+	}
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.input", "sessionId": summary.ID, "data": base64.StdEncoding.EncodeToString([]byte("hi"))}); err != nil {
+		t.Fatal(err)
+	}
+	var frame map[string]any
+	if err := wsReadJSON(ctx, conn, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame["type"] != "error" || frame["code"] != "session_not_running" {
+		t.Fatalf("expected session_not_running error for input to exited session, got %+v", frame)
+	}
+	if err := wsWriteJSON(ctx, conn, map[string]any{"type": "pty.resize", "sessionId": summary.ID, "cols": 100, "rows": 40}); err != nil {
+		t.Fatal(err)
+	}
+	var resizeFrame map[string]any
+	if err := wsReadJSON(ctx, conn, &resizeFrame); err != nil {
+		t.Fatal(err)
+	}
+	if resizeFrame["type"] != "error" || resizeFrame["code"] != "session_not_running" {
+		t.Fatalf("expected session_not_running error for resize on exited session, got %+v", resizeFrame)
+	}
+}
+
 func TestPTYExecutesRealCommandAndSeedsNewSubscriber(t *testing.T) {
 	srv, _ := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{

@@ -379,3 +379,29 @@ func TestTerminatorInterfaceUsed(t *testing.T) {
 		t.Error("backend.Terminate (via Terminator) was not called")
 	}
 }
+
+// Test RAR-036-13: Input/Resize reject an exited session even when the backend's
+// own Alive() has not transitioned (natural process exit never calls Close()).
+func TestInputResizeRejectExitedSessionDespiteStaleAliveBackend(t *testing.T) {
+	mgr, tmpDir := helperNewTestManager(t)
+	defer mgr.Shutdown()
+
+	mockBackend := &mockTerminalBackend{}
+	runtime := &TerminalRuntime{
+		meta:       Session{ID: "test-sess-13", State: StateExited},
+		backend:    mockBackend,
+		scrollback: filepath.Join(tmpDir, "scrollback-13"),
+		outbound:   make(chan outboundMessage, 10),
+	}
+	mgr.sessions["test-sess-13"] = runtime
+
+	if !mockBackend.Alive() {
+		t.Fatal("test setup: mock backend must report Alive() to exercise the state check")
+	}
+	if err := mgr.Input("test-sess-13", []byte("hi")); err == nil {
+		t.Error("Input should reject an exited session even when backend.Alive() is stale")
+	}
+	if err := mgr.Resize("test-sess-13", 80, 24); err == nil {
+		t.Error("Resize should reject an exited session even when backend.Alive() is stale")
+	}
+}
