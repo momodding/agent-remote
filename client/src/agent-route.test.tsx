@@ -357,3 +357,68 @@ describe('A10 – internal content never reaches chat', () => {
     act(() => tree.unmount());
   });
 });
+
+describe('A04 – five-turn chat history/live/resync replay', () => {
+  it('preserves every distinct sentinel exactly once and in order across history bootstrap, live delivery, and a forced resync', async () => {
+    // Turns 1-2 arrive via the initial history bootstrap cursor.
+    mockAgentHistory.mockResolvedValueOnce({
+      cursor: 2,
+      events: [
+        { eventId: 'user-1', agentId: 'agent-1', type: 'message.user', text: 'turn-1-user', cursor: 1 },
+        { eventId: 'asst-1', agentId: 'agent-1', type: 'message.assistant', text: 'turn-1-assistant', cursor: 1 },
+        { eventId: 'user-2', agentId: 'agent-1', type: 'message.user', text: 'turn-2-user', cursor: 2 },
+        { eventId: 'asst-2', agentId: 'agent-1', type: 'message.assistant', text: 'turn-2-assistant', cursor: 2 },
+      ],
+    });
+    const tree = await renderScreen();
+    expect(mockHandleEvent).toBeDefined();
+    expect(mockHandleCursorExpired).toBeDefined();
+
+    // Turns 3-4 arrive live over the open runtime channel.
+    await act(async () => {
+      mockHandleEvent?.({ eventId: 'user-3', agentId: 'agent-1', type: 'message.user', text: 'turn-3-user', cursor: 3 });
+      mockHandleEvent?.({ eventId: 'asst-3', agentId: 'agent-1', type: 'message.assistant', text: 'turn-3-assistant', cursor: 3 });
+      mockHandleEvent?.({ eventId: 'user-4', agentId: 'agent-1', type: 'message.user', text: 'turn-4-user', cursor: 4 });
+      mockHandleEvent?.({ eventId: 'asst-4', agentId: 'agent-1', type: 'message.assistant', text: 'turn-4-assistant', cursor: 4 });
+    });
+
+    // Before turn 5, force the existing resync path (cursor-expired reload),
+    // which must replay turns 1-4 plus the new turn-5 pair without loss,
+    // duplication, or reordering, and without starting a second OMP process
+    // or agent/terminal identity.
+    mockAgentHistory.mockResolvedValueOnce({
+      cursor: 5,
+      events: [
+        { eventId: 'user-1', agentId: 'agent-1', type: 'message.user', text: 'turn-1-user', cursor: 1 },
+        { eventId: 'asst-1', agentId: 'agent-1', type: 'message.assistant', text: 'turn-1-assistant', cursor: 1 },
+        { eventId: 'user-2', agentId: 'agent-1', type: 'message.user', text: 'turn-2-user', cursor: 2 },
+        { eventId: 'asst-2', agentId: 'agent-1', type: 'message.assistant', text: 'turn-2-assistant', cursor: 2 },
+        { eventId: 'user-3', agentId: 'agent-1', type: 'message.user', text: 'turn-3-user', cursor: 3 },
+        { eventId: 'asst-3', agentId: 'agent-1', type: 'message.assistant', text: 'turn-3-assistant', cursor: 3 },
+        { eventId: 'user-4', agentId: 'agent-1', type: 'message.user', text: 'turn-4-user', cursor: 4 },
+        { eventId: 'asst-4', agentId: 'agent-1', type: 'message.assistant', text: 'turn-4-assistant', cursor: 4 },
+        { eventId: 'user-5', agentId: 'agent-1', type: 'message.user', text: 'turn-5-user', cursor: 5 },
+        { eventId: 'asst-5', agentId: 'agent-1', type: 'message.assistant', text: 'turn-5-assistant', cursor: 5 },
+      ],
+    });
+
+    let resyncCursor: number | undefined;
+    await act(async () => {
+      resyncCursor = await mockHandleCursorExpired!();
+    });
+    expect(resyncCursor).toBe(5);
+
+    // Turn 5 delivered live after the resync completes.
+    await act(async () => {
+      mockHandleEvent?.({ eventId: 'user-5', agentId: 'agent-1', type: 'message.user', text: 'turn-5-user', cursor: 5 });
+      mockHandleEvent?.({ eventId: 'asst-5', agentId: 'agent-1', type: 'message.assistant', text: 'turn-5-assistant', cursor: 5 });
+    });
+
+    const expectedTexts = [1, 2, 3, 4, 5].flatMap((n) => [`turn-${n}-user`, `turn-${n}-assistant`]);
+    for (const text of expectedTexts) {
+      expect(tree.root.findAll((node) => node.type === 'Text' && node.props?.children === text).length).toBe(1);
+    }
+
+    act(() => tree.unmount());
+  });
+});

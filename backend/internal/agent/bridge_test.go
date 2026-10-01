@@ -1057,3 +1057,195 @@ func TestBridgeModelAndThinkingCommands(t *testing.T) {
 		t.Fatalf("expected thinking high, got %s", ag.Thinking)
 	}
 }
+
+// TestBridgeFiveTurnSameProcessIdentity proves the A04 five-turn same-process
+// invariant: one agent, one authenticated bridge socket, one OMP session
+// identity survive five distinct sequential prompt turns with no
+// agent_busy/needs_terminal and ten ordered, deduplicated durable semantic
+// turn endpoints. No second OMP process or bridge connection is created.
+func TestBridgeFiveTurnSameProcessIdentity(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Test Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent failed: %v", err)
+	}
+
+	conn, err := net.Dial("unix", svc.bridgeServer.SocketPath())
+	if err != nil {
+		t.Fatalf("failed to dial bridge socket: %v", err)
+	}
+	defer conn.Close()
+
+	hello := BridgeHello{
+		Type:         "hello",
+		AgentID:      agent.ID,
+		Secret:       termMgr.createdReq.Env["AGENTIC_REMOTE_BRIDGE_SECRET"],
+		SessionID:    "session-1",
+		SessionFile:  "/path/to/session.jsonl",
+		Capabilities: []string{"prompt", "abort", "model", "thinking"},
+	}
+	helloBytes, _ := json.Marshal(hello)
+	if _, err := conn.Write(append(helloBytes, '\n')); err != nil {
+		t.Fatalf("failed to write hello frame: %v", err)
+	}
+	for deadline := time.Now().Add(time.Second); !svc.bridgeServer.IsConnected(agent.ID) && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("bridge did not authenticate")
+	}
+
+	before, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type turnEvent struct {
+		eventType string
+		eventID   string
+		text      string
+	}
+	received := make(chan turnEvent, 10)
+	unsubscribe, err := svc.Subscribe(agent.ID, func(event protocol.AgentEvent) {
+		if event.Type == "message.user" || event.Type == "message.assistant" {
+			received <- turnEvent{eventType: event.Type, eventID: event.EventID, text: event.Text}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+
+	reader := bufio.NewReader(conn)
+	sentinels := []string{"sentinel-one", "sentinel-two", "sentinel-three", "sentinel-four", "sentinel-five"}
+	seenEventIDs := make(map[string]bool)
+	var orderedTexts []string
+
+	for i, sentinel := range sentinels {
+		promptErr := make(chan error, 1)
+		go func() { promptErr <- svc.SubmitPrompt(agent.ID, sentinel) }()
+
+		commandLine, err := reader.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("turn %d: failed to read bridge command: %v", i+1, err)
+		}
+		var command BridgeCommand
+		if err := json.Unmarshal(commandLine, &command); err != nil {
+			t.Fatalf("turn %d: failed to unmarshal command: %v", i+1, err)
+		}
+		if command.Command != "prompt" {
+			t.Fatalf("turn %d: expected prompt command, got %q", i+1, command.Command)
+		}
+
+		userEventID := "bridge:prompt:" + command.RequestID
+		userFrame := BridgeSemanticFrame{Type: "semantic", Event: "message.user", EventID: userEventID, Text: sentinel}
+		userBytes, _ := json.Marshal(userFrame)
+		if _, err := conn.Write(append(userBytes, '\n')); err != nil {
+			t.Fatalf("turn %d: failed to write user semantic frame: %v", i+1, err)
+		}
+
+		assistantText := "response-" + sentinel
+		assistantEventID := "bridge:assistant:" + command.RequestID
+		assistantFrame := BridgeSemanticFrame{Type: "semantic", Event: "message.assistant", EventID: assistantEventID, Text: assistantText}
+		assistantBytes, _ := json.Marshal(assistantFrame)
+		if _, err := conn.Write(append(assistantBytes, '\n')); err != nil {
+			t.Fatalf("turn %d: failed to write assistant semantic frame: %v", i+1, err)
+		}
+
+		resultBytes, _ := json.Marshal(BridgeCommandResult{Type: "command.result", RequestID: command.RequestID, OK: true})
+		if _, err := conn.Write(append(resultBytes, '\n')); err != nil {
+			t.Fatalf("turn %d: failed to write command result: %v", i+1, err)
+		}
+
+		select {
+		case err := <-promptErr:
+			if err != nil {
+				t.Fatalf("turn %d: SubmitPrompt() = %v, want nil (no agent_busy/needs_terminal)", i+1, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("turn %d: SubmitPrompt did not return", i+1)
+		}
+
+		for _, want := range []string{sentinel, assistantText} {
+			select {
+			case ev := <-received:
+				if ev.text != want {
+					t.Fatalf("turn %d: expected semantic text %q, got %q (%s)", i+1, want, ev.text, ev.eventType)
+				}
+				if seenEventIDs[ev.eventID] {
+					t.Fatalf("turn %d: duplicate event ID %q observed", i+1, ev.eventID)
+				}
+				seenEventIDs[ev.eventID] = true
+				orderedTexts = append(orderedTexts, ev.text)
+			case <-time.After(time.Second):
+				t.Fatalf("turn %d: timed out waiting for semantic event %q", i+1, want)
+			}
+		}
+
+		lifecycle := BridgeLifecycleFrame{Type: "lifecycle", Event: "turn_end", State: "idle"}
+		lifecycleBytes, _ := json.Marshal(lifecycle)
+		if _, err := conn.Write(append(lifecycleBytes, '\n')); err != nil {
+			t.Fatalf("turn %d: failed to write idle lifecycle frame: %v", i+1, err)
+		}
+
+		idleDeadline := time.Now().Add(time.Second)
+		for {
+			ag, err := svc.GetAgent(agent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ag.State == "idle" {
+				break
+			}
+			if time.Now().After(idleDeadline) {
+				t.Fatalf("turn %d: agent did not return to idle after turn_end, state=%s", i+1, ag.State)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	if len(orderedTexts) != 10 {
+		t.Fatalf("expected 10 ordered semantic turn endpoints, got %d: %v", len(orderedTexts), orderedTexts)
+	}
+	for i, sentinel := range sentinels {
+		if orderedTexts[i*2] != sentinel || orderedTexts[i*2+1] != "response-"+sentinel {
+			t.Fatalf("turn %d: unordered semantic pair, got %q/%q", i+1, orderedTexts[i*2], orderedTexts[i*2+1])
+		}
+	}
+
+	after, err := svc.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ID != before.ID || after.TerminalSessionID != before.TerminalSessionID || after.OMPSessionID != before.OMPSessionID || after.OMPSessionFile != before.OMPSessionFile || after.Adapter != before.Adapter {
+		t.Fatalf("agent/terminal/OMP identity changed across five turns: before=%+v after=%+v", before, after)
+	}
+	if !svc.bridgeServer.IsConnected(agent.ID) {
+		t.Fatal("bridge connection identity was not preserved across five turns")
+	}
+
+	history, err := svc.History(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 10 {
+		t.Fatalf("durable history = %d events, want 10: %+v", len(history.Events), history.Events)
+	}
+	historyIDs := make(map[string]bool, 10)
+	for i, ev := range history.Events {
+		if historyIDs[ev.EventID] {
+			t.Fatalf("duplicate durable event ID %q at index %d", ev.EventID, i)
+		}
+		historyIDs[ev.EventID] = true
+	}
+}
