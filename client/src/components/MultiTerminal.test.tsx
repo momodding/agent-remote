@@ -197,4 +197,11 @@ describe('MultiTerminal', () => {
     act(() => tree.root.findByProps({ accessibilityLabel: 'Close Shell s1' }).props.onPress());
     expect(onClose).toHaveBeenCalledWith('s1');
   });
+
+  it('keeps tab select, minimize, and close controls at the Android 48dp floor', () => {
+    const tree = render({ s1: session('s1') });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Show Shell s1' }).props.style).toMatchObject({ minHeight: 48 });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Minimize Shell s1' }).props.style).toMatchObject({ width: 48, minHeight: 48 });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Close Shell s1' }).props.style).toMatchObject({ width: 48, minHeight: 48 });
+  });
 });

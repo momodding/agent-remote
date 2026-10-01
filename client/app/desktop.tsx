@@ -55,33 +55,38 @@ export default function DesktopScreen() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
   const webRef = useRef<WebView>(null);
-  const attemptID = useRef(Crypto.randomUUID()).current;
+  const [retryNonce, setRetryNonce] = useState(0);
+  const attemptIDRef = useRef(Crypto.randomUUID());
 
   useEffect(() => {
     if (!tab) return;
     let active = true;
+    attemptIDRef.current = Crypto.randomUUID();
+    const attemptID = attemptIDRef.current;
+    setWsUrl(null);
+    setStatus('Loading noVNC…');
     loadConnections().then(async (store) => {
       const conn = getConnection(store, tab.daemonId);
-      if (!conn || !active) return;
+      if (!conn || !active) {
+        if (active) setStatus('Desktop connection unavailable');
+        return;
+      }
       setConnection(conn);
       try {
         const api = new AgenticRemoteAPI(conn);
         const session = await api.createDesktopSession(attemptID);
-        if (active) {
-          setWsUrl(session.wsUrl);
-        }
-      } catch (err) {
-        if (active) {
-          setStatus(err instanceof Error ? err.message : 'Failed to create desktop session');
-        }
+        if (active) setWsUrl(session.wsUrl);
+      } catch {
+        if (active) setStatus('Could not create desktop session');
       }
     });
     return () => {
       active = false;
     };
-  }, [tab?.tabId]);
+  }, [tab?.tabId, retryNonce]);
 
-  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl, attemptID) : ''), [wsUrl, attemptID]);
+  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl, attemptIDRef.current) : ''), [wsUrl]);
+
   const onMessage = (event: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -93,12 +98,21 @@ export default function DesktopScreen() {
     }
   };
 
+  const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
+  const needsRecovery = !wsUrl || status === 'Desktop disconnected' || status === 'Desktop disconnected unexpectedly' || status === 'Desktop security negotiation failed' || status === 'Desktop view failed' || status === 'Could not load noVNC client';
+
   const sendKey = (keysym: number, name: string) => webRef.current?.injectJavaScript(`window.rfb?.sendKey(${keysym}, "${name}");true;`);
 
   if (!connection || !tab || !wsUrl) {
     return (
       <SafeAreaView style={styles.screen}>
-        <Text style={styles.text}>{status}</Text>
+        <View style={styles.recovery}>
+          <Text style={styles.text}>{status}</Text>
+          <View style={styles.recoveryActions}>
+            <Pressable accessibilityLabel="Back" style={styles.back} onPress={() => router.back()}><Feather name="arrow-left" size={20} color="#F0F0F0" /></Pressable>
+            <Pressable accessibilityLabel="Retry Desktop" style={styles.retry} onPress={retry}><Text style={styles.retryText}>Retry</Text></Pressable>
+          </View>
+        </View>
       </SafeAreaView>
     );
   }
@@ -113,13 +127,13 @@ export default function DesktopScreen() {
       </View>
       <WebView ref={webRef} source={{ html, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
         javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage}
-        onError={(event) => setStatus(event.nativeEvent.description)} />
+        onError={() => setStatus('Desktop view failed')} />
       <View testID="vnc-shortcut-dock" style={styles.dock}>
         <Pressable accessibilityLabel="Escape" style={styles.key} onPress={() => sendKey(0xff1b, 'Escape')}><Text style={styles.keyText}>Esc</Text></Pressable>
         <Pressable accessibilityLabel="Tab" style={styles.key} onPress={() => sendKey(0xff09, 'Tab')}><Text style={styles.keyText}>Tab</Text></Pressable>
         <Pressable accessibilityLabel="Ctrl Alt Delete" style={styles.key} onPress={() => webRef.current?.injectJavaScript('window.rfb?.sendCtrlAltDel();true;')}><Text style={styles.keyText}>Ctrl+Alt+Del</Text></Pressable>
       </View>
-      {status !== 'Desktop connected' && <Text style={styles.status}>{status}</Text>}
+      {needsRecovery ? <View style={styles.statusRecovery}><Text style={styles.status}>{status}</Text><Pressable accessibilityLabel="Retry Desktop" style={styles.retry} onPress={retry}><Text style={styles.retryText}>Retry</Text></Pressable></View> : status !== 'Desktop connected' && <Text style={styles.status}>{status}</Text>}
     </SafeAreaView>
   );
 }
@@ -127,12 +141,17 @@ export default function DesktopScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#0A0A0A' },
   topbar: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12, borderBottomWidth: 1, borderColor: '#262626' },
-  back: { padding: 6 },
+  back: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   title: { color: '#F0F0F0', fontSize: 16, fontWeight: '600', flex: 1 },
   webview: { flex: 1, backgroundColor: '#000000' },
   dock: { flexDirection: 'row', justifyContent: 'center', gap: 10, padding: 8, backgroundColor: '#141414', borderTopWidth: 1, borderColor: '#262626' },
-  key: { paddingVertical: 8, paddingHorizontal: 14, backgroundColor: '#222', borderRadius: 6 },
+  key: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, backgroundColor: '#222', borderRadius: 6 },
   keyText: { color: '#E0E0E0', fontSize: 13, fontWeight: '600' },
-  status: { position: 'absolute', bottom: 60, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', color: '#00D9A3', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, fontSize: 12 },
-  text: { color: '#888', textAlign: 'center', marginTop: 40 },
+  status: { backgroundColor: 'rgba(0,0,0,0.8)', color: '#00D9A3', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, fontSize: 12 },
+  statusRecovery: { position: 'absolute', bottom: 60, alignSelf: 'center', alignItems: 'center', gap: 8 },
+  recovery: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16 },
+  recoveryActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  retry: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, backgroundColor: '#D19A2C', borderRadius: 6 },
+  retryText: { color: '#0A0A0A', fontWeight: '700' },
+  text: { color: '#888', textAlign: 'center' },
 });

@@ -171,10 +171,24 @@ describe('native (WebView) desktop', () => {
     expect(mockInjectJavaScript).toHaveBeenCalledWith('window.rfb?.sendCtrlAltDel();true;');
   });
 
-  it('displays error status when createDesktopSession fails', async () => {
+  it('offers a sanitized recovery path when createDesktopSession fails', async () => {
     jest.spyOn(AgenticRemoteAPI.prototype, 'createDesktopSession').mockRejectedValue(new Error('VNC unavailable'));
     const tree = await renderScreen();
-    expect(tree.root.findByProps({ children: 'VNC unavailable' })).toBeTruthy();
+    expect(tree.root.findByProps({ children: 'Could not create desktop session' })).toBeTruthy();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Back' })).toBeTruthy();
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: 'Retry Desktop' }).props.onPress();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    expect(AgenticRemoteAPI.prototype.createDesktopSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps Back and remote keys at the Android 48dp touch-target floor', async () => {
+    const tree = await renderScreen();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Back' }).props.style).toMatchObject({ minWidth: 48, minHeight: 48 });
+    for (const label of ['Escape', 'Tab', 'Ctrl Alt Delete']) {
+      expect(tree.root.findByProps({ accessibilityLabel: label }).props.style).toMatchObject({ minWidth: 48, minHeight: 48 });
+    }
   });
 });
 

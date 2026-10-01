@@ -5,6 +5,7 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -92,6 +93,7 @@ export default function AgentScreen() {
   const [availableThinking, setAvailableThinking] = useState<string[]>([]);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadingThinking, setLoadingThinking] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const { height: windowHeight } = useWindowDimensions();
   const terminalRef = useRef<TerminalHandle>(null);
@@ -650,33 +652,64 @@ export default function AgentScreen() {
             <Feather name="terminal" size={16} color={viewMode === 'terminal' ? '#0A0A0A' : '#A0A0A0'} />
           </Pressable>
         </View>
-        <Pressable accessibilityLabel="Switch pane" style={styles.headerIcon} onPress={() => void openPaneSwitcher()}>
-          <Feather name="columns" size={18} color="#D19A2C" />
-        </Pressable>
         {abortEnabled && (
           <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
             <Feather name="slash" size={18} color="#EF4444" />
           </Pressable>
         )}
-        {(modelEnabled || thinkingEnabled || Boolean(currentModel)) && (
-          <Pressable
-            accessibilityLabel="Model and Thinking"
-            style={styles.headerIcon}
-            onPress={() => modelThinkingSheetRef.current?.present()}
-          >
-            <Feather name="cpu" size={18} color="#818CF8" />
-          </Pressable>
-        )}
-        <Pressable accessibilityLabel="Open Files" style={styles.headerIcon} onPress={openFiles}>
-          <Feather name="folder" size={18} color="#46B8C4" />
-        </Pressable>
-        <Pressable accessibilityLabel="Terminate Agent" style={styles.headerIcon} onPress={terminateAgent}>
-          <Feather name="power" size={18} color="#DC2626" />
-        </Pressable>
-        <Pressable accessibilityLabel="Close View" style={styles.headerIcon} onPress={close}>
-          <Feather name="x" size={20} color="#888" />
+        <Pressable accessibilityLabel="More actions" style={styles.headerIcon} onPress={() => setMenuOpen(true)}>
+          <Feather name="more-vertical" size={18} color="#F0F0F0" />
         </Pressable>
       </View>
+
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <Pressable style={styles.menuOverlay} accessibilityLabel="Dismiss menu" onPress={() => setMenuOpen(false)}>
+          <View style={styles.menuSheet} onStartShouldSetResponder={() => true}>
+            <Pressable
+              accessibilityLabel="Switch pane"
+              style={styles.menuItem}
+              onPress={() => { setMenuOpen(false); void openPaneSwitcher(); }}
+            >
+              <Feather name="columns" size={18} color="#D19A2C" />
+              <Text style={styles.menuItemText}>Switch pane</Text>
+            </Pressable>
+            {(modelEnabled || thinkingEnabled || Boolean(currentModel)) && (
+              <Pressable
+                accessibilityLabel="Model and Thinking"
+                style={styles.menuItem}
+                onPress={() => { setMenuOpen(false); modelThinkingSheetRef.current?.present(); }}
+              >
+                <Feather name="cpu" size={18} color="#818CF8" />
+                <Text style={styles.menuItemText}>Model and Thinking</Text>
+              </Pressable>
+            )}
+            <Pressable
+              accessibilityLabel="Open Files"
+              style={styles.menuItem}
+              onPress={() => { setMenuOpen(false); openFiles(); }}
+            >
+              <Feather name="folder" size={18} color="#46B8C4" />
+              <Text style={styles.menuItemText}>Open Files</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Terminate Agent"
+              style={styles.menuItem}
+              onPress={() => { setMenuOpen(false); terminateAgent(); }}
+            >
+              <Feather name="power" size={18} color="#DC2626" />
+              <Text style={styles.menuItemText}>Terminate Agent</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Close View"
+              style={styles.menuItem}
+              onPress={() => { setMenuOpen(false); close(); }}
+            >
+              <Feather name="x" size={18} color="#888" />
+              <Text style={styles.menuItemText}>Close View</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Content Area */}
       {viewMode === 'chat' ? (
@@ -842,6 +875,30 @@ const styles = StyleSheet.create({
   },
   switcherButtonActive: {
     backgroundColor: '#D19A2C',
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  menuSheet: {
+    backgroundColor: '#1E1E1E',
+    paddingBottom: 24,
+    paddingTop: 8,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 48,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  menuItemText: {
+    color: '#F0F0F0',
+    fontSize: 16,
   },
   chatContainer: { flex: 1 },
   messageList: { padding: 14, gap: 12 },
