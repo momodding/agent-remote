@@ -1306,7 +1306,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-	case "message.user", "message.assistant", "message.fileMention", "message.thinking", "tool.call", "tool.result", "state":
+case "message.user", "message.assistant", "message.fileMention", "message.thinking", "tool.call", "tool.result", "state", "activity.turn.started", "activity.tool.started", "activity.tool.completed", "activity.tool.failed", "activity.approval.requested", "activity.approval.resolved":
 		return true
 	default:
 		return false

@@ -1892,6 +1892,17 @@ func TestAgentReplayAllowsFileMentionEvents(t *testing.T) {
 	}
 }
 
+func TestAgentReplayAllowsAdapterActivityEvents(t *testing.T) {
+	for _, kind := range []string{"activity.turn.started", "activity.tool.started", "activity.tool.completed", "activity.tool.failed", "activity.approval.requested", "activity.approval.resolved"} {
+		if !isAgentEventKind(kind) {
+			t.Fatalf("%s must survive Agent replay", kind)
+		}
+	}
+	if isAgentEventKind("activity.unrecognized") {
+		t.Fatal("unrecognized activity must not survive Agent replay")
+	}
+}
+
 func TestAgentReplayRejectsInternalOnlyKinds(t *testing.T) {
 	for _, kind := range []string{"message.system", "message.custom", "message.hookMessage", "custom_message"} {
 		if isAgentEventKind(kind) {
