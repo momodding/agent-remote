@@ -252,3 +252,42 @@ For each marker attempt retain the nonce, terminal session ID, socket open/close
 ### A05 conclusion — dedicated trace sufficient
 
 The existing A05 trace is sufficient: it covers bridge production, adapter reduction/persistence, runtime replay, and AgentScreen rendering. **Reproduce** with one OMP turn that emits thinking, a tool start/end, and an approval pause; correlate Raw Terminal, bridge frames, Agent Remote cursor history, and the Android activity surface. **Exact root cause:** bridge lifecycle detail is reduced to coarse AgentSession state before it reaches the durable Agent Remote activity protocol, while generic `state` has no visible AgentScreen branch and `message.thinking` falls through to a system-text bubble; the send spinner reflects only request submission. **Regression candidates:** one ordered bridge fixture for `turn_start -> tool_start -> tool_end -> turn_end`, one approval fixture, durable/replay assertions for an explicit allowlisted activity vocabulary, and a focused AgentScreen renderer test for every activity/thinking state. **Required evidence:** timestamps and cursors for each bridge frame, persisted event, replay frame, and visible activity item, plus Raw Terminal comparison. No raw hook/system/custom content may be used as activity filler.
+
+---
+
+## Root-Cause Tranche: A08 — noVNC “Creating RFB…” (2026-10-01)
+
+### Exact path and confirmed boundaries
+
+```text
+Desktop route
+  -> POST /v1/desktop/sessions (Bearer API client)
+  -> server VNC TCP preflight -> 60-second one-use desktop ticket + wsUrl
+  -> React Native WebView HTML embeds the pinned noVNC bundle
+  -> new window.RFB(screen, wsUrl)
+  -> direct binary WSS /v1/ws/rfb?ticket=… upgrade
+  -> validate ticket -> TCP dial configured 127.0.0.1:VNCPort
+  -> successful upgrade -> atomically consume ticket
+  -> transparent binary WebSocket <-> TCP RFB relay
+  -> noVNC RFB negotiation -> framebuffer -> connect event
+```
+
+- **Desktop creation:** `DesktopScreen` loads the paired connection and calls `AgenticRemoteAPI.createDesktopSession`. The server performs a 100ms TCP reachability preflight, then issues a one-use, 60-second `desktop:connect` ticket and public `wsUrl` (`client/app/desktop.tsx`, `client/src/lib/api.ts`, `backend/internal/server/server.go`).
+- **WebView/noVNC:** only after POST success, HTML injects the local generated noVNC script, reports `Creating RFB…`, constructs `new window.RFB(screen, wsUrl)`, enables viewport scale/resize, and reports `connect`, `disconnect`, `securityfailure`, window error, or unhandled rejection back to React Native. `Creating RFB…` therefore proves HTML/script execution reached the constructor call; it does **not** prove WebSocket upgrade, ticket consumption, RFB version/security negotiation, or framebuffer arrival.
+- **Direct RFB proxy:** the RFB endpoint validates ticket/scope/expiry before resource acquisition, limits connections, dials local VNC with a five-second timeout, upgrades the browser WebSocket, and only then consumes the ticket. It accepts binary frames only and relays raw bytes; it does not parse RFB protocol or know whether a framebuffer was negotiated. The ticket remains usable after a failed VNC dial, but cannot be reused after successful upgrade/consumption.
+- **Current test evidence:** server tests cover POST authentication/method/VNC-unavailable, ticket issuance/expiry/scope/reuse, failed-dial non-consumption, binary byte flow, fragmentation, close behavior, and rejection of text frames. They prove the server relay/ticket contract, not that Android WebView/noVNC negotiates a live RFB session or displays a framebuffer.
+
+### Fact-separated root-cause map
+
+- **Proven current observability gap:** React Native receives only coarse status strings. The proxy logs connect/dial/read/write errors but exposes no correlation ID, upgrade result, close code, ticket age/consumption result, RFB protocol phase, or framebuffer milestone to the device. A persistent `Creating RFB…` cannot be localized from current client-visible data.
+- **Unresolved hypotheses:** (1) POST/preflight passes but ticket expires before WSS upgrade; (2) noVNC bundle/window.RFB constructor/event wiring fails; (3) Android WebView rejects/never completes the WSS upgrade; (4) ticket validation/consumption or VNC dial fails; (5) TCP relay opens but RFB version/security/auth negotiation fails; (6) negotiation succeeds but no framebuffer arrives or viewport/canvas is invisible. No hypothesis may be collapsed into a terminal/OMP diagnosis.
+
+### Sanitized opt-in diagnostics plan (not implemented)
+
+Enable diagnostics only per user/session and emit no ticket, token, RFB payload, framebuffer, keyboard input, or raw VNC error bytes. Correlate a generated desktop-attempt ID with: POST HTTP status/latency and ticket expiry delta; URL **origin/path only** plus a one-way ticket fingerprint; WebView load/error and noVNC status/event timestamps; proxy stages `ticket_valid`, `vnc_dial_ok|class`, `ws_upgraded`, `ticket_consumed`, binary byte counts, close code/direction; and RFB milestones limited to protocol version/security type/auth result/server-init/framebuffer-first-byte. Android evidence also includes WebView console/logcat, network-security/TLS failure class, display bounds, and final on-screen status. This isolates the first failed boundary without turning the proxy into an RFB recorder.
+
+### Regression evidence and reproduction
+
+- **Reproduction route:** start the normal configured VNC service; create exactly one desktop session; record POST/ticket expiry delta; load the existing Desktop route; wait for `RFB initialized`, then either `Desktop connected` or an explicit terminal diagnostic phase. Do not refresh/retry the same route ticket after a successful WSS upgrade, because one-use consumption makes that a different failure path.
+- **Narrow regression candidates:** retain existing POST/ticket/byte-relay tests; add a direct compatible-RFB integration evidence test that performs the normal server version/security/client-init/server-init path and verifies first framebuffer bytes cross the same binary proxy (not a JSON or terminal substitute); add Desktop WebView message-contract tests for constructor, connect, disconnect, security failure, and WebView error states; add an opt-in diagnostic redaction test proving ticket/token/framebuffer bytes never appear in reports.
+- **Required runtime evidence:** attempt ID, POST response class/time, sanitized ticket age/fingerprint, WebView load/noVNC status timeline, WSS upgrade response/close data, proxy stage timeline, VNC reachability, negotiated RFB milestones, first-framebuffer-byte timestamp, and Android WebView/logcat diagnostics. A ticket must be captured only by fingerprint and never pasted into the ledger or logs.
