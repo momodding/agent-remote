@@ -196,11 +196,11 @@ func TestPublicEndpointValidation(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "rejects unsupported scheme", endpoint: "ftp://host:8765", wantErr: true},
+		{name: "rejects plaintext http host", endpoint: "http://host.example.com:8765", wantErr: true},
 		{name: "rejects missing host", endpoint: "https://", wantErr: true},
 		{name: "rejects query", endpoint: "https://host:8765?x=1", wantErr: true},
 		{name: "rejects path", endpoint: "https://host.example.com/base", wantErr: true},
 		{name: "accepts https host", endpoint: "https://host.example.com:8765", wantErr: false},
-		{name: "accepts http host", endpoint: "http://host.example.com:8765", wantErr: false},
 	}
 
 	for _, tt := range tests {

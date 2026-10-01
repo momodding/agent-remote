@@ -81,8 +81,8 @@ func Validate(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("invalid publicEndpoint: %w", err)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("publicEndpoint must use http or https")
+	if u.Scheme != "https" {
+		return errors.New("publicEndpoint must use https")
 	}
 	if u.Host == "" {
 		return errors.New("publicEndpoint must include host")

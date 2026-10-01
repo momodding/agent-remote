@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,19 @@ type testDaemon struct {
 	baseURL   string
 	token     string
 	pairingID string
+}
+
+func testTLSClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // test daemon uses its generated local certificate
+		},
+	}
+}
+
+func testWebSocketOptions(timeout time.Duration) *websocket.DialOptions {
+	return &websocket.DialOptions{HTTPClient: testTLSClient(timeout)}
 }
 
 func getFreePort(t *testing.T) int {
@@ -77,7 +91,7 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 	port := getFreePort(t)
 	cfg := config.Default()
 	cfg.ListenAddr = fmt.Sprintf("127.0.0.1:%d", port)
-	cfg.PublicEndpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
+	cfg.PublicEndpoint = fmt.Sprintf("https://127.0.0.1:%d", port)
 	cfg.StateDir = "state"
 	cfg.WorkspaceRoot = "workspace"
 	cfg.PairingPageUsername = "admin"
@@ -116,13 +130,13 @@ func startTestDaemon(t *testing.T, binPath, name string) *testDaemon {
 		workDir:  workDir,
 		cfgPath:  cfgPath,
 		port:     port,
-		baseURL:  fmt.Sprintf("http://127.0.0.1:%d", port),
+		baseURL:  fmt.Sprintf("https://127.0.0.1:%d", port),
 	}
 
 	// Wait for daemon to be ready on /pairing
 	deadline := time.Now().Add(10 * time.Second)
 	ready := false
-	client := &http.Client{Timeout: 1 * time.Second}
+	client := testTLSClient(time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, d.baseURL+"/pairing", nil)
@@ -168,7 +182,7 @@ func restartTestDaemon(t *testing.T, binPath string, d *testDaemon) {
 	d.cmd = cmd
 	deadline := time.Now().Add(10 * time.Second)
 	ready := false
-	client := &http.Client{Timeout: 1 * time.Second}
+	client := testTLSClient(time.Second)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, d.baseURL+"/v1/agents", nil)
 		req.Header.Set("Authorization", "Bearer "+d.token)
@@ -197,7 +211,7 @@ func pairDaemon(t *testing.T, d *testDaemon) {
 		t.Fatal(err)
 	}
 	req.SetBasicAuth("admin", "password")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testTLSClient(5 * time.Second).Do(req)
 	if err != nil {
 		t.Fatalf("failed to fetch /pairing: %v", err)
 	}
@@ -226,8 +240,8 @@ func pairDaemon(t *testing.T, d *testDaemon) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/sessions/bootstrap", d.port)
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	wsURL := fmt.Sprintf("wss://127.0.0.1:%d/v1/ws/sessions/bootstrap", d.port)
+	conn, _, err := websocket.Dial(ctx, wsURL, testWebSocketOptions(5*time.Second))
 	if err != nil {
 		t.Fatalf("failed to dial bootstrap WS %s: %v", wsURL, err)
 	}
@@ -325,7 +339,7 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		t.Fatalf("Tokens must be distinct: Token A = %s, Token B = %s", dA.token, dB.token)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := testTLSClient(5 * time.Second)
 
 	terminalBackend := "pty"
 	if _, err := exec.LookPath("tmux"); err == nil {
@@ -639,7 +653,7 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		defer cancelWS()
 
 		// Dial WS on Daemon A
-		wsA, _, err := websocket.Dial(ctxWS, fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/runtime", dA.port), nil)
+		wsA, _, err := websocket.Dial(ctxWS, fmt.Sprintf("wss://127.0.0.1:%d/v1/ws/runtime", dA.port), testWebSocketOptions(10*time.Second))
 		if err != nil {
 			t.Fatalf("failed to dial runtime WS on A: %v", err)
 		}
@@ -659,7 +673,7 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		}
 
 		// Dial WS on Daemon B
-		wsB, _, err := websocket.Dial(ctxWS, fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/runtime", dB.port), nil)
+		wsB, _, err := websocket.Dial(ctxWS, fmt.Sprintf("wss://127.0.0.1:%d/v1/ws/runtime", dB.port), testWebSocketOptions(10*time.Second))
 		if err != nil {
 			t.Fatalf("failed to dial runtime WS on B: %v", err)
 		}
@@ -732,7 +746,7 @@ func TestMultiDaemonIsolation(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		connA, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d/v1/ws/runtime", dA.port), nil)
+		connA, _, err := websocket.Dial(ctx, fmt.Sprintf("wss://127.0.0.1:%d/v1/ws/runtime", dA.port), testWebSocketOptions(5*time.Second))
 		if err != nil {
 			t.Fatalf("failed to dial runtime ws on A: %v", err)
 		}

@@ -334,7 +334,7 @@ This audit compares each source-proven remediation contract with committed focus
 | A05 | AgentScreen regressions cover all six allowlisted activity labels: turn start, tool start/completed/failed, approval requested/resolved | Covered. Activity remains distinct from user/assistant chat rendering. | One real thinking/tool/approval timeline correlated with bridge/runtime timestamps and mobile UI. |
 | A06 | AgentScreen Android IME regression measures `keyboardDidShow` inset, applies it to the chat container, and clears it on hide | Covered for the production inset calculation. | Real IME heights, gesture navigation, and font-scale viewport bounds on Android. |
 | A07 | AgentScreen tool-call/result expand-collapse contracts plus ordered five-turn visible history | Covered for the deliberate preview/full-content affordance and event retention. | Narrow-device long prose/token/code layout with IME open. |
-| A08 | Desktop ticket attempt binding, strict UUID/redaction, binary byte relay, compatible-RFB Phase 5 integration, and native/web noVNC message contracts | Covered for ticket security, binary proxy behavior, diagnostics, and compatible RFB traversal. | Android WebView WSS/RFB/framebuffer and logcat timeline with only sanitized attempt metadata. |
+| A08 | Desktop tickets require HTTPS public endpoint and always return `wss://`; strict UUID/redaction, binary byte relay, compatible-RFB Phase 5 integration, and native/web noVNC message contracts | Corrected 2026-10-02: prior coverage mistakenly allowed `ws://` for HTTP loopback. `TestHandleDesktopSessionCreateRejectsPlaintextHTTP` now rejects public, IPv4 loopback, localhost, and IPv6 loopback HTTP; `TestHandleDesktopSessionCreateSuccess` requires `wss://`; config validation rejects HTTP public endpoints. Ticket security, binary proxy behavior, diagnostics, and compatible RFB traversal remain covered. | Android WebView WSS/RFB/framebuffer and logcat timeline with only sanitized attempt metadata. |
 | A09 | Existing component regressions exercise shortcut input; changed target dimensions are source-proven 48dp minimums | No additional test: asserting stylesheet dimensions would test implementation rather than observable behavior. | Physical-device touch-target, contrast, high-DPI, orientation, and layout-shift assessment. |
 | A10 | `TestTranscriptNeverPromotesInternalContentToChatVisible`; `TestAgentReplayRejectsInternalOnlyKinds`; AgentScreen allowlist regressions | Covered across fallback projection, replay admission, and client presentation. | Controlled harmless hook fixture and Android chat screenshot, with no real prompt/secret content captured. |
 
@@ -381,13 +381,12 @@ Source: `plans/oracle-review-a01-a10.md` (three release blockers: A02 FAIL, A05 
 
 ### A08 — WSS enforcement and OriginPatterns (subagent RFBTransportSecurityFix)
 
-**Oracle findings:** (1) public HTTP endpoints could issue `ws://` desktop tickets; (2) `InsecureSkipVerify: true` in gorilla upgrade; (3) bearer token should never appear in URLs.
-
-**Fix:** committed by subagent as `41f16a6 fix(server): secure desktop RFB transport`:
-- `createDesktopSession` rejects public HTTP before ticket issuance (test: `TestHandleDesktopSessionCreateRejectsPublicHTTP`); allows loopback `listenScheme=http` (test: `TestHandleDesktopSessionCreateAllowsLoopbackHTTPDevelopment`).
+**Original 2026-10-01 fix:** committed by subagent as `41f16a6 fix(server): secure desktop RFB transport`:
 - WebSocket upgrade uses `websocket.Upgrader{CheckOrigin: ...}` with `OriginPatterns`, not `InsecureSkipVerify`.
 - Cross-origin RFB upgrades rejected (test: `TestHandleRFBProxyRejectsCrossOriginUpgrade`).
 - Bearer token never in URL; no RFB frame content logged.
+
+**Correction (2026-10-02):** `41f16a6` was incomplete: `desktopWebSocketBase` made a loopback HTTP/`listenScheme=http` exception and emitted `ws://`. `omp(android-runtime-ux-remediation): Require WSS for all RFB tickets` removes that exception. `desktopWebSocketBase` accepts only HTTPS public endpoints and always maps them to `wss://`; it fails before ticket issue otherwise. `config.Validate` also rejects every HTTP public endpoint, so daemon startup fails securely instead of advertising a plaintext endpoint. `TestHandleDesktopSessionCreateRejectsPlaintextHTTP` covers public, IPv4 loopback, `localhost`, and IPv6 loopback HTTP; `TestHandleDesktopSessionCreateSuccess` asserts `wss://`; `TestPublicEndpointValidation` rejects HTTP. Focused server/config tests pass.
 
 **Provenance note:** `41f16a6` also incidentally swept staged `plans/android-flow-auditor-review-20261001.md` into its commit; commit message deviates from `omp(...)` convention. Git history not amended; provenance recorded at `## Focused Regression Coverage Audit` section above.
 

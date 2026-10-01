@@ -1269,61 +1269,49 @@ func TestHandleDesktopSessionCreateSuccess(t *testing.T) {
 	if err != nil || len(decoded) != 32 {
 		t.Fatalf("expected 32-byte raw url-encoded ticket, got %v len=%d", err, len(decoded))
 	}
-	if !strings.Contains(resp.WSUrl, "/v1/ws/rfb?ticket=") {
-		t.Fatalf("expected wsUrl to contain /v1/ws/rfb?ticket=, got %s", resp.WSUrl)
+	if !strings.HasPrefix(resp.WSUrl, "wss://") || !strings.Contains(resp.WSUrl, "/v1/ws/rfb?ticket=") {
+		t.Fatalf("expected wss desktop URL with ticket path, got %q", resp.WSUrl)
 	}
 	if !resp.ExpiresAt.After(time.Now()) {
 		t.Fatalf("expected expiresAt in future, got %v", resp.ExpiresAt)
 	}
 }
 
-func TestHandleDesktopSessionCreateRejectsPublicHTTP(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	srv.cfg.PublicEndpoint = "http://desktop.example.test"
-	token := testBearerToken(t, srv, pairings)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+func TestHandleDesktopSessionCreateRejectsPlaintextHTTP(t *testing.T) {
+	tests := []struct {
+		name         string
+		endpoint     string
+		listenScheme string
+	}{
+		{name: "public endpoint", endpoint: "http://desktop.example.test", listenScheme: "https"},
+		{name: "loopback endpoint", endpoint: "http://127.0.0.1:8765", listenScheme: "http"},
+		{name: "localhost endpoint", endpoint: "http://localhost:8765", listenScheme: "http"},
+		{name: "IPv6 loopback endpoint", endpoint: "http://[::1]:8765", listenScheme: "http"},
 	}
 
-	var response protocol.ErrorEnvelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != "desktop_requires_wss" {
-		t.Fatalf("expected desktop_requires_wss, got %q", response.Code)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, pairings := newBootstrapServer(t)
+			srv.cfg.PublicEndpoint = tt.endpoint
+			srv.cfg.ListenScheme = tt.listenScheme
+			token := testBearerToken(t, srv, pairings)
 
-func TestHandleDesktopSessionCreateAllowsLoopbackHTTPDevelopment(t *testing.T) {
-	srv, pairings := newBootstrapServer(t)
-	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vncListener.Close()
-	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
-	srv.cfg.ListenScheme = "http"
-	srv.cfg.PublicEndpoint = "http://127.0.0.1:8765"
-	token := testBearerToken(t, srv, pairings)
+			req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var response protocol.DesktopSessionResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(response.WSUrl, "ws://127.0.0.1:8765/") {
-		t.Fatalf("expected loopback development ws URL, got %q", response.WSUrl)
+			var response protocol.ErrorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != "desktop_requires_wss" {
+				t.Fatalf("expected desktop_requires_wss, got %q", response.Code)
+			}
+		})
 	}
 }
 

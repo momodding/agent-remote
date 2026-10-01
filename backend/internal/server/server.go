@@ -1501,27 +1501,12 @@ func (s *Server) desktopWebSocketBase() (string, error) {
 		return "", errors.New("desktop requires a valid public endpoint")
 	}
 
-	switch endpoint.Scheme {
-	case "https":
-		endpoint.Scheme = "wss"
-	case "http":
-		if s.cfg.ListenScheme != "http" || !isLoopbackHost(endpoint.Hostname()) {
-			return "", errors.New("desktop requires an https public endpoint")
-		}
-		endpoint.Scheme = "ws"
-	default:
+	if endpoint.Scheme != "https" {
 		return "", errors.New("desktop requires an https public endpoint")
 	}
+	endpoint.Scheme = "wss"
 	endpoint.Path = ""
 	return strings.TrimRight(endpoint.String(), "/"), nil
-}
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) desktopOriginAllowed(origin string) bool {
