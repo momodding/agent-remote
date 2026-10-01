@@ -1464,6 +1464,12 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	wsBase, err := s.desktopWebSocketBase()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "desktop_requires_wss", Message: err.Error()})
+		return
+	}
+
 	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
 	conn, err := net.DialTimeout("tcp", vncAddr, 100*time.Millisecond)
 	if err != nil {
@@ -1480,13 +1486,6 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 	}
 	desktopDiagnostic(attemptID, "ticket_issued")
 
-	wsBase := s.cfg.PublicEndpoint
-	if strings.HasPrefix(wsBase, "https://") {
-		wsBase = "wss://" + strings.TrimPrefix(wsBase, "https://")
-	} else if strings.HasPrefix(wsBase, "http://") {
-		wsBase = "ws://" + strings.TrimPrefix(wsBase, "http://")
-	}
-	wsBase = strings.TrimRight(wsBase, "/")
 	wsUrl := fmt.Sprintf("%s/v1/ws/rfb?ticket=%s", wsBase, url.QueryEscape(ticket))
 
 	writeJSON(w, http.StatusOK, protocol.DesktopSessionResponse{
@@ -1494,6 +1493,47 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 		WSUrl:     wsUrl,
 		ExpiresAt: expiresAt,
 	})
+}
+
+func (s *Server) desktopWebSocketBase() (string, error) {
+	endpoint, err := url.Parse(s.cfg.PublicEndpoint)
+	if err != nil || endpoint.Host == "" {
+		return "", errors.New("desktop requires a valid public endpoint")
+	}
+
+	switch endpoint.Scheme {
+	case "https":
+		endpoint.Scheme = "wss"
+	case "http":
+		if s.cfg.ListenScheme != "http" || !isLoopbackHost(endpoint.Hostname()) {
+			return "", errors.New("desktop requires an https public endpoint")
+		}
+		endpoint.Scheme = "ws"
+	default:
+		return "", errors.New("desktop requires an https public endpoint")
+	}
+	endpoint.Path = ""
+	return strings.TrimRight(endpoint.String(), "/"), nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (s *Server) desktopOriginAllowed(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	expected, err := url.Parse(s.cfg.PublicEndpoint)
+	if err != nil {
+		return false
+	}
+	actual, err := url.Parse(origin)
+	return err == nil && actual.Scheme == expected.Scheme && strings.EqualFold(actual.Host, expected.Host)
 }
 
 func desktopDiagnosticAttempt(value string) string {
@@ -1526,6 +1566,11 @@ func desktopDiagnostic(attemptID, stage string, details ...any) {
 }
 
 func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.desktopOriginAllowed(r.Header.Get("Origin")) {
+		writeJSON(w, http.StatusForbidden, protocol.ErrorEnvelope{Type: "error", Code: "forbidden_origin", Message: "origin is not allowed"})
+		return
+	}
+
 	ticketPlain := r.URL.Query().Get("ticket")
 	attemptID, valid := s.desktopTickets.Attempt(ticketPlain, "desktop:connect", time.Now())
 	if !valid {
@@ -1552,7 +1597,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
-	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
+	acceptOpts := &websocket.AcceptOptions{OriginPatterns: []string{s.cfg.PublicEndpoint}}
 	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
 		for _, p := range strings.Split(h, ",") {
 			acceptOpts.Subprotocols = append(acceptOpts.Subprotocols, strings.TrimSpace(p))

@@ -1277,6 +1277,83 @@ func TestHandleDesktopSessionCreateSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleDesktopSessionCreateRejectsPublicHTTP(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	srv.cfg.PublicEndpoint = "http://desktop.example.test"
+	token := testBearerToken(t, srv, pairings)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response protocol.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != "desktop_requires_wss" {
+		t.Fatalf("expected desktop_requires_wss, got %q", response.Code)
+	}
+}
+
+func TestHandleDesktopSessionCreateAllowsLoopbackHTTPDevelopment(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vncListener.Close()
+	srv.cfg.VNCPort = vncListener.Addr().(*net.TCPAddr).Port
+	srv.cfg.ListenScheme = "http"
+	srv.cfg.PublicEndpoint = "http://127.0.0.1:8765"
+	token := testBearerToken(t, srv, pairings)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktop/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response protocol.DesktopSessionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(response.WSUrl, "ws://127.0.0.1:8765/") {
+		t.Fatalf("expected loopback development ws URL, got %q", response.WSUrl)
+	}
+}
+
+func TestHandleRFBProxyRejectsCrossOriginUpgrade(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	srv.cfg.PublicEndpoint = ts.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, response, err := websocket.Dial(ctx, ts.URL+"/v1/ws/rfb?ticket="+ticket, &websocket.DialOptions{
+		HTTPClient: ts.Client(),
+		HTTPHeader: http.Header{"Origin": []string{"https://attacker.example.test"}},
+	})
+	if err == nil {
+		t.Fatal("expected cross-origin upgrade to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusForbidden {
+		if response == nil {
+			t.Fatal("expected forbidden response")
+		}
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+}
+
 func TestHandleRFBProxyMissingTicket(t *testing.T) {
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()
