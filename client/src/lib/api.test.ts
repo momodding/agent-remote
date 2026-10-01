@@ -125,11 +125,11 @@ describe('AgenticRemoteAPI createDesktopSession', () => {
     Object.defineProperty(globalThis, 'fetch', { value: fetch, writable: true, configurable: true });
     const { AgenticRemoteAPI } = loadModule();
     const api = new AgenticRemoteAPI(connection);
-    const res = await api.createDesktopSession();
+    const res = await api.createDesktopSession('desktop-attempt-1');
     expect(res).toEqual(mockSession);
     expect(fetch).toHaveBeenCalledWith('https://daemon.example/v1/desktop/sessions', expect.objectContaining({
       method: 'POST',
-      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token', 'X-AgenticRemote-Desktop-Attempt': 'desktop-attempt-1' }),
     }));
   });
 });

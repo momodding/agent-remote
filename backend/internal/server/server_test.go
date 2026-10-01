@@ -71,7 +71,7 @@ func (replayOverflowAgents) History(agentID string) (*protocol.AgentHistoryRespo
 
 type recordingAgents struct {
 	replayOverflowAgents
-	req protocol.CreateSessionRequest
+	req        protocol.CreateSessionRequest
 	terminated []string
 }
 
@@ -1390,6 +1390,10 @@ func TestHandleRFBProxyReusedTicket(t *testing.T) {
 func TestHandleRFBProxyBytesFlow(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	token := testBearerToken(t, srv, pairings)
+	var diagnostics bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&diagnostics)
+	defer log.SetOutput(previousLogWriter)
 
 	vncListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1424,6 +1428,7 @@ func TestHandleRFBProxyBytesFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AgenticRemote-Desktop-Attempt", "desktop-attempt-42")
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1456,6 +1461,17 @@ func TestHandleRFBProxyBytesFlow(t *testing.T) {
 	}
 	if string(reply) != "PONG" {
 		t.Fatalf("expected PONG, got %s", reply)
+	}
+	output := diagnostics.String()
+	for _, stage := range []string{"ticket_issued", "ticket_validated", "vnc_dialed", "websocket_upgraded", "ticket_consumed"} {
+		if !strings.Contains(output, "attempt=desktop-attempt-42 stage="+stage) {
+			t.Fatalf("missing diagnostic stage %q: %s", stage, output)
+		}
+	}
+	for _, secret := range []string{sessResp.Ticket, token, "PING", "PONG"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("diagnostic output leaked sensitive transport content")
+		}
 	}
 }
 
@@ -1833,6 +1849,7 @@ func TestAgentHistoryEndpoint(t *testing.T) {
 }
 
 var _ = tls.VersionTLS12
+
 func TestServerSessionCapacityExceeded429(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	if mc, ok := srv.sessions.(interface{ SetMaxSessions(int) }); ok {

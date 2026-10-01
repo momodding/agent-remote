@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/config"
@@ -1471,11 +1472,13 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 	}
 	_ = conn.Close()
 
-	ticket, expiresAt, err := s.desktopTickets.Issue("desktop:connect", 60*time.Second, time.Now())
+	attemptID := desktopDiagnosticAttempt(r.Header.Get("X-AgenticRemote-Desktop-Attempt"))
+	ticket, expiresAt, err := s.desktopTickets.IssueForAttempt("desktop:connect", attemptID, 60*time.Second, time.Now())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, protocol.ErrorEnvelope{Type: "error", Code: "internal_error", Message: "failed to generate ticket"})
 		return
 	}
+	desktopDiagnostic(attemptID, "ticket_issued")
 
 	wsBase := s.cfg.PublicEndpoint
 	if strings.HasPrefix(wsBase, "https://") {
@@ -1493,24 +1496,40 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func desktopDiagnosticAttempt(value string) string {
+	if len(value) == 0 || len(value) > 64 {
+		return ""
+	}
+	for _, char := range value {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_') {
+			return ""
+		}
+	}
+	return value
+}
+
+func desktopDiagnostic(attemptID, stage string, details ...any) {
+	if attemptID == "" {
+		return
+	}
+	log.Printf("[desktop diagnostic] attempt=%s stage=%s %v", attemptID, stage, details)
+}
+
 func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
-	// 1. Validate desktop ticket before resource acquisition or backend dial (fail closed)
 	ticketPlain := r.URL.Query().Get("ticket")
-	if ticketPlain == "" || s.desktopTickets == nil || !s.desktopTickets.Valid(ticketPlain, "desktop:connect", time.Now()) {
+	attemptID, valid := s.desktopTickets.Attempt(ticketPlain, "desktop:connect", time.Now())
+	if !valid {
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorEnvelope{Type: "error", Code: "unauthorized", Message: "authentication failed"})
 		return
 	}
+	desktopDiagnostic(attemptID, "ticket_validated")
 
-	log.Printf("[INFO] Connection opened | Type: noVNC | IP: %s | Endpoint: %s", r.RemoteAddr, r.URL.Path)
-
-	// 2. Resource limits
 	if err := s.limits.AcquireWS(r.Context()); err != nil {
 		writeJSON(w, http.StatusTooManyRequests, protocol.ErrorEnvelope{Type: "error", Code: "max_connections", Message: err.Error()})
 		return
 	}
 	defer s.limits.ReleaseWS()
-
-	// 3. Backend availability
+	desktopDiagnostic(attemptID, "connection_slot_acquired")
 	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
 	tcpConn, err := net.DialTimeout("tcp", vncAddr, 5*time.Second)
 	if err != nil {
@@ -1519,13 +1538,10 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tcpConn.Close()
-
-	// 4. Disable global write timeouts on the HTTP connection
+	desktopDiagnostic(attemptID, "vnc_dialed")
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
-
-	// 5. Upgrade
 	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
 	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
 		for _, p := range strings.Split(h, ",") {
@@ -1537,15 +1553,17 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ERROR] VNC proxy: websocket accept: %v", err)
 		return
 	}
+	desktopDiagnostic(attemptID, "websocket_upgraded")
 	wsConn.SetReadLimit(32 * 1024 * 1024)
-
-	// 6. Consume ticket atomically after successful WebSocket upgrade
 	if !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
 		_ = wsConn.Close(websocket.StatusPolicyViolation, "ticket already consumed")
 		return
 	}
-
-	// 7. Bridge: keep TCP reads alive after a clean WebSocket close.
+	desktopDiagnostic(attemptID, "ticket_consumed")
+	var clientToServer, serverToClient atomic.Uint64
+	defer func() {
+		desktopDiagnostic(attemptID, "closed", "client_to_server_bytes", clientToServer.Load(), "server_to_client_bytes", serverToClient.Load())
+	}()
 	var wsMux sync.Mutex
 	tcpToWS := make(chan struct{})
 	go func() {
@@ -1565,6 +1583,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 			if n == 0 {
 				continue
 			}
+			serverToClient.Add(uint64(n))
 			wsMux.Lock()
 			writeErr := wsConn.Write(r.Context(), websocket.MessageBinary, buf[:n])
 			wsMux.Unlock()
@@ -1574,7 +1593,6 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-
 	for {
 		msgType, data, err := wsConn.Read(r.Context())
 		if err != nil {
@@ -1601,6 +1619,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[DEBUG] VNC proxy: TCP write error: %v", err)
 			return
 		}
+		clientToServer.Add(uint64(len(data)))
 	}
 }
 

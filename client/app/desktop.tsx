@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Crypto from 'expo-crypto';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
@@ -10,7 +11,7 @@ import { AgenticRemoteAPI } from '../src/lib/api';
 import type { DesktopWorkspaceTab } from '../src/lib/tabs/types';
 import noVNCScript from '../src/generated/novnc_script';
 
-function buildDesktopHTML(wsUrl: string): string {
+function buildDesktopHTML(wsUrl: string, attemptID: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -23,24 +24,25 @@ html,body,#screen{margin:0;padding:0;width:100%;height:100%;overflow:hidden;back
 <script>
 const screen = document.getElementById('screen');
 const status = document.getElementById('status');
-const report = (message) => {
+const report = (message, stage) => {
   status.textContent = message;
   window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message }));
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage }));
 };
-window.addEventListener('error', () => report('Desktop view failed'));
-window.addEventListener('unhandledrejection', () => report('Desktop view failed'));
+window.addEventListener('error', () => report('Desktop view failed', 'window_error'));
+window.addEventListener('unhandledrejection', () => report('Desktop view failed', 'unhandled_rejection'));
 
 try {
-  report('Creating RFB…');
+  report('Creating RFB…', 'rfb_creating');
   const rfb = window.rfb = new window.RFB(screen, ${JSON.stringify(wsUrl)});
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
-  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed'));
-  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message: 'RFB initialized' }));
+  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
+  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly', 'rfb_disconnected'));
+  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed', 'rfb_security_failure'));
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage: 'rfb_initialized' }));
 } catch {
-  report('Could not load noVNC client');
+  report('Could not load noVNC client', 'rfb_load_failed');
 }
 </script></body></html>`;
 }
@@ -53,6 +55,7 @@ export default function DesktopScreen() {
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
   const webRef = useRef<WebView>(null);
+  const attemptID = useRef(Crypto.randomUUID()).current;
 
   useEffect(() => {
     if (!tab) return;
@@ -63,7 +66,7 @@ export default function DesktopScreen() {
       setConnection(conn);
       try {
         const api = new AgenticRemoteAPI(conn);
-        const session = await api.createDesktopSession();
+        const session = await api.createDesktopSession(attemptID);
         if (active) {
           setWsUrl(session.wsUrl);
         }
@@ -78,16 +81,15 @@ export default function DesktopScreen() {
     };
   }, [tab?.tabId]);
 
-  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl) : ''), [wsUrl]);
-
+  const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl, attemptID) : ''), [wsUrl, attemptID]);
   const onMessage = (event: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'status') {
+      if (data.type === 'status' && typeof data.message === 'string') {
         setStatus(data.message);
       }
     } catch {
-      setStatus(event.nativeEvent.data);
+      setStatus('Desktop view failed');
     }
   };
 

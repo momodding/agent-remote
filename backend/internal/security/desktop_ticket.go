@@ -7,6 +7,7 @@ import (
 
 type desktopTicketRecord struct {
 	Scope     string
+	AttemptID string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
 	Consumed  bool
@@ -28,6 +29,11 @@ func NewDesktopTicketStore() *DesktopTicketStore {
 // Issue generates a 32-byte cryptographically random base64url ticket, records its hash,
 // and returns the plaintext ticket along with its expiration timestamp.
 func (s *DesktopTicketStore) Issue(scope string, ttl time.Duration, now time.Time) (string, time.Time, error) {
+	return s.IssueForAttempt(scope, "", ttl, now)
+}
+
+// IssueForAttempt binds an optional opaque diagnostic correlation ID to a ticket.
+func (s *DesktopTicketStore) IssueForAttempt(scope, attemptID string, ttl time.Duration, now time.Time) (string, time.Time, error) {
 	plain, err := randomEncoded(32)
 	if err != nil {
 		return "", time.Time{}, err
@@ -43,6 +49,7 @@ func (s *DesktopTicketStore) Issue(scope string, ttl time.Duration, now time.Tim
 	expiresAt := now.Add(ttl)
 	s.tickets[hash] = desktopTicketRecord{
 		Scope:     scope,
+		AttemptID: attemptID,
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		Consumed:  false,
@@ -50,6 +57,7 @@ func (s *DesktopTicketStore) Issue(scope string, ttl time.Duration, now time.Tim
 
 	return plain, expiresAt, nil
 }
+
 // Valid checks whether the plaintext ticket is currently valid for the required scope at the given timestamp.
 // It does not mutate the ticket state or mark it consumed.
 func (s *DesktopTicketStore) Valid(plaintext, requiredScope string, now time.Time) bool {
@@ -68,7 +76,6 @@ func (s *DesktopTicketStore) Valid(plaintext, requiredScope string, now time.Tim
 	}
 	return !rec.Consumed && !now.After(rec.ExpiresAt) && rec.Scope == requiredScope
 }
-
 
 // Consume validates the plaintext ticket for the required scope at the given timestamp.
 // If valid and unconsumed, it atomically marks the ticket as consumed and returns true.
@@ -96,6 +103,21 @@ func (s *DesktopTicketStore) Consume(plaintext string, requiredScope string, now
 	rec.Consumed = true
 	s.tickets[hash] = rec
 	return true
+}
+
+// Attempt returns a valid ticket's diagnostic correlation ID without consuming it.
+func (s *DesktopTicketStore) Attempt(plaintext, requiredScope string, now time.Time) (string, bool) {
+	if plaintext == "" {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(now)
+	rec, ok := s.tickets[hashToken(plaintext)]
+	if !ok || rec.Consumed || now.After(rec.ExpiresAt) || rec.Scope != requiredScope {
+		return "", false
+	}
+	return rec.AttemptID, true
 }
 
 func (s *DesktopTicketStore) sweepLocked(now time.Time) {

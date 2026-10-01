@@ -45,8 +45,8 @@ export class AgenticRemoteAPI {
   async createSession(request: CreateSessionRequest): Promise<SessionSummary> {
     return this.request('/v1/sessions', { method: 'POST', body: JSON.stringify(request) });
   }
-  async createDesktopSession(): Promise<DesktopSessionResponse> {
-    return this.request('/v1/desktop/sessions', { method: 'POST' });
+  async createDesktopSession(attemptID?: string): Promise<DesktopSessionResponse> {
+    return this.request('/v1/desktop/sessions', { method: 'POST', headers: attemptID ? { 'X-AgenticRemote-Desktop-Attempt': attemptID } : undefined });
   }
 
   async closeSession(id: string): Promise<void> {

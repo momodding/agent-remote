@@ -100,6 +100,27 @@ func TestDesktopTicketStore_ValidDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestDesktopTicketStore_AttemptIsBoundWithoutExposingTicket(t *testing.T) {
+	store := NewDesktopTicketStore()
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ticket, _, err := store.IssueForAttempt("desktop:connect", "attempt-42", time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, ok := store.Attempt(ticket, "desktop:connect", now)
+	if !ok || attempt != "attempt-42" {
+		t.Fatalf("attempt = %q, valid = %v", attempt, ok)
+	}
+	if _, ok := store.Attempt(ticket, "other:scope", now); ok {
+		t.Fatal("wrong scope exposed attempt")
+	}
+	if !store.Consume(ticket, "desktop:connect", now) {
+		t.Fatal("consume failed")
+	}
+	if _, ok := store.Attempt(ticket, "desktop:connect", now); ok {
+		t.Fatal("consumed ticket exposed attempt")
+	}
+}
 
 func TestDesktopTicketStore_WrongScope(t *testing.T) {
 	store := NewDesktopTicketStore()

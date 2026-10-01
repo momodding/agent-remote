@@ -107,6 +107,15 @@ describe('native (WebView) desktop', () => {
     expect(html).toContain('/* novnc */');
   });
 
+  it('propagates one sanitized attempt ID through the session request and noVNC diagnostic messages', async () => {
+    const tree = await renderScreen();
+    expect(AgenticRemoteAPI.prototype.createDesktopSession).toHaveBeenCalledWith('generated-tab');
+    const html = tree.root.findByType('WebView' as never).props.source.html as string;
+    expect(html).toContain('type: \'diagnostic\', attemptID: "generated-tab", stage');
+    expect(html).toContain("stage: 'rfb_initialized'");
+    expect(html).not.toContain('test-ticket-123", stage');
+  });
+
   it('reports transport stages in order', async () => {
     const tree = await renderScreen();
     const html = tree.root.findByType('WebView' as never).props.source.html as string;
@@ -129,13 +138,17 @@ describe('native (WebView) desktop', () => {
     expect(tree.root.findAllByProps({ children: 'Desktop connected' })).toHaveLength(0);
   });
 
-  it('falls back to the raw posted body when the WebView message is not JSON', async () => {
+  it('rejects raw or diagnostic WebView messages instead of displaying untrusted transport data', async () => {
     const tree = await renderScreen();
     const webview = tree.root.findByType('WebView' as never);
     await act(async () => {
-      webview.props.onMessage({ nativeEvent: { data: 'not json' } });
+      webview.props.onMessage({ nativeEvent: { data: 'ticket=secret frame=abcdef' } });
     });
-    expect(tree.root.findByProps({ children: 'not json' })).toBeTruthy();
+    expect(tree.root.findByProps({ children: 'Desktop view failed' })).toBeTruthy();
+    await act(async () => {
+      webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'diagnostic', attemptID: 'generated-tab', stage: 'rfb_connected' }) } });
+    });
+    expect(tree.root.findByProps({ children: 'Desktop view failed' })).toBeTruthy();
   });
 
   it('renders the shortcut dock and forwards key/Ctrl+Alt+Del presses via injectJavaScript', async () => {
