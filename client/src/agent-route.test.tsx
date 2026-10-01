@@ -416,7 +416,7 @@ describe('A04 – five-turn chat history/live/resync replay', () => {
 
     const expectedTexts = [1, 2, 3, 4, 5].flatMap((n) => [`turn-${n}-user`, `turn-${n}-assistant`]);
     for (const text of expectedTexts) {
-      expect(tree.root.findAll((node) => node.type === 'Text' && node.props?.children === text).length).toBe(1);
+      expect(tree.root.findAll((node) => node.type === ('Text' as never) && node.props?.children === text).length).toBe(1);
     }
 
     act(() => tree.unmount());
