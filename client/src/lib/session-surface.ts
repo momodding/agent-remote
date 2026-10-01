@@ -10,6 +10,7 @@ export type SessionSurface = {
   kind: TabKind;
   title: string;
   status: string;
+  active: boolean;
   tab?: WorkspaceTab;
   agent?: AgentSession;
   terminal?: RuntimeSnapshot['terminals'][number];
@@ -30,23 +31,25 @@ export function buildSessionSurfaces(daemonId: string, snapshot: RuntimeSnapshot
     if (tab.kind === 'agent') {
       consumedAgentIds.add(tab.agentSessionId);
       const agent = snapshot?.agents.find((candidate) => candidate.id === tab.agentSessionId);
-      agentSurfaces.push({ key: `agent:${tab.agentSessionId}`, kind: 'agent', tab, title: tab.title, status: agent?.state ?? tab.state, agent });
+      const status = agent?.state ?? tab.state;
+      agentSurfaces.push({ key: `agent:${tab.agentSessionId}`, kind: 'agent', tab, title: tab.title, status, active: status !== 'exited', agent });
     } else if (tab.kind === 'terminal') {
       consumedTerminalIds.add(tab.remoteSessionId);
       const terminal = snapshot?.terminals.find((candidate) => candidate.id === tab.remoteSessionId);
-      terminalSurfaces.push({ key: `terminal:${tab.remoteSessionId}`, kind: 'terminal', tab, title: terminal?.name || tab.title, status: terminal ? (terminal.exited ? 'exited' : 'running') : tab.state, terminal });
+      const status = terminal ? (terminal.exited ? 'exited' : 'running') : tab.state;
+      terminalSurfaces.push({ key: `terminal:${tab.remoteSessionId}`, kind: 'terminal', tab, title: terminal?.name || tab.title, status, active: status !== 'exited', terminal });
     } else {
-      otherSurfaces.push({ key: `${tab.kind}:${tab.tabId}`, kind: tab.kind, tab, title: tab.title, status: tab.kind === 'files' ? 'Navigating' : tab.state });
+      otherSurfaces.push({ key: `${tab.kind}:${tab.tabId}`, kind: tab.kind, tab, title: tab.title, status: tab.kind === 'files' ? 'Navigating' : tab.state, active: true });
     }
   }
 
   for (const agent of snapshot?.agents ?? []) {
     if (agent.state === 'exited' || consumedAgentIds.has(agent.id)) continue;
-    agentSurfaces.push({ key: `agent:${agent.id}`, kind: 'agent', title: agent.adapter || 'OMP Agent', status: agent.state, agent });
+    agentSurfaces.push({ key: `agent:${agent.id}`, kind: 'agent', title: agent.adapter || 'OMP Agent', status: agent.state, active: true, agent });
   }
   for (const terminal of snapshot?.terminals ?? []) {
     if (terminal.exited || consumedTerminalIds.has(terminal.id) || agentTerminalIds.has(terminal.id)) continue;
-    terminalSurfaces.push({ key: `terminal:${terminal.id}`, kind: 'terminal', title: terminal.name || 'Shell', status: 'running', terminal });
+    terminalSurfaces.push({ key: `terminal:${terminal.id}`, kind: 'terminal', title: terminal.name || 'Shell', status: 'running', active: true, terminal });
   }
 
   agentSurfaces.sort((a, b) => agentStatusRank(a.status as AgentSession['state']) - agentStatusRank(b.status as AgentSession['state']));

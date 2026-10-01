@@ -3,7 +3,11 @@ jest.mock('react-native', () => {
   const element = (name: string) => ({ children, ...props }: { children?: React.ReactNode }) => React.createElement(name, props, children);
   const View = element('View');
   return {
-    ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, data, renderItem, ...props }: { ListEmptyComponent?: React.ReactNode; data?: unknown[]; renderItem?: (info: { item: unknown; index: number }) => React.ReactNode }) => React.createElement('FlatList', props, data && renderItem ? data.map((item, index) => renderItem({ item, index })) : ListEmptyComponent),
+    ActivityIndicator: element('ActivityIndicator'), Alert: { alert: jest.fn() }, FlatList: ({ ListEmptyComponent, data, renderItem, keyExtractor, ...props }: { ListEmptyComponent?: React.ReactNode; data?: unknown[]; renderItem?: (info: { item: unknown; index: number }) => React.ReactNode; keyExtractor?: (item: unknown, index: number) => string }) => React.createElement('FlatList', props, data && renderItem ? data.map((item, index) => {
+      const el = renderItem({ item, index });
+      const key = keyExtractor ? keyExtractor(item, index) : String(index);
+      return React.isValidElement(el) ? React.cloneElement(el, { key }) : el;
+    }) : ListEmptyComponent),
     Keyboard: { addListener: () => ({ remove: jest.fn() }), dismiss: jest.fn() }, KeyboardAvoidingView: element('KeyboardAvoidingView'), Platform: { OS: 'web' }, Pressable: element('Pressable'),
     StyleSheet: { create: <T,>(styles: T) => styles }, Text: element('Text'), TextInput: element('TextInput'), View,
     useColorScheme: () => 'dark',

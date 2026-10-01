@@ -311,7 +311,7 @@ export default function TabDeckScreen() {
               ) : (
                 <View style={styles.tabGrid}>
                   {surfaces.map((surface) => (
-                    <Pressable key={surface.key} accessibilityLabel={`Open ${surface.kind} ${surface.title}`} style={styles.tabCard} onPress={() => openSurface(connection.hostId, surface)}>
+                    <Pressable key={surface.key} accessibilityLabel={`Open ${surface.kind} ${surface.title}`} style={[styles.tabCard, !surface.active && styles.tabCardInactive]} onPress={() => openSurface(connection.hostId, surface)}>
                       <View style={styles.tabIcon}>
                         {surface.kind === 'terminal' && <Feather name="terminal" size={20} color="#D19A2C" />}
                         {surface.kind === 'agent' && <Feather name="cpu" size={20} color="#A78BFA" />}
@@ -319,7 +319,7 @@ export default function TabDeckScreen() {
                         {surface.kind === 'desktop' && <Feather name="monitor" size={20} color="#46B86B" />}
                       </View>
                       <View style={styles.tabContent}>
-                        <Text style={styles.tabTitle} numberOfLines={1}>{surface.title}</Text>
+                        <Text style={[styles.tabTitle, !surface.active && styles.tabTitleInactive]} numberOfLines={1}>{surface.title}</Text>
                         <Text style={styles.tabStatus} numberOfLines={1}>{surface.status}</Text>
                       </View>
                       {surface.tab && (
@@ -376,9 +376,11 @@ const styles = StyleSheet.create({
   noTabsText: { color: '#555', fontStyle: 'italic' },
   tabGrid: { padding: 12, gap: 8 },
   tabCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A1A1A', borderRadius: 8, padding: 12, borderWidth: 1, borderColor: '#333' },
+  tabCardInactive: { opacity: 0.5, borderColor: '#262626' },
   tabIcon: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#262626', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   tabContent: { flex: 1, justifyContent: 'center' },
   tabTitle: { fontSize: 15, fontWeight: '600', color: '#E0E0E0' },
+  tabTitleInactive: { color: '#888' },
   tabStatus: { fontSize: 13, color: '#888', marginTop: 2 },
   tabClose: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', padding: 8 },
   diagnostics: { position: 'absolute', bottom: 32, alignSelf: 'center', backgroundColor: '#1A1A1A', padding: 16, borderRadius: 8, borderColor: '#3A3A3A', borderWidth: 1, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12 }, 
