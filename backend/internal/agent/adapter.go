@@ -231,6 +231,39 @@ func (s *Service) handleBridgeMetadata(agentID string, frame BridgeMetadataFrame
 	s.emitState(inst)
 }
 
+func (s *Service) emitBridgeActivity(inst *agentInstance, frame BridgeLifecycleFrame) {
+	eventType := map[string]string{
+		"turn_start": "activity.turn.started", "tool_start": "activity.tool.started",
+		"tool_end": "activity.tool.completed", "approval_requested": "activity.approval.requested",
+		"approval_resolved": "activity.approval.resolved",
+	}[frame.Event]
+	if eventType == "" {
+		return
+	}
+	if frame.Event == "tool_end" && frame.IsError {
+		eventType = "activity.tool.failed"
+	}
+	eventID := frame.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("%s:%s:%d", inst.meta.ID, eventType, time.Now().UnixNano())
+	}
+	event := protocol.AgentEvent{Type: eventType, EventID: eventID, AgentID: inst.meta.ID, ToolCallID: frame.ToolCallID, ToolName: frame.ToolName, IsError: frame.IsError}
+	inst.mu.RLock()
+	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
+	for _, sub := range inst.subscribers {
+		subscribers = append(subscribers, sub.fn)
+	}
+	inst.mu.RUnlock()
+	if s.store != nil {
+		payload, err := json.Marshal(event)
+		if err != nil { return }
+		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, []runtimestore.AgentTranscriptEvent{{EventID: event.EventID, Kind: event.Type, Payload: payload}}, runtimestore.TranscriptState{})
+		if err != nil || len(committed) == 0 { return }
+		event.Cursor = committed[0].Event.Cursor
+	}
+	for _, subscriber := range subscribers { subscriber(event) }
+}
+
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
@@ -256,6 +289,7 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 		_ = s.terminateAgentRuntime(ctx, inst, "session identity changed")
 		return
 	}
+	s.emitBridgeActivity(inst, frame)
 	targetState := ""
 	switch frame.Event {
 	case "agent_start", "turn_start", "tool_start", "tool_end":

@@ -41,12 +41,12 @@ export function buildSessionSurfaces(daemonId: string, snapshot: RuntimeSnapshot
   }
 
   for (const agent of snapshot?.agents ?? []) {
-    if (consumedAgentIds.has(agent.id)) continue;
+    if (agent.state === 'exited' || consumedAgentIds.has(agent.id)) continue;
     agentSurfaces.push({ key: `agent:${agent.id}`, kind: 'agent', title: agent.adapter || 'OMP Agent', status: agent.state, agent });
   }
   for (const terminal of snapshot?.terminals ?? []) {
-    if (consumedTerminalIds.has(terminal.id) || agentTerminalIds.has(terminal.id)) continue;
-    terminalSurfaces.push({ key: `terminal:${terminal.id}`, kind: 'terminal', title: terminal.name || 'Shell', status: terminal.exited ? 'exited' : 'running', terminal });
+    if (terminal.exited || consumedTerminalIds.has(terminal.id) || agentTerminalIds.has(terminal.id)) continue;
+    terminalSurfaces.push({ key: `terminal:${terminal.id}`, kind: 'terminal', title: terminal.name || 'Shell', status: 'running', terminal });
   }
 
   agentSurfaces.sort((a, b) => agentStatusRank(a.status as AgentSession['state']) - agentStatusRank(b.status as AgentSession['state']));

@@ -101,6 +101,8 @@ export default function AgentScreen() {
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const [panes, setPanes] = useState<TmuxPane[]>([]);
+  const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(() => new Set());
+
   const paneSheetRef = useRef<TmuxPaneSheetHandle>(null);
 
   const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
@@ -314,6 +316,12 @@ export default function AgentScreen() {
     };
   }, [insets.bottom, windowHeight]);
 
+  // A06: scroll chat to end when Android keyboard raises to keep last message visible
+  useEffect(() => {
+    if (Platform.OS !== 'android' || keyboardInset <= 0) return;
+    flatListRef.current?.scrollToEnd({ animated: false });
+  }, [keyboardInset]);
+
   const openPaneSwitcher = useCallback(async () => {
     if (!api) return;
     try {
@@ -517,9 +525,19 @@ export default function AgentScreen() {
               <Text style={styles.toolName}>{item.toolName}</Text>
             </View>
             {item.toolInput != null && (
-              <Text style={styles.toolPayload} numberOfLines={4}>
-                {typeof item.toolInput === 'string' ? item.toolInput : JSON.stringify(item.toolInput, null, 2)}
-              </Text>
+              <Pressable
+                accessibilityLabel={`Toggle ${item.toolName || 'tool'} input`}
+                onPress={() => setExpandedPayloads((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                  return next;
+                })}
+              >
+                <Text style={styles.toolPayload} numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}>
+                  {typeof item.toolInput === 'string' ? item.toolInput : JSON.stringify(item.toolInput, null, 2)}
+                </Text>
+                <Text style={styles.payloadToggle}>{expandedPayloads.has(item.id) ? 'Show less' : 'Show more'}</Text>
+              </Pressable>
             )}
           </View>
         );
@@ -531,12 +549,32 @@ export default function AgentScreen() {
               <Text style={styles.toolResultName}>{item.toolName || 'Tool Result'}</Text>
             </View>
             {item.text ? (
-              <Text style={styles.toolResultPayload} numberOfLines={4}>
-                {item.text}
-              </Text>
+              <Pressable
+                accessibilityLabel={`Toggle ${item.toolName || 'tool result'} output`}
+                onPress={() => setExpandedPayloads((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                  return next;
+                })}
+              >
+                <Text style={styles.toolResultPayload} numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}>{item.text}</Text>
+                <Text style={styles.payloadToggle}>{expandedPayloads.has(item.id) ? 'Show less' : 'Show more'}</Text>
+              </Pressable>
             ) : null}
           </View>
         );
+      case 'activity.turn.started':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>Turn started</Text></View>;
+      case 'activity.tool.started':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`Running ${item.toolName || 'tool'}`}</Text></View>;
+      case 'activity.tool.completed':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`${item.toolName || 'Tool'} completed`}</Text></View>;
+      case 'activity.tool.failed':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`${item.toolName || 'Tool'} failed`}</Text></View>;
+      case 'activity.approval.requested':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>Approval requested</Text></View>;
+      case 'activity.approval.resolved':
+        return <View style={styles.activityBubble}><Text style={styles.activityText}>Approval resolved</Text></View>;
       case 'state.change':
         return (
           <View style={styles.systemBubble}>
@@ -617,7 +655,7 @@ export default function AgentScreen() {
       {/* Content Area */}
       {viewMode === 'chat' ? (
         <KeyboardAvoidingView
-          style={styles.chatContainer}
+          style={[styles.chatContainer, Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : undefined]}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
         >
@@ -749,8 +787,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#121212',
   },
   headerIcon: {
-    width: 36,
-    height: 36,
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
@@ -769,8 +807,10 @@ const styles = StyleSheet.create({
     borderColor: '#333',
   },
   switcherButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 4,
   },
   switcherButtonActive: {
@@ -818,6 +858,7 @@ const styles = StyleSheet.create({
   toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   toolName: { color: '#C4B5FD', fontSize: 13, fontWeight: '600' },
   toolPayload: { color: '#9CA3AF', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  payloadToggle: { color: '#C4B5FD', fontSize: 12, fontWeight: '600', marginTop: 4 },
   toolResultBubble: {
     alignSelf: 'flex-start',
     backgroundColor: '#141E18',
@@ -834,6 +875,8 @@ const styles = StyleSheet.create({
   toolResultPayload: { color: '#A7F3D0', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   systemBubble: { alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 10 },
   systemText: { color: '#6B7280', fontSize: 12, fontStyle: 'italic' },
+  activityBubble: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 10, marginVertical: 1, borderLeftWidth: 2, borderLeftColor: '#D19A2C' },
+  activityText: { color: '#D1D5DB', fontSize: 12 },
   promptBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -856,15 +899,15 @@ const styles = StyleSheet.create({
     borderColor: '#333333',
   },
   sendButton: {
-    width: 40,
-    height: 40,
+    width: 48,
+    height: 48,
     backgroundColor: '#D19A2C',
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sendButtonDisabled: { opacity: 0.4 },
-  terminalFallback: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
+  terminalFallback: { flexDirection: 'row', minHeight: 48, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
   terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
   terminalContainer: { flex: 1 },
   connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
@@ -901,6 +944,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   needsYouBtn: {
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,

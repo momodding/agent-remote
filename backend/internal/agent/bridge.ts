@@ -75,6 +75,15 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 	}
+	let lifecycleSequence = 0;
+	function sendLifecycle(event: string, fields: Record<string, unknown> = {}) {
+		sendFrame({
+			type: "lifecycle",
+			event,
+			eventId: `bridge:lifecycle:${++lifecycleSequence}`,
+			...fields,
+		});
+	}
 	function sendResult(requestId: string, ok: boolean, error?: string) {
 		sendFrame({
 			type: "command.result",
@@ -243,33 +252,14 @@ export default function (pi: ExtensionAPI) {
 		if (!entry || !entry.id) return;
 		const id = String(entry.id);
 
-		if (entry.type === "custom_message") {
-			const isDisplayed = Boolean(entry.display || (entry.message && entry.message.display));
-			if (!isDisplayed) return;
-			let text = extractTextAndContents(entry.content).text;
-			if (!text && entry.message) {
-				text = extractTextAndContents(entry.message.content).text;
-			}
-			if (!text) return;
-			sendFrame({
-				type: "semantic",
-				event: "message.system",
-				eventId: `${id}:message`,
-				messageId: id,
-				text,
-			});
-			return;
-		}
+		if (entry.type === "custom_message") return;
 
 		if (entry.type !== "message" || !entry.message) {
 			return;
 		}
 
 		const msg = entry.message;
-		const isDisplayed = Boolean(entry.display || msg.display);
-		if ((msg.role === "custom" || msg.role === "hookMessage") && !isDisplayed) {
-			return;
-		}
+		if (msg.role === "custom" || msg.role === "hookMessage") return;
 
 		let { text, contents } = extractTextAndContents(msg.content);
 		if (msg.role === "fileMention" && !text && Array.isArray(msg.files)) {
@@ -316,12 +306,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const role =
-			!msg.role || msg.role === "user"
-				? "user"
-				: msg.role === "fileMention" || msg.role === "custom" || msg.role === "hookMessage"
-					? "system"
-					: msg.role;
+		const role = !msg.role || msg.role === "user" ? "user" : msg.role === "fileMention" ? "system" : msg.role;
 		if (role === "user") {
 			const submittedIndex = submittedUserMessages.indexOf(text);
 			if (submittedIndex !== -1) {
@@ -565,9 +550,7 @@ export default function (pi: ExtensionAPI) {
 			(initialSessionId && currentSessionId && currentSessionId !== initialSessionId) ||
 			(initialSessionFile && currentSessionFile && currentSessionFile !== initialSessionFile)
 		) {
-			sendFrame({
-				type: "lifecycle",
-				event: "session_changed",
+			sendLifecycle("session_changed", {
 				sessionId: currentSessionId,
 				sessionFile: currentSessionFile,
 			});
@@ -585,9 +568,7 @@ export default function (pi: ExtensionAPI) {
 			(initialSessionId && currentSessionId && currentSessionId !== initialSessionId) ||
 			(initialSessionFile && currentSessionFile && currentSessionFile !== initialSessionFile)
 		) {
-			sendFrame({
-				type: "lifecycle",
-				event: "session_changed",
+			sendLifecycle("session_changed", {
 				sessionId: currentSessionId,
 				sessionFile: currentSessionFile,
 			});
@@ -599,20 +580,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
-		sendFrame({
-			type: "lifecycle",
-			event: "agent_start",
-			state: "working",
-		});
+		sendLifecycle("agent_start", { state: "working" });
 	});
 	pi.on("turn_start", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
-		sendFrame({
-			type: "lifecycle",
-			event: "turn_start",
-			state: "working",
-		});
+		sendLifecycle("turn_start", { state: "working" });
 	});
 
 	pi.on("message_end", async (_event, ctx) => {
@@ -620,18 +593,14 @@ export default function (pi: ExtensionAPI) {
 		emitNewEntries(ctx.sessionManager);
 	});
 	pi.on("tool_execution_start", async (event) => {
-		sendFrame({
-			type: "lifecycle",
-			event: "tool_start",
+		sendLifecycle("tool_start", {
 			state: "working",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 		});
 	});
 	pi.on("tool_execution_end", async (event) => {
-		sendFrame({
-			type: "lifecycle",
-			event: "tool_end",
+		sendLifecycle("tool_end", {
 			state: "working",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
@@ -639,24 +608,17 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 	pi.on("tool_approval_requested", async (event) => {
-		sendFrame({
-			type: "lifecycle",
-			event: "approval_requested",
+		sendLifecycle("approval_requested", {
 			state: "needsYou",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
-			reason: event.reason,
-			approvalMode: event.approvalMode,
 		});
 	});
 	pi.on("tool_approval_resolved", async (event) => {
-		sendFrame({
-			type: "lifecycle",
-			event: "approval_resolved",
+		sendLifecycle("approval_resolved", {
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 			approved: event.approved,
-			reason: event.reason,
 		});
 	});
 	pi.on("turn_end", async (_event, ctx) => {
@@ -666,22 +628,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
-		sendFrame({
-			type: "lifecycle",
-			event: "agent_end",
-			state: "idle",
-		});
+		sendLifecycle("agent_end", { state: "idle" });
 	});
 	pi.on("session_compact", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
 	});
 	pi.on("session_shutdown", async () => {
-		sendFrame({
-			type: "lifecycle",
-			event: "session_shutdown",
-			state: "exited",
-		});
+		sendLifecycle("session_shutdown", { state: "exited" });
 		if (retryTimer) {
 			clearTimeout(retryTimer);
 			retryTimer = null;

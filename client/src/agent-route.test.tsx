@@ -255,3 +255,68 @@ describe('AgentScreen capability gates', () => {
     act(() => tree.unmount());
   });
 });
+
+describe('A05 – durable activity event rendering', () => {
+  it('renders activity.turn.started as distinct activity row, not user/assistant bubble', async () => {
+    mockAgentHistory.mockResolvedValue({
+      cursor: 1,
+      events: [
+        { eventId: 'act-1', agentId: 'agent-1', type: 'activity.turn.started', cursor: 1 },
+      ],
+    });
+    const tree = await renderScreen();
+    expect(tree.root.findAll((node) => node.props?.children === 'Turn started').length).toBeGreaterThan(0);
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'User' })).toThrow();
+    act(() => tree.unmount());
+  });
+
+  it('renders live activity.tool.started via event stream with tool name', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({ type: 'activity.tool.started', eventId: 'act-2', agentId: 'agent-1', toolName: 'bash' });
+    });
+    expect(tree.root.findAll((node) => node.props?.children === 'Running bash').length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+  });
+
+  it('skips system/hook messages: events with no id are not rendered', async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({ type: 'system', agentId: 'agent-1', text: 'internal hook data' } as unknown as AgentEvent);
+    });
+    expect(tree.root.findAll((node) => node.props?.children === 'internal hook data').length).toBe(0);
+    act(() => tree.unmount());
+  });
+});
+
+describe('A07 – tool payload expand/collapse', () => {
+  it('renders tool.call with collapse toggle and full text on press', async () => {
+    mockAgentHistory.mockResolvedValue({
+      cursor: 1,
+      events: [
+        { eventId: 'tool-1', agentId: 'agent-1', type: 'tool.call', toolName: 'bash', toolInput: { cmd: 'ls' }, cursor: 1 },
+      ],
+    });
+    const tree = await renderScreen();
+    expect(tree.root.findAll((node) => node.props?.children === 'Show more').length).toBeGreaterThan(0);
+    const toggle = tree.root.findByProps({ accessibilityLabel: 'Toggle bash input' });
+    await act(async () => { toggle.props.onPress(); });
+    expect(tree.root.findAll((node) => node.props?.children === 'Show less').length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+  });
+
+  it('renders tool.result with collapse toggle and full text on press', async () => {
+    mockAgentHistory.mockResolvedValue({
+      cursor: 1,
+      events: [
+        { eventId: 'tool-2', agentId: 'agent-1', type: 'tool.result', toolName: 'bash', text: 'file.txt', cursor: 1 },
+      ],
+    });
+    const tree = await renderScreen();
+    expect(tree.root.findAll((node) => node.props?.children === 'Show more').length).toBeGreaterThan(0);
+    const toggle = tree.root.findByProps({ accessibilityLabel: 'Toggle bash output' });
+    await act(async () => { toggle.props.onPress(); });
+    expect(tree.root.findAll((node) => node.props?.children === 'Show less').length).toBeGreaterThan(0);
+    act(() => tree.unmount());
+  });
+});

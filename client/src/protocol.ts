@@ -67,6 +67,7 @@ export type AgentEvent = {
   availableModels?: AgentModelInfo[];
   availableThinking?: string[];
   isError?: boolean;
+  aborted?: boolean;
 };
 
 export type AgentHistoryResponse = {

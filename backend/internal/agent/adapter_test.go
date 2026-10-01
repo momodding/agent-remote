@@ -2,13 +2,14 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"testing"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
@@ -1235,5 +1236,57 @@ func TestHandleBridgeHelloModelAndThinking(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for state event after metadata frame")
+	}
+}
+
+func TestEmitBridgeActivityAllowlisted(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Activity Test Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := make(chan protocol.AgentEvent, 16)
+	unsub, err := svc.Subscribe(agent.ID, func(ev protocol.AgentEvent) { events <- ev })
+	if err != nil { t.Fatal(err) }
+	defer unsub()
+	allowlisted := []string{"turn_start", "tool_start", "tool_end", "approval_requested", "approval_resolved"}
+	for i, ev := range allowlisted {
+		svc.handleBridgeLifecycle(agent.ID, BridgeLifecycleFrame{
+			Type: "lifecycle", Event: ev, EventID: fmt.Sprintf("bridge:lifecycle:%d", i+1), ToolCallID: "tc-1", ToolName: "bash",
+		})
+	}
+
+	var received []string
+	timeout := time.After(2 * time.Second)
+	for len(received) < len(allowlisted) {
+		select {
+		case ev := <-events:
+			if ev.Type != "" && ev.AgentID == agent.ID {
+				received = append(received, ev.Type)
+			}
+		case <-timeout:
+			t.Fatalf("timed out; got %v activity events, want %d", received, len(allowlisted))
+		}
+	}
+
+	// agent_start, turn_end, agent_end, session_changed are not in allowlist => no activity.* event emitted
+	svc.handleBridgeLifecycle(agent.ID, BridgeLifecycleFrame{Type: "lifecycle", Event: "agent_start", EventID: "bridge:lifecycle:2"})
+	select {
+	case ev := <-events:
+		if ev.AgentID == agent.ID && len(ev.Type) > 9 && ev.Type[:9] == "activity." {
+			t.Fatalf("unexpected activity event for non-allowlisted frame: %s", ev.Type)
+		}
+	case <-time.After(100 * time.Millisecond):
+		// expected: no activity event
 	}
 }

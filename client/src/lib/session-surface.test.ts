@@ -25,4 +25,16 @@ describe('buildSessionSurfaces', () => {
     const surfaces = buildSessionSurfaces('host', snapshot, tabs);
     expect(surfaces.some((s) => s.key.includes('files'))).toBe(false);
   });
+
+  it('excludes exited remote runtimes but retains an explicitly local exited tab', () => {
+    const exitedAgent = { ...agent, id: 'agent-exited', state: 'exited' as const, terminalSessionId: 'term-exited' };
+    const exitedTerminal = { id: 'term-exited', name: 'Exited shell', cwd: '', seq: 0, exited: true };
+    const runtime: RuntimeSnapshot = { ...snapshot, agents: [agent, exitedAgent], terminals: [...snapshot.terminals, exitedTerminal] };
+
+    expect(buildSessionSurfaces('host', runtime, []).map((surface) => surface.key)).not.toContain('agent:agent-exited');
+    expect(buildSessionSurfaces('host', runtime, []).map((surface) => surface.key)).not.toContain('terminal:term-exited');
+
+    const tabs: WorkspaceTab[] = [{ tabId: 'tab-exited', daemonId: 'host', kind: 'agent', title: 'Past agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-exited', terminalSessionId: 'term-exited', state: 'exited', view: 'chat' }];
+    expect(buildSessionSurfaces('host', runtime, tabs)).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'agent:agent-exited', status: 'exited', tab: tabs[0] })]));
+  });
 });

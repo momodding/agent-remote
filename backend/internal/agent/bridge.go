@@ -142,6 +142,7 @@ type BridgeCommandResult struct {
 type BridgeLifecycleFrame struct {
 	Type         string `json:"type"`
 	Event        string `json:"event"`
+	EventID      string `json:"eventId,omitempty"`
 	State        string `json:"state,omitempty"`
 	SessionID    string `json:"sessionId,omitempty"`
 	SessionFile  string `json:"sessionFile,omitempty"`
@@ -376,6 +377,7 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 			OK           bool   `json:"ok"`
 			Error        string `json:"error,omitempty"`
 			Event        string `json:"event"`
+			EventID      string `json:"eventId,omitempty"`
 			State        string `json:"state"`
 			SessionID    string `json:"sessionId"`
 			SessionFile  string `json:"sessionFile"`
@@ -410,6 +412,7 @@ func (b *BridgeServer) handleConn(conn net.Conn) {
 				frame := BridgeLifecycleFrame{
 					Type:         raw.Type,
 					Event:        raw.Event,
+					EventID:      raw.EventID,
 					State:        raw.State,
 					SessionID:    raw.SessionID,
 					SessionFile:  raw.SessionFile,
