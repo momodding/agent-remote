@@ -135,3 +135,9 @@ This result does not establish Android rendering, touch dispatch, long-press dra
 | P1-04 — MultiTerminal target/gesture space | Active minimize and close actions have separate 48dp boxes in an 8dp-gap group with no `hitSlop`. The tab maximum is 200dp, sufficient for its 192dp minimum child row. | `MultiTerminal.test.tsx` verifies 48dp action floors, absent `hitSlop`, the 8dp group gap, and the 200dp parent maximum. |
 
 Focused source/component coverage is not Android device evidence. Do not run or report the Android Golden Flow until its existing environment/storage blocker is resolved.
+
+## Post-`1c92e2e` confirmation — 2026-10-02
+
+**Disposition:** All four previously reported source-observable P1 findings are resolved at `1c92e2eef015901661173e06fb519dbecac03ff8`. The compact header moves title/status to its own full-width row and makes Abort an overflow action at 320–360 dp. MultiTerminal gives minimize and close independent 48 dp targets with an 8 dp gap, removes overlapping hit slop, and expands the tab maximum to 200 dp for its 192 dp minimum child row. No further source-observable P1 was found in this focused re-review.
+
+**Release remains NO-GO for Android runtime evidence.** The Android Golden Flow has not run; documented rootful Podman/topology-storage prerequisites remain unresolved for this audit, and source/component coverage cannot prove real Android layout, touch/long-press arbitration, IME, lifecycle, WebView/RFB transport, or accessibility behavior.
