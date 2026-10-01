@@ -17,15 +17,18 @@ The remediation ledger records two APK artifacts, neither built from the final r
 
 Source: `plans/android-runtime-ux-remediation.md`, “APK Artifacts & Provenance Analysis” and “HEAD Match Verification.”
 
-## Recorded successful gates
+## Final-head mandatory gate rerun
 
-| Command | Outcome recorded in the remediation ledger |
+These commands were rerun on 2026-10-02 at `252688d` (`omp(android-runtime-ux-remediation): Archive final acceptance evidence`). The only concurrent working-tree change was the documentation-only, unstaged Oracle review artifact; no product source was modified.
+
+| Command | Exact observed outcome |
 |---|---|
-| `make backend-test` | **PASS** — exit 0; `go test ./...` completed successfully. The final-code gate records 36.69s; a later full backend run after the WSS correction also passed. |
-| `make client-build-web` | **PASS** — exit 0 in 57.41s; `expo export --platform web` bundled 1,486 modules. |
-| `bun --cwd client test --runInBand` | **PASS** — exit 0 in 67.34s; 27/27 suites and 207/207 tests at that gate. |
-| `bun jest --runInBand` (from `client`) | **PASS** — 27/27 suites and 211/211 tests in the post-remediation gate. |
-| `bunx tsc --noEmit -p .` (from `client`) | **PASS** — exit 0 with no output. |
+| `make backend-test` | **PASS** — exit 0 in 8.33s. `cd backend && go test ./...` passed for all tested packages; `internal/notify` reported `[no test files]`. |
+| `bun --cwd client test --runInBand` | **PASS** — exit 0 in 60.92s. Jest: 27/27 suites passed, 214/214 tests passed, 0 snapshots; reported test time 54.318s. Expected-error console output from pairing/API tests was emitted without test failures. |
+| `make client-build-web` | **PASS** — exit 0 in 41.11s. `expo export --platform web` bundled 1,486 modules and exported `client/dist`. |
+| `make lint` | **PASS** — exit 0 in 42.07s. `go vet ./...` completed, then the client `tsc --noEmit` typecheck completed with no diagnostics. |
+
+Earlier ledger results remain historical evidence only; this table is the final-head rerun record.
 
 ## Current source dispositions
 
