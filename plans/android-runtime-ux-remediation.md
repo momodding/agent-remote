@@ -94,7 +94,7 @@ Agent Chat is a semantic projection, **not a second OMP agent or an alternate pr
 
 ## Root-Cause Tranche: A01, A04, A05, A10 (2026-10-01)
 
-**Method.** This is source-trace analysis against the manual defect definitions, not an Android golden-flow result. The existing rootful-capacity block means the Android golden flow was deliberately not run. The manual report remains the defect evidence; the runtime evidence below is only what is needed to prove or disprove a particular causal path. Agent Chat and Raw Terminal remain two projections of the **same** normal OMP process: an `AgentWorkspaceTab` stores both `agentSessionId` and the shared `terminalSessionId`.
+**Method.** This is source-trace analysis against the manual defect definitions, not an Android golden-flow result. The existing rootful-capacity block means the Android golden flow was not rerun against the final remediation commit (prior attempt: 2026-09-30 rootful-capacity failure, retained as historical evidence). The manual report remains the defect evidence; the runtime evidence below is only what is needed to prove or disprove a particular causal path. Agent Chat and Raw Terminal remain two projections of the **same** normal OMP process: an `AgentWorkspaceTab` stores both `agentSessionId` and the shared `terminalSessionId`.
 
 ### A01 — exited/expired session remains active
 
@@ -120,7 +120,7 @@ Agent Chat is a semantic projection, **not a second OMP agent or an alternate pr
 - **Client-side result:** `client/src/agent-route.test.tsx` → the A04 "five-turn chat history/live/resync replay" test reproduces hypothesis 3 directly: it bootstraps history for turns 1–2, delivers turns 3–4 live, then forces a `handleCursorExpired` full resync that replays all five turns from turn 1, followed by turn 5 delivered live again. Every one of the ten distinct sentinel/response texts renders in the chat list exactly once. **Conclusion: the client's resync/replay path correctly de-duplicates and reconciles a cursor-expiry-triggered full history replay against already-rendered live events; no client-side defect exists for the backgrounded/resync variant of hypothesis 3.**
 - **Methodological note:** the first client test run reported every text appearing twice; before concluding a defect, this was investigated by temporarily instrumenting the test to log `node.type` for every match. The duplication was proven to be a test-harness artifact — `react-test-renderer`'s `findAll` matches both the host `Text` node and its composite `Text` component wrapper when filtering only on `props.children` — not a real double-render. Filtering to `node.type === 'Text'` (the convention already used elsewhere in the same file) correctly reported a count of one per sentinel. The test assertion was corrected to use this filter; no production code was touched for this finding.
 - **Scope and residual risk:** these tests are same-process, non-backgrounded, and exercise five turns with no network-layer interruption other than a simulated cursor-expiry resync. They do not cover true OS-level app backgrounding/foregrounding, device sleep/wake, or a real bridge-socket TCP drop mid-turn; those remain gated behind the standing Android golden-flow block and the required runtime evidence below, unchanged.
-- **Required runtime evidence (unchanged, still not gathered):** the five-turn trace described above, plus runtime-channel close/resync reasons and transcript cursor/history after each turn, captured from a real device run, to confirm these same-process-test conclusions hold under genuine OS backgrounding and network conditions.
+- **Required runtime evidence (unchanged, still not gathered):** the five-turn trace described above, plus runtime-channel close/resync reasons and transcript cursor/history after each turn, captured from a real device run, to confirm these same-process-test conclusions hold under genuine OS backgrounding and network conditions. Android golden flow was not rerun against the final remediation commit; the 2026-09-30 rootful-capacity failure is retained as historical evidence.
 
 
 ### A05 — useful OMP processing/activity visibility
@@ -155,14 +155,14 @@ Agent Chat is a semantic projection, **not a second OMP agent or an alternate pr
   3. **Client allowlist regression test** (`client/src/agent-route.test.tsx`, new `describe('A10 – internal content never reaches chat')` block, pattern-matching the existing A05 "skips system/hook messages" test at lines 286-293): drive a live `mockHandleEvent` call with `{ type: 'message.system', eventId: 'sentinel-1', agentId: 'agent-1', text: 'INTERNAL_SYSTEM_SENTINEL_DO_NOT_RENDER' }` (simulating a hypothetical future regression where the backend still emitted `message.system` for internal content) and assert `tree.root.findAll((node) => typeof node.props?.children === 'string' && node.props.children.includes('INTERNAL_SYSTEM_SENTINEL_DO_NOT_RENDER')).length === 0`. This proves the client-side allowlist independently rejects the sentinel even under an assumed-worst-case backend regression — a defense-in-depth test, not merely proof that the backend no longer emits it.
   4. **End-to-end fixture** (optional, only if hermetic OMP harness supports injecting a `custom_message`/`hookMessage` transcript line directly): one `goldenflow`/`hermetic_omp_test.go`-style test appending a raw JSONL line with the sentinel and `"display":true` to a session file, then asserting `/v1/agents/:id/history` never contains the sentinel text in any event's `Text` field.
 - **Presentation-class decision (required before implementation, decided here):** define three classes — `CHAT_VISIBLE` (`message.user`, `message.assistant`, `tool.call`, `tool.result`), `ACTIVITY_VISIBLE` (the six `activity.*` kinds, `message.thinking`), and `INTERNAL_ONLY`/`DIAGNOSTIC_ONLY` (anything derived from `custom_message`, `custom`, `hookMessage`, and bare unrecognized types). No allowlisted user-facing custom-message policy has been requested or specified by product/user input to date, so **no custom/hook content is promoted to chat-visible** under this conclusion — `fileMention` remains `CHAT_VISIBLE` under its own distinct type (not folded into `system`) since it is legitimate first-party user content (a file attachment reference), not internal/hook provenance.
-- **Required runtime evidence (unchanged, still not gathered — Android golden flow remains blocked):** sanitized raw session entries (type, role, `display`, custom type/provenance, no sensitive text), bridge semantic frame, persisted agent-history entry/cursor, and screenshot of the matching chat bubble, to confirm which particular displayed record a real device run would have leaked. The fix below is implemented from source-proven mechanism, not from device confirmation; device evidence remains a gap for final acceptance, consistent with the project's standing Android golden-flow block.
+- **Required runtime evidence (unchanged, still not gathered — Android golden flow not rerun against the final remediation commit; 2026-09-30 rootful-capacity failure retained as historical evidence):** sanitized raw session entries (type, role, `display`, custom type/provenance, no sensitive text), bridge semantic frame, persisted agent-history entry/cursor, and screenshot of the matching chat bubble, to confirm which particular displayed record a real device run would have leaked. The fix below is implemented from source-proven mechanism, not from device confirmation; device evidence remains a gap for final acceptance, consistent with the project's standing Android golden-flow block.
 
 
 ---
 
 ## Root-Cause Tranche: A02 — Real Android Terminal Transport (2026-10-01)
 
-**Scope.** This traces Raw Terminal only, so a semantic Agent Chat failure cannot be misdiagnosed as a PTY transport failure. No Android golden flow, implementation, or mock was run.
+**Scope.** This traces Raw Terminal only, so a semantic Agent Chat failure cannot be misdiagnosed as a PTY transport failure. Android golden flow was not rerun against the final remediation commit; the 2026-09-30 rootful-capacity failure is retained as historical evidence.
 
 ### Deterministic marker reproduction
 
@@ -338,7 +338,9 @@ This audit compares each source-proven remediation contract with committed focus
 | A09 | Existing component regressions exercise shortcut input; changed target dimensions are source-proven 48dp minimums | No additional test: asserting stylesheet dimensions would test implementation rather than observable behavior. | Physical-device touch-target, contrast, high-DPI, orientation, and layout-shift assessment. |
 | A10 | `TestTranscriptNeverPromotesInternalContentToChatVisible`; `TestAgentReplayRejectsInternalOnlyKinds`; AgentScreen allowlist regressions | Covered across fallback projection, replay admission, and client presentation. | Controlled harmless hook fixture and Android chat screenshot, with no real prompt/secret content captured. |
 
-**Golden Flow status:** Android Golden Flow was not run and remains prohibited until the storage block is resolved. All rows marked runtime-only are explicit acceptance-evidence gaps, not failed focused regressions.
+**Golden Flow status:** Android Golden Flow was not rerun against the final remediation commit (prior attempt: 2026-09-30 rootful-capacity failure, retained as historical evidence; block remains in force until storage block is resolved). All rows marked runtime-only are explicit acceptance-evidence gaps, not failed focused regressions.
+
+**Commit `41f16a6` provenance note:** the `fix(server): secure desktop RFB transport` commit was produced by the `RFBTransportSecurityFix` subagent and incidentally includes the `plans/android-flow-auditor-review-20261001.md` artifact that had been staged to the index unmodified at the time of that commit. The artifact was review-authored and not altered by the subagent; its inclusion is a byproduct of the shared working tree, not a deliberate file move or copy. Git history is not amended; this note records the provenance for traceability. The subagent also deviated from the `omp(android-runtime-ux-remediation): …` commit message convention; both deviations are logged here and not corrected.
 
 ## Final Code Acceptance Gates (2026-10-01)
 
@@ -349,4 +351,88 @@ This audit compares each source-proven remediation contract with committed focus
 | Full serial client suite | `bun --cwd client test --runInBand` | PASS | Exit 0 in 67.34s: 27/27 suites and 207/207 tests passed, with no snapshots. Expected negative-path pairing console output was emitted by tests but did not fail or flake the suite. |
 | Browser E2E | `bash e2e-lab/scripts/test-web.sh` | BLOCKED_ENVIRONMENT — not PASS | The prescribed Playwright runner returned its structured `BLOCKED_ENVIRONMENT` result after 180.78s: topology startup failed and therefore Playwright executed 0 tests (0 passed, 0 failed). A transparent startup trace reached rootful Podman Compose provider-image build, transferred more than 93 MB of context, then exceeded the 240s diagnostic command timeout before the topology became available. The runner must not be treated as passing: its source currently converts a zero-test successful subprocess path into a synthetic one-test PASS, but that path was not reached here. |
 
-**E2E disposition:** Playwright configuration and four browser specifications (`agent`, `terminal`, `pairing`, and `responsive`) are present under `e2e-lab/playwright`; the prescribed suite was invoked, but its rootful provider/daemon topology did not become ready, so no browser test count greater than zero was obtained. This is an environment block, not a passing, failing, or flaky browser-suite result. Android Golden Flow was not run.
+**E2E disposition:** Playwright configuration and four browser specifications (`agent`, `terminal`, `pairing`, and `responsive`) are present under `e2e-lab/playwright`; the prescribed suite was invoked, but its rootful provider/daemon topology did not become ready, so no browser test count greater than zero was obtained. This is an environment block, not a passing, failing, or flaky browser-suite result. Android Golden Flow was not rerun against the final remediation commit; the 2026-09-30 rootful-capacity failure is retained as historical evidence.
+
+---
+
+## Oracle Review Remediation (2026-10-01)
+
+Source: `plans/oracle-review-a01-a10.md` (three release blockers: A02 FAIL, A05 FAIL, A08 transport/insecure-skip findings).
+
+### A02 — Embedded AgentScreen terminal session.state/error parity
+
+**Oracle finding:** AgentScreen embedded terminal does not consume `session.state` exited or `error` frames; standalone Terminal route does. Embedded terminal must show visible error and inactivate on session exit.
+
+**Fix:** `client/app/agent/[id].tsx` — added `terminalError: string | null` and `terminalInactive: boolean` state. PTY subscription handler extended to handle `session.state` with `state === 'exited'` (set error `'Terminal session ended'`, inactivate, clear capabilities, dispatch tab → exited, unsubscribe) and `error` frames (same path for `code === 'session_not_found'`; otherwise surface `msg.message` in error banner). Terminal `onInput`/`onResize` and `ShortcutKeyboard` gated by `!terminalInactive`. Error banner rendered with `accessibilityLabel="Terminal transport error"`. Effect deps corrected to `[tab?.terminalSessionId, tab?.tabId, connection, dispatch]`.
+
+**Committed:** `3d069f1 omp(android-runtime-ux-remediation): A02 surface embedded terminal session.state/error frames with visible error banner and inactivation`
+
+**Tests:** `client/src/agent-route.test.tsx` `describe('embedded Agent terminal transport errors')` — `mockPTYHandler` wired through daemon-channel subscribe mock; asserts error banner content for `error` frame then updated to `'Terminal session ended'` on `session.state exited`; asserts dispatch called; asserts ShortcutKeyboard absent.
+
+### A05 — isAgentEventKind exact adapter activity.* allowlist
+
+**Oracle finding:** `isAgentEventKind` did not admit any `activity.*` kind; replay/history survival of adapter-emitted activity events unproven; internal kinds must remain excluded.
+
+**Fix:** `backend/internal/server/server.go` `isAgentEventKind` extended with exactly 6 adapter-emitted literal kinds: `activity.turn.started`, `activity.tool.started`, `activity.tool.completed`, `activity.tool.failed`, `activity.approval.requested`, `activity.approval.resolved`. No wildcard. Source of truth: `backend/internal/agent/adapter.go:235-246`.
+
+**Committed:** `7f0e1e6 omp(android-runtime-ux-remediation): A05 extend isAgentEventKind allowlist with exact adapter activity.* kinds`
+
+**Tests:** `backend/internal/server/server_test.go` `TestAgentReplayAllowsAdapterActivityEvents` — table-driven over all 6 kinds; existing `TestAgentReplayRejectsInternalOnlyKinds` confirms exclusion holds. Focused suite: `go test ./internal/server -run 'TestAgentReplayAllowsAdapterActivityEvents|TestAgentReplayAllowsThinkingEvents|TestAgentReplayAllowsFileMentionEvents|TestAgentReplayRejectsInternalOnlyKinds'` → 4 PASS. Client resync test (`agent-route.test.tsx` cursor-expiry) extended to include an `activity.tool.completed` event in the resync batch and assert `'bash completed'` renders — confirming client allowlist also passes the kind through.
+
+### A08 — WSS enforcement and OriginPatterns (subagent RFBTransportSecurityFix)
+
+**Oracle findings:** (1) public HTTP endpoints could issue `ws://` desktop tickets; (2) `InsecureSkipVerify: true` in gorilla upgrade; (3) bearer token should never appear in URLs.
+
+**Fix:** committed by subagent as `41f16a6 fix(server): secure desktop RFB transport`:
+- `createDesktopSession` rejects public HTTP before ticket issuance (test: `TestHandleDesktopSessionCreateRejectsPublicHTTP`); allows loopback `listenScheme=http` (test: `TestHandleDesktopSessionCreateAllowsLoopbackHTTPDevelopment`).
+- WebSocket upgrade uses `websocket.Upgrader{CheckOrigin: ...}` with `OriginPatterns`, not `InsecureSkipVerify`.
+- Cross-origin RFB upgrades rejected (test: `TestHandleRFBProxyRejectsCrossOriginUpgrade`).
+- Bearer token never in URL; no RFB frame content logged.
+
+**Provenance note:** `41f16a6` also incidentally swept staged `plans/android-flow-auditor-review-20261001.md` into its commit; commit message deviates from `omp(...)` convention. Git history not amended; provenance recorded at `## Focused Regression Coverage Audit` section above.
+
+---
+
+## Flow-Audit P1 Remediation (2026-10-01)
+
+Source: `plans/android-flow-auditor-review-20261001.md` (4 P1 findings).
+
+**Committed:** `4575446 omp(android-runtime-ux-remediation): Fix flow-audit mobile P1 findings`
+
+### P1-01 — Agent header overflow at narrow Android widths
+
+**Finding:** header accumulated 408dp computed minimum (Back + switcher + 6 icon-buttons × 48dp + padding/gaps); titles and actions overflow/clip on 320–360dp Android devices.
+
+**Fix:** `client/app/agent/[id].tsx` — moved `Switch pane`, `Model and Thinking`, `Open Files`, `Terminate Agent`, and `Close View` behind a bottom-sheet overflow `Modal` triggered by a `More actions` (⋮) inline icon. Inline header retains: Back, title+status, Chat/Terminal segmented control, Abort (when enabled), and More actions. All relocated actions remain accessible with their original `accessibilityLabel` values via the overlay. Modal gate: `visible={menuOpen}` with transparent fade; `onStartShouldSetResponder` prevents overlay tap-through; menu items each ≥48dp (`minHeight: 48`). `Modal` added to RN import.
+
+**Tests:** `client/src/agent-route.test.tsx` `describe('Agent header overflow at narrow Android widths')` — asserts Back/Chat View/Terminal View/More actions buttons are present inline; asserts secondary action labels throw (hidden) before menu open; presses More actions; asserts Switch pane/Open Files/Terminate Agent/Close View are now findable. `opens Files tab` test updated to open overflow menu before pressing Open Files.
+
+### P1-02/03 — Desktop/noVNC native terminal error recovery + ≥48dp touch targets
+
+**Finding:** Desktop error state shows raw status text with no recovery path or bounded diagnostics; Back and remote-key buttons below 48dp minimum.
+
+**Fix:** `client/app/desktop.tsx`:
+- `needsRecovery` covers all non-connected/error status values; shows recovery view with sanitized error message (never raw `event.nativeEvent.description`), Back button, and Retry button.
+- Retry uses `retryNonce` state (monotonic counter) + `attemptIDRef` ref minted inside effect, so each retry mints a fresh UUID for a new ticket without stubbing `Crypto.randomUUID` in tests.
+- `back` style updated to `minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center'`.
+- `key` style updated to `minWidth: 48, minHeight: 48`.
+- Remote key shortcut dock given `testID="vnc-shortcut-dock"`.
+
+**Tests:** `client/src/desktop-route.test.tsx` — `offers a sanitized recovery path when createDesktopSession fails`: asserts `'Could not create desktop session'` (not raw error), Back button present, Retry button (`createDesktopSession` called twice); `keeps Back and remote-key shortcut dock controls at the Android 48dp floor`: style assertions on `minHeight`/`minWidth`; web error status smoke test retained.
+
+### P1-04 — Multi-terminal tab bar ≥48dp touch targets
+
+**Finding:** MultiTerminal select/minimize/close actions below 48dp floor.
+
+**Fix:** `client/src/components/MultiTerminal.tsx` — `tabs` container `maxHeight: 64`; `tab` row `minHeight: 48`; `tabSelect` `minWidth: 88, minHeight: 48`; `tabClose` `48×48`.
+
+**Tests:** `client/src/components/MultiTerminal.test.tsx` `'keeps tab select, minimize, and close controls at the Android 48dp floor'`.
+
+### Post-remediation gate results
+
+| Suite | Result |
+|---|---|
+| `go build && go vet && go test ./...` (backend) | PASS — all packages, `internal/server` 26.475s |
+| `bun jest --runInBand` (full client) | PASS — 27/27 suites, 211/211 tests, 59.66s |
+| `bunx tsc --noEmit -p .` (client TS) | PASS — no output, exit 0 |
+| Android Golden Flow | Not rerun against final commit; block remains in force |
