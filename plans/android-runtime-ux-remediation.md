@@ -339,3 +339,14 @@ This audit compares each source-proven remediation contract with committed focus
 | A10 | `TestTranscriptNeverPromotesInternalContentToChatVisible`; `TestAgentReplayRejectsInternalOnlyKinds`; AgentScreen allowlist regressions | Covered across fallback projection, replay admission, and client presentation. | Controlled harmless hook fixture and Android chat screenshot, with no real prompt/secret content captured. |
 
 **Golden Flow status:** Android Golden Flow was not run and remains prohibited until the storage block is resolved. All rows marked runtime-only are explicit acceptance-evidence gaps, not failed focused regressions.
+
+## Final Code Acceptance Gates (2026-10-01)
+
+| Gate | Command | Outcome | Exact evidence |
+|---|---|---|---|
+| Backend suite | `make backend-test` | PASS | Exit 0 in 36.69s. `go test ./...` completed successfully; `backend/internal/server` completed in 26.850s and the sole no-test package was `backend/internal/notify`. |
+| Production web export | `make client-build-web` | PASS | Exit 0 in 57.41s. `bun install` reported no dependency changes and `expo export --platform web` bundled 1,486 modules. |
+| Full serial client suite | `bun --cwd client test --runInBand` | PASS | Exit 0 in 67.34s: 27/27 suites and 207/207 tests passed, with no snapshots. Expected negative-path pairing console output was emitted by tests but did not fail or flake the suite. |
+| Browser E2E | `bash e2e-lab/scripts/test-web.sh` | BLOCKED_ENVIRONMENT — not PASS | The prescribed Playwright runner returned its structured `BLOCKED_ENVIRONMENT` result after 180.78s: topology startup failed and therefore Playwright executed 0 tests (0 passed, 0 failed). A transparent startup trace reached rootful Podman Compose provider-image build, transferred more than 93 MB of context, then exceeded the 240s diagnostic command timeout before the topology became available. The runner must not be treated as passing: its source currently converts a zero-test successful subprocess path into a synthetic one-test PASS, but that path was not reached here. |
+
+**E2E disposition:** Playwright configuration and four browser specifications (`agent`, `terminal`, `pairing`, and `responsive`) are present under `e2e-lab/playwright`; the prescribed suite was invoked, but its rootful provider/daemon topology did not become ready, so no browser test count greater than zero was obtained. This is an environment block, not a passing, failing, or flaky browser-suite result. Android Golden Flow was not run.
