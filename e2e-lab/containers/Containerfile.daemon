@@ -63,7 +63,7 @@ RUN mkdir -p /root/.omp/agent && \
   echo '{\n\
   "providers": {\n\
     "deterministic": {\n\
-      "baseUrl": "http://agenticremote-provider:19090/v1",\n\
+      "baseUrl": "http://provider:19090/v1",\n\
       "api": "openai-completions",\n\
       "apiKey": "test-key",\n\
       "models": [\n\
@@ -86,17 +86,17 @@ RUN mkdir -p /root/.omp/agent && \
   }\n\
 }' > /root/.omp/agent/models.json && \
   echo '{\n\
-  "defaultProvider": "deterministic",\n\
-  "defaultModel": "omni-deterministic",\n\
+  "model": "deterministic/omni-deterministic",\n\
   "modelRoles": {\n\
     "default": "deterministic/omni-deterministic",\n\
     "smol": "deterministic/omni-deterministic",\n\
-    "slow": "deterministic/omni-deterministic"\n\
+    "slow": "deterministic/omni-deterministic",\n\
+    "plan": "deterministic/omni-deterministic"\n\
   }\n\
 }' > /root/.omp/agent/settings.json && \
   echo 'providers:\n\
   deterministic:\n\
-    baseUrl: "http://agenticremote-provider:19090/v1"\n\
+    baseUrl: "http://provider:19090/v1"\n\
     api: "openai-completions"\n\
     apiKey: "test-key"\n\
     models:\n\
@@ -111,12 +111,12 @@ RUN mkdir -p /root/.omp/agent && \
         maxTokens: 4096\n\
         supportsTools: true\n\
 ' > /root/.omp/agent/models.yml && \
-  echo 'defaultProvider: deterministic\n\
-defaultModel: omni-deterministic\n\
+  echo 'model: deterministic/omni-deterministic\n\
 modelRoles:\n\
   default: deterministic/omni-deterministic\n\
   smol: deterministic/omni-deterministic\n\
   slow: deterministic/omni-deterministic\n\
+  plan: deterministic/omni-deterministic\n\
 ' > /root/.omp/agent/config.yml && \
   cp /root/.omp/agent/models.json /root/.omp/models.json && \
   cp /root/.omp/agent/settings.json /root/.omp/settings.json && \
