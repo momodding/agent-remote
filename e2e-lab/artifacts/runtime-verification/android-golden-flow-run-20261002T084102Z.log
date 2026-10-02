@@ -1,0 +1,19 @@
+[Android] Checking Compose prerequisites...
+[Android] Checking rootful Podman storage...
+[Android] Storage PASS: 117830033408 available bytes at /var/lib/containers/storage; 8372800000 required.
+[Android] Checking KVM access...
+[Android] Artifact written: /home/momodding/Documents/agentic-remote/e2e-lab/artifacts/android-verification.json
+
+=== Android E2E Report ===
+Status: BLOCKED
+Details: /dev/kvm not accessible. BLOCKED_EXTERNAL: Enable via rootful Podman or contact host administrator for KVM ACL adjustment.
+
+Blockers:
+  - KVM_UNAVAILABLE
+
+Remediation:
+  - Enable nested virtualization, grant the running user access to /dev/kvm (e.g. kvm group membership or a logind-granted ACL), or run on a system with KVM support.
+
+Wall time: 6.25 seconds
+
+EXIT_CODE=1
