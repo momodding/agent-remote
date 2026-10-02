@@ -52,6 +52,10 @@ services:
       io.agent-remote.image-digest: sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894
     devices:
       - /dev/kvm:/dev/kvm:rwm
+    # Host kvm group gid (verified via `getent group kvm` -> kvm:x:994:). The
+    # container's androidusr is not a member of the image's built-in groups
+    # that own /dev/kvm inside the container, so grant gid 994 explicitly.
+    group_add: ["994"]
     shm_size: 2g
     environment:
       EMULATOR_NO_SKIN: "true"
