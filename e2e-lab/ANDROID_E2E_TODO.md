@@ -1,6 +1,15 @@
 # Android E2E Execution Contract & Todo Backlog
 
 ## Iteration Log
+## Iteration 27 — Measured Rootful Storage UID
+- GOAL: Prove the Android storage preflight is running as the effective rootful UID rather than assuming UID zero.
+- RESULT: PASS (focused deterministic harness coverage; Android emulator and Golden Flow were not started).
+- IMPLEMENTATION: `android/android-runner.ts` runs `sudo -n -- id -u` in the same sudo rootful invocation form used for the canonical Podman query, parses the measured UID, and returns `BLOCKED_STORAGE_CONTEXT` when measurement fails, is malformed, or is nonzero.
+- REGRESSION_COVERAGE: `bun run android/storage-preflight.test.ts` passes including nonzero measured UID rejection.
+- STATIC_CHECK: `bun build android/android-runner.ts android/storage-preflight.test.ts --target=bun --outdir /tmp/android-storage-preflight-build` passed.
+- EVIDENCE: `artifacts/runtime-verification/android-golden-flow-storage-reconciliation-20261002T060512Z.md`.
+- DATE: 2026-10-02T06:23:24Z
+
 ## Iteration 26 — Canonical Rootful Storage Preflight
 - GOAL: Gate Android emulator/build startup on available capacity for the rootful Podman `GraphRoot` selected by `scripts/compose.sh`.
 - RESULT: PASS (focused deterministic harness coverage; Android emulator and Golden Flow were not started).

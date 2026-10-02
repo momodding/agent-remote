@@ -124,6 +124,14 @@ function checkAndroidStorage(): AndroidStoragePreflight {
     if (infoProc.status !== 0) {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Podman info failed: ${infoProc.stderr || infoProc.stdout || infoProc.status}` };
     }
+    const uidProc = rootfulCommand('id', ['-u']);
+    if (uidProc.status !== 0) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not measure rootful UID: ${uidProc.stderr || uidProc.stdout || uidProc.status}` };
+    }
+    const uid = Number(uidProc.stdout.trim());
+    if (!Number.isSafeInteger(uid)) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse rootful UID: ${uidProc.stdout}` };
+    }
     const info = JSON.parse(infoProc.stdout);
     const store = record(field(record(info), 'store'));
     const storageConfig = field(store, 'configFile');
@@ -150,7 +158,7 @@ function checkAndroidStorage(): AndroidStoragePreflight {
     }
     const context = selectAndroidStorageContext(
       info,
-      0,
+      uid,
       executable,
       typeof storageConfig === 'string' ? storageConfig : undefined,
       filesystem,

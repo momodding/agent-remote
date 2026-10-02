@@ -94,3 +94,7 @@ The Android runner now makes this capacity decision automatically before KVM, em
 The resulting report records the effective UID/rootless state, executable, effective storage configuration, graph/run roots, filesystem/mount, available bytes, required bytes, and the decision. It emits `PASS` when `available >= required`, `BLOCKED_INSUFFICIENT_STORAGE` when capacity is below the threshold, and `BLOCKED_STORAGE_CONTEXT` when the canonical rootful context cannot be established. It intentionally does not substitute rootless or legacy project-local storage.
 
 Focused deterministic coverage passed for rootful selection at the exact threshold, rootless rejection, preservation of a reported project-local graph root, and one-byte-insufficient capacity. No Android emulator or Golden Flow was started for this follow-up.
+
+## Measured UID follow-up — 2026-10-02T06:23:24Z
+
+The preflight no longer assumes UID zero from the use of `sudo`. Before interpreting the rootful Podman info result, it runs `sudo -n -- id -u`, parses the measured effective UID, records that value in the storage context, and blocks with `BLOCKED_STORAGE_CONTEXT` if the command fails, produces an invalid UID, or produces a nonzero UID. The focused deterministic harness check includes a nonzero measured-UID rejection. No Android emulator or Golden Flow was started.

@@ -10,10 +10,10 @@ function info(graphRoot: string, rootless: boolean) {
   };
 }
 
-function context(graphRoot: string, rootless: boolean, availableBytes: number) {
+function context(graphRoot: string, rootless: boolean, availableBytes: number, uid = rootless ? 1000 : 0) {
   return selectAndroidStorageContext(
     info(graphRoot, rootless),
-    rootless ? 1000 : 0,
+    uid,
     '/canonical/podman',
     undefined,
     '/dev/test',
@@ -34,6 +34,9 @@ function testStoragePreflight(): void {
   const rootless = context('/home/user/.local/share/containers/storage', true, 9_000_000_000);
   assert(rootless.graphRoot === '/home/user/.local/share/containers/storage', 'must report rootless GraphRoot when Podman reports it');
   assert(evaluateAndroidStorage(rootless).status === 'BLOCKED_STORAGE_CONTEXT', 'rootless context must not be used by the rootful harness');
+
+  const nonrootUid = context('/var/lib/containers/storage', false, 9_000_000_000, 1000);
+  assert(evaluateAndroidStorage(nonrootUid).status === 'BLOCKED_STORAGE_CONTEXT', 'a nonzero measured UID must block the rootful harness');
 
   const projectLocal = context('/repo/e2e-lab/.runtime/podman-system-graphroot', false, 9_000_000_000);
   assert(projectLocal.graphRoot === '/repo/e2e-lab/.runtime/podman-system-graphroot', 'must report Podman info GraphRoot without substituting a hard-coded path');
