@@ -1,0 +1,16 @@
+[Android] Checking Compose prerequisites...
+[Android] Checking rootful Podman storage...
+[Android] Artifact written: /home/momodding/Documents/agentic-remote/e2e-lab/artifacts/android-verification.json
+
+=== Android E2E Report ===
+Status: BLOCKED
+Details: BLOCKED_STORAGE_CONTEXT: Podman info failed: 1
+
+Blockers:
+  - BLOCKED_STORAGE_CONTEXT: Podman info failed: 1
+
+Remediation:
+  - Repair the canonical rootful Podman context exposed by compose.sh, then rerun the Android harness.
+
+Wall time: 10.27 seconds
+EXIT_CODE=1
