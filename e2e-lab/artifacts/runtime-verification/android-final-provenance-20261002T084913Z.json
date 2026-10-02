@@ -1,0 +1,56 @@
+{
+  "capturedAtUtc": "2026-10-02T08:49:13Z",
+  "purpose": "Final provenance bookkeeping while Android runtime remains externally blocked; this artifact is not an Android acceptance result.",
+  "repository": {
+    "head": "60dc945d527adf8d19be429ee851b83a90d3cdda",
+    "status": "clean",
+    "statusCommand": "git status --short",
+    "statusOutput": ""
+  },
+  "apk": {
+    "path": "e2e-lab/artifacts/android-b04-x86-app-debug.apk",
+    "sha256": "737c630ee279f6445b111e58984e05085a1f354444da5710d0041f2da780b8d0"
+  },
+  "androidImage": "budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894",
+  "lastConfirmedCanonicalPodmanContext": {
+    "source": "e2e-lab/artifacts/android-verification.json and e2e-lab/artifacts/runtime-verification/android-golden-flow-run-20261002T084102Z.log",
+    "rootless": false,
+    "executable": "/home/linuxbrew/.linuxbrew/bin/podman",
+    "containersStorageConf": "/home/linuxbrew/.linuxbrew/etc/containers/storage.conf",
+    "graphRoot": "/var/lib/containers/storage",
+    "runRoot": "/run/containers/storage",
+    "availableBytes": 117830033408,
+    "requiredBytes": 8372800000,
+    "storagePreflightStatus": "PASS",
+    "observedAtUtc": "2026-10-02T08:41:02Z"
+  },
+  "lastAndroidResult": {
+    "source": "e2e-lab/artifacts/runtime-verification/android-golden-flow-run-20261002T084102Z.log",
+    "status": "BLOCKED",
+    "exitCode": 1,
+    "blocker": "KVM_UNAVAILABLE",
+    "details": "/dev/kvm not accessible. BLOCKED_EXTERNAL: Enable via rootful Podman or contact host administrator for KVM ACL adjustment.",
+    "wallTimeSeconds": 6.25,
+    "observedAtUtc": "2026-10-02T08:41:02Z"
+  },
+  "externalPrerequisite": "A host administrator must add momodding to the host kvm group and momodding must start a new login session, or the runner must execute from a seat-attached session with a logind-granted /dev/kvm ACL. No Android Golden Flow was run while this prerequisite remains unsatisfied.",
+  "webPlaywrightEvidence": {
+    "source": "e2e-lab/artifacts/runtime-verification/web-acceptance-20261002T043534Z.{stdout.log,stderr.log,exit}",
+    "startedAtUtc": "2026-10-02T04:35:34.590242Z",
+    "finishedAtUtc": "2026-10-02T04:43:41.377387Z",
+    "exitCode": 0,
+    "status": "PASS",
+    "testsTotal": 9,
+    "testsPassed": 9,
+    "testsFailed": 0,
+    "testedCommit": "afa2bda3a64ee09e6a08386138f5aac639c3d3dc",
+    "currentHead": "60dc945d527adf8d19be429ee851b83a90d3cdda",
+    "sameAsCurrentHead": false,
+    "scope": "This Web Playwright PASS is independent historical browser evidence; it does not establish Android runtime PASS at current HEAD."
+  },
+  "nonActions": [
+    "No Android Golden Flow was run.",
+    "No containers were modified.",
+    "No Podman or storage checks were rerun."
+  ]
+}
