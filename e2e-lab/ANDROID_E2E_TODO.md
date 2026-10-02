@@ -1,6 +1,19 @@
 # Android E2E Execution Contract & Todo Backlog
 
 ## Iteration Log
+## Iteration 30 — Podman-Only Storage Preflight (Sudoers-Scope Fix)
+- GOAL: Fix the sudoers/harness mismatch from Iteration 29: the host sudoers NOPASSWD rule authorizes only the Podman binary (`sudo -n -l` → `(root) NOPASSWD: /home/linuxbrew/.linuxbrew/bin/podman`), not `/usr/bin/id` or `/usr/bin/df`, so the prior separate `sudo -n -- id -u` / `sudo -n -- df` calls always failed closed regardless of actual rootful storage health.
+- RESULT: PASS. `checkAndroidStorage()` now returns `PASS` through the canonical rootful runner context alone.
+- PROBES_PERFORMED: `sudo -n -- podman unshare id -u` → `Error: please use unshare with rootless` (exit 125; unshare is rootless-only, not usable here). Direct unprivileged `df -B1 ... /var/lib/containers/storage` → `Permission denied` (confirms the invoking user cannot traverse the 0700 root-owned GraphRoot without Podman's own root-privileged access). Containerized `df` via `podman run --volume ...:ro` was also attempted and found blocked by an unrelated OCI runtime (`crun`) version mismatch in this environment (`Error: OCI runtime error: crun: unknown version specified`), which further motivated avoiding any `podman run`-based workaround.
+- IMPLEMENTATION: `android/android-runner.ts` `selectAndroidStorageContext(info, executable)` now derives rootful identity from `host.security.rootless` (Podman's own effective-UID-derived rootless/rootful determination; `rootless === false` is accepted as proof of root execution) and derives GraphRoot capacity from `store.graphRootAllocated - store.graphRootUsed` (Podman's own root-privileged statfs of the GraphRoot, taken while already running as root under the single authorized `sudo -n -- podman` invocation). `checkAndroidStorage()` now issues exactly one command: `sudo -n -- "$E2E_PODMAN_BIN" info --format '{{json .}}'`. No `id` or `df` subprocess is spawned anywhere in the preflight.
+- REGRESSION_COVERAGE: `bun run android/storage-preflight.test.ts` passes, including a new test proving the injected executor receives exactly one call (the authorized Podman executable) and a new test proving missing `graphRootAllocated`/`graphRootUsed` fields block with `BLOCKED_STORAGE_CONTEXT` rather than crashing or fabricating a capacity figure.
+- STATIC_CHECK: `bun build android/android-runner.ts android/storage-preflight.test.ts --target=bun --outdir /tmp/android-storage-preflight-build2` passed.
+- MINIMAL_INVOCATION_RESULT: `PASS`, `rootless=false`, `graphRoot=/var/lib/containers/storage`, `runRoot=/run/containers/storage`, `availableBytes=120557006848`, `requiredBytes=8372800000`. No Compose command, Android emulator, or Golden Flow was run.
+- ARTIFACT: `artifacts/runtime-verification/android-storage-preflight-podman-only-20261002T065917Z.json`. The prior `android-storage-preflight-20261002T063123Z.json` (Iteration 29, `BLOCKED_STORAGE_CONTEXT`) is retained unmodified as historical evidence of the authorization-scope bug this fix corrects.
+- PROVENANCE: HEAD before this fix `b31bce74a03e6c20a4f22c3d4de99e0164123fd5`; retained APK `artifacts/android-b04-x86-app-debug.apk` SHA-256 `737c630ee279f6445b111e58984e05085a1f354444da5710d0041f2da780b8d0`; pinned Android image `budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894`.
+- NON_ACTIONS: No Compose command, Android emulator, Golden Flow, or Podman resource create/start/stop/restart/prune/delete was run.
+- DATE: 2026-10-02T06:59:17Z
+
 ## Iteration 29 — Canonical Storage Preflight Execution
 - GOAL: Execute only `checkAndroidStorage()` through the current canonical rootful runner context and capture verification provenance without starting Android.
 - RESULT: BLOCKED_STORAGE_CONTEXT (not PASS).

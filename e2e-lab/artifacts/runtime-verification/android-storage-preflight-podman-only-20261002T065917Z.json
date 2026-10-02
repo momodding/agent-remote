@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-10-02T06:59:17Z",
+  "goal": "Fix sudoers-policy mismatch: the sudoers NOPASSWD rule authorizes only the Podman binary, not /usr/bin/id or /usr/bin/df. The harness previously ran those as separate sudo'd commands and failed closed with BLOCKED_STORAGE_CONTEXT on 'sudo: a password is required', misclassifying an authorization-scope mismatch as a storage blocker.",
+  "fix": "checkAndroidStorage() now issues exactly one command: the authorized 'sudo -n -- $E2E_PODMAN_BIN info --format {{json .}}' invocation. Effective rootful identity is derived from Podman's own host.security.rootless field (Podman itself computes this from its invoking process's effective UID), and GraphRoot capacity is derived from store.graphRootAllocated - store.graphRootUsed (Podman's own statfs of GraphRoot, taken while running as root). No separate 'id -u' or 'df' subprocess is spawned.",
+  "unshareProbe": {
+    "command": "sudo -n -- /home/linuxbrew/.linuxbrew/bin/podman unshare id -u",
+    "result": "Error: please use unshare with rootless",
+    "exitCode": 125,
+    "conclusion": "podman unshare is rootless-only and is not a valid rootful UID/df measurement path; this is why identity/capacity are derived from `podman info` instead."
+  },
+  "sudoersPolicyObserved": {
+    "command": "sudo -n -l",
+    "relevantLine": "(root) NOPASSWD: /home/linuxbrew/.linuxbrew/bin/podman",
+    "conclusion": "NOPASSWD is scoped to the Podman binary only; `sudo -n -- id -u` and `sudo -n -- /usr/bin/df ...` both separately confirmed 'sudo: a password is required' even though the rootful Podman context itself is healthy."
+  },
+  "directDfProbe": {
+    "command": "/usr/bin/df -B1 --output=source,target,avail /var/lib/containers/storage",
+    "result": "df: /var/lib/containers/storage: Permission denied",
+    "conclusion": "The invoking non-root user cannot stat the 0700 root-owned GraphRoot directly even without sudo; only a process already running as root (i.e. Podman itself under sudo) can see into it, confirming store.graphRootAllocated/graphRootUsed from `podman info` is the correct substitute for an external df."
+  },
+  "minimalInvocation": {
+    "command": "bun -e \"import { checkAndroidStorage } from './android/android-runner.ts'; console.log(JSON.stringify(checkAndroidStorage(), null, 2));\"",
+    "workingDirectory": "e2e-lab",
+    "composeOrEmulatorInvoked": false,
+    "result": {
+      "status": "PASS",
+      "context": {
+        "executable": "/home/linuxbrew/.linuxbrew/bin/podman",
+        "rootless": false,
+        "containersStorageConf": "/home/linuxbrew/.linuxbrew/etc/containers/storage.conf",
+        "graphRoot": "/var/lib/containers/storage",
+        "runRoot": "/run/containers/storage",
+        "availableBytes": 120557006848,
+        "requiredBytes": 8372800000
+      }
+    }
+  },
+  "reconciliation": "This PASS is the first in this ledger obtained purely from the canonical noninteractive rootful runner context, with no manual sudo escalation and no fabricated field. It supersedes the prior BLOCKED_STORAGE_CONTEXT result recorded in android-storage-preflight-20261002T063123Z.json, which is retained unmodified as historical evidence of the authorization-scope bug this fix corrects.",
+  "regressionCoverage": {
+    "file": "android/storage-preflight.test.ts",
+    "tests": [
+      "testStoragePreflight: rootful PASS at exact threshold, rootless rejection, project-local GraphRoot preservation, one-byte-insufficient rejection, availableBytes = graphRootAllocated - graphRootUsed arithmetic",
+      "testStorageQueryIsPodmanOnly: checkAndroidStorage() issues exactly one command (the authorized Podman executable) and no other executor call",
+      "testStorageQueryMissingCapacityFieldsBlocks: missing graphRootAllocated/graphRootUsed blocks with BLOCKED_STORAGE_CONTEXT rather than crashing or fabricating a capacity number"
+    ],
+    "runCommand": "bun run android/storage-preflight.test.ts",
+    "runResult": "PASS: Android storage preflight context and capacity checks"
+  },
+  "provenance": {
+    "headBeforeThisFix": "b31bce74a03e6c20a4f22c3d4de99e0164123fd5",
+    "apk": {
+      "path": "artifacts/android-b04-x86-app-debug.apk",
+      "sha256": "737c630ee279f6445b111e58984e05085a1f354444da5710d0041f2da780b8d0"
+    },
+    "pinnedAndroidImage": "budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894"
+  },
+  "nonActions": [
+    "No Compose command was run.",
+    "No Android emulator was started.",
+    "No Golden Flow was executed.",
+    "No Podman resource was created, started, stopped, restarted, pruned, or deleted.",
+    "Golden Flow remains unauthorized to start until the user separately requests it; this artifact only proves the minimal preflight now returns PASS."
+  ]
+}

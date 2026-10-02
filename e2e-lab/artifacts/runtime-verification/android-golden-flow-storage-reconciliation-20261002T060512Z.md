@@ -106,3 +106,20 @@ The capacity probe now runs `/usr/bin/df -B1 --output=source,target,avail <Graph
 ## Canonical preflight execution — 2026-10-02T06:31:23Z
 
 The minimal `checkAndroidStorage()` invocation did not start Compose or Android. It returned `BLOCKED_STORAGE_CONTEXT`: `sudo -n -- id -u` was rejected with `sudo: a password is required`. The harness correctly failed closed before rootful `df`; it therefore cannot truthfully report a PASS or complete measured storage context in this run. This is an authorization/context blocker only. It does not change the reconciled capacity evidence that rootful storage had `106,796,941,312` available bytes versus `8,372,800,000` required. The complete structured result and APK/image/HEAD provenance are in `android-storage-preflight-20261002T063123Z.json`.
+
+## Sudoers-scope fix: Podman-only identity and capacity derivation — 2026-10-02T06:59:17Z
+
+Root cause of the Iteration 29 block: the host sudoers NOPASSWD rule authorizes only the Podman binary itself (`sudo -n -l` → `(root) NOPASSWD: /home/linuxbrew/.linuxbrew/bin/podman`), not `/usr/bin/id` or `/usr/bin/df`. The prior implementation's separate `sudo -n -- id -u` and `sudo -n -- df` calls therefore always failed closed with `sudo: a password is required`, independent of actual rootful storage health, and were misclassified as a storage context blocker.
+
+`podman unshare` was confirmed not viable as a rootful proof path (`Error: please use unshare with rootless`, exit 125 — it only operates inside a rootless user namespace). A containerized `df` via bind-mounted volume was also attempted and found separately blocked by an OCI runtime (`crun`) version mismatch in this environment (`Error: OCI runtime error: crun: unknown version specified`), reinforcing that any `podman run`-based workaround is unreliable here.
+
+The preflight now derives every fact exclusively from the already-authorized `sudo -n -- "$E2E_PODMAN_BIN" info --format '{{json .}}'` call:
+
+* Identity: `host.security.rootless` — Podman's own rootless/rootful determination, computed internally from its invoking process's effective UID. `rootless === false` is accepted as proof the authorized invocation executed as root; no separate `id -u` call exists.
+* Capacity: `store.graphRootAllocated - store.graphRootUsed` — Podman's own root-privileged statfs of the GraphRoot directory, taken while Podman itself is already running as root. No separate `df` call exists. This was independently verified numerically consistent with `df -B1 /` output in this environment, since the rootful GraphRoot shares the root filesystem's backing device.
+
+`checkAndroidStorage()` now issues exactly one executor call. Deterministic regression coverage (`android/storage-preflight.test.ts`) proves this directly: an injected executor records every call it receives, and the test asserts exactly one call was made, to the authorized Podman executable, with no `id`/`df` invocation. A further test proves that if `podman info` is ever missing `graphRootAllocated`/`graphRootUsed`, the preflight reports `BLOCKED_STORAGE_CONTEXT` truthfully rather than crashing or fabricating a capacity number.
+
+Rerunning the minimal invocation from the canonical runner context (no Compose, no emulator, no Golden Flow) now returns `PASS`: `rootless=false`, `graphRoot=/var/lib/containers/storage`, `runRoot=/run/containers/storage`, `availableBytes=120557006848` against `requiredBytes=8372800000`. Full structured result and provenance: `android-storage-preflight-podman-only-20261002T065917Z.json`.
+
+This section is append-only. It does not rewrite or erase the `BLOCKED_STORAGE_CONTEXT` result recorded in the "Canonical preflight execution — 2026-10-02T06:31:23Z" section above, nor `android-storage-preflight-20261002T063123Z.json`; both remain historical evidence of the sudoers-scope bug this fix corrects. Android Golden Flow has not been started; this entry documents only that the minimal preflight itself now returns `PASS`.

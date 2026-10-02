@@ -39,14 +39,11 @@ const ANDROID_REQUIRED_STORAGE_BYTES = 8_372_800_000;
 const DEFAULT_E2E_PODMAN_BIN = '/home/linuxbrew/.linuxbrew/bin/podman';
 
 export interface AndroidStorageContext {
-  uid: number;
   executable: string;
   rootless: boolean;
   containersStorageConf?: string;
   graphRoot: string;
   runRoot: string;
-  filesystem: string;
-  mount: string;
   availableBytes: number;
   requiredBytes: number;
 }
@@ -64,15 +61,24 @@ function field(value: Record<string, unknown>, name: string): unknown {
   return value[name] ?? value[`${name[0].toUpperCase()}${name.slice(1)}`];
 }
 
-export function selectAndroidStorageContext(
-  info: unknown,
-  uid: number,
-  executable: string,
-  containersStorageConf: string | undefined,
-  filesystem: string,
-  mount: string,
-  availableBytes: number,
-): AndroidStorageContext {
+/**
+ * Derive rootful identity and GraphRoot capacity from a single `podman info` call.
+ *
+ * This replaces a separate `sudo -n -- id -u` / `sudo -n -- df` measurement: the sudoers
+ * policy only grants NOPASSWD to the Podman binary itself (see compose.sh), so any command
+ * besides Podman fails closed with "a password is required" even though the rootful context
+ * is otherwise healthy. `podman info` already reports everything the preflight needs:
+ *   - `host.security.rootless`: Podman's own internal rootless/rootful determination, which
+ *     Podman computes from the invoking process's effective UID. `rootless === false` is
+ *     therefore proof the authorized `sudo -n -- podman` invocation executed as root — the
+ *     same guarantee a separate `id -u` measurement would have given, without requiring a
+ *     second authorized command.
+ *   - `store.graphRootAllocated` / `store.graphRootUsed`: Podman's own statfs of the GraphRoot
+ *     directory (bytes). It is available here because Podman runs with root privileges, even
+ *     though an unprivileged `df` cannot stat the same 0700 root-owned directory. Available
+ *     capacity is `graphRootAllocated - graphRootUsed`, matching `df`'s size/used accounting.
+ */
+export function selectAndroidStorageContext(info: unknown, executable: string): AndroidStorageContext {
   const root = record(info);
   const store = record(field(root, 'store'));
   const host = record(field(root, 'host'));
@@ -82,25 +88,28 @@ export function selectAndroidStorageContext(
   if (typeof graphRoot !== 'string' || typeof runRoot !== 'string') {
     throw new Error('Podman info did not report GraphRoot and RunRoot');
   }
+  const allocated = field(store, 'graphRootAllocated');
+  const used = field(store, 'graphRootUsed');
+  if (typeof allocated !== 'number' || typeof used !== 'number') {
+    throw new Error('Podman info did not report GraphRoot capacity (graphRootAllocated/graphRootUsed)');
+  }
+  const containersStorageConf = field(store, 'configFile');
   return {
-    uid,
     executable,
     rootless: field(security, 'rootless') === true,
-    containersStorageConf,
+    containersStorageConf: typeof containersStorageConf === 'string' ? containersStorageConf : undefined,
     graphRoot,
     runRoot,
-    filesystem,
-    mount,
-    availableBytes,
+    availableBytes: allocated - used,
     requiredBytes: ANDROID_REQUIRED_STORAGE_BYTES,
   };
 }
 
 export function evaluateAndroidStorage(context: AndroidStorageContext): AndroidStoragePreflight {
-  if (context.uid !== 0 || context.rootless) {
+  if (context.rootless) {
     return {
       status: 'BLOCKED_STORAGE_CONTEXT',
-      error: `Expected rootful Podman through compose.sh; uid=${context.uid}, rootless=${context.rootless}.`,
+      error: `Expected rootful Podman through compose.sh; Podman reported rootless=${context.rootless}.`,
     };
   }
   return context.availableBytes >= context.requiredBytes
@@ -124,7 +133,12 @@ function rootfulCommand(command: string, args: string[]): AndroidStorageCommandR
   });
 }
 
-/** Query the same rootful Podman binary and sudo context as compose.sh before Compose starts Android. */
+/**
+ * Query the same rootful Podman binary and sudo context as compose.sh before Compose starts
+ * Android. Uses only the Podman invocation the sudoers policy authorizes (NOPASSWD is scoped
+ * to the Podman binary, not to `id` or `df`); see selectAndroidStorageContext for what the
+ * derived fields prove.
+ */
 export function checkAndroidStorage(
   executor: AndroidStorageCommandExecutor = rootfulCommand,
   executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN,
@@ -134,43 +148,8 @@ export function checkAndroidStorage(
     if (infoProc.status !== 0) {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Podman info failed: ${infoProc.stderr || infoProc.stdout || infoProc.status}` };
     }
-    const uidProc = executor('id', ['-u']);
-    if (uidProc.status !== 0) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not measure rootful UID: ${uidProc.stderr || uidProc.stdout || uidProc.status}` };
-    }
-    const uid = Number(uidProc.stdout.trim());
-    if (!Number.isSafeInteger(uid)) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse rootful UID: ${uidProc.stdout}` };
-    }
     const info = JSON.parse(infoProc.stdout);
-    const store = record(field(record(info), 'store'));
-    const storageConfig = field(store, 'configFile');
-    const graphRoot = field(store, 'graphRoot');
-    if (typeof graphRoot !== 'string') {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: 'Podman info did not report GraphRoot.' };
-    }
-    const dfProc = executor('/usr/bin/df', ['-B1', '--output=source,target,avail', graphRoot]);
-    if (dfProc.status !== 0) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Storage context query failed: ${dfProc.stderr || 'unknown error'}` };
-    }
-    const data = dfProc.stdout.trim().split(/\r?\n/)[1];
-    if (!data) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse df output: ${dfProc.stdout}` };
-    }
-    const [filesystem, mount, available] = data.trim().split(/\s+/);
-    const availableBytes = Number(available);
-    if (!filesystem || !mount || !Number.isSafeInteger(availableBytes)) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse available bytes from df: ${dfProc.stdout}` };
-    }
-    const context = selectAndroidStorageContext(
-      info,
-      uid,
-      executable,
-      typeof storageConfig === 'string' ? storageConfig : undefined,
-      filesystem,
-      mount,
-      availableBytes,
-    );
+    const context = selectAndroidStorageContext(info, executable);
     return evaluateAndroidStorage(context);
   } catch (err: unknown) {
     return { status: 'BLOCKED_STORAGE_CONTEXT', error: err instanceof Error ? err.message : String(err) };
