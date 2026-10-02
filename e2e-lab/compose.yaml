@@ -52,10 +52,13 @@ services:
       io.agent-remote.image-digest: sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894
     devices:
       - /dev/kvm:/dev/kvm:rwm
-    # Host kvm group gid (verified via `getent group kvm` -> kvm:x:994:). The
-    # container's androidusr is not a member of the image's built-in groups
-    # that own /dev/kvm inside the container, so grant gid 994 explicitly.
-    group_add: ["994"]
+    # Host /dev/kvm group gid, resolved at compose-invocation time by
+    # compose.sh into KVM_GID (see that script) and substituted here via
+    # Compose's standard ${VAR} interpolation. The container's androidusr is
+    # not a member of the image's built-in groups that own /dev/kvm inside
+    # the container, so grant the host's actual kvm gid explicitly. Compose
+    # fails fast with a clear error if KVM_GID is unset (see compose.sh).
+    group_add: ["${KVM_GID:?KVM_GID must be set by compose.sh}"]
     shm_size: 2g
     environment:
       EMULATOR_NO_SKIN: "true"
