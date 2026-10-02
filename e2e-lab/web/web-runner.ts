@@ -180,7 +180,6 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
         PATH: extendedPath,
         NODE_PATH: runtimeNodeModules,
         CLIENT_WEB_URL: targetUrl,
-        E2E_REAL_PAIRING_PAYLOAD: realPairingPayload,
         PLAYWRIGHT_BROWSERS_PATH: browserCache,
       },
       encoding: 'utf-8',
