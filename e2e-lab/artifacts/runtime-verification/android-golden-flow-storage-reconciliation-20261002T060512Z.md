@@ -98,3 +98,7 @@ Focused deterministic coverage passed for rootful selection at the exact thresho
 ## Measured UID follow-up — 2026-10-02T06:23:24Z
 
 The preflight no longer assumes UID zero from the use of `sudo`. Before interpreting the rootful Podman info result, it runs `sudo -n -- id -u`, parses the measured effective UID, records that value in the storage context, and blocks with `BLOCKED_STORAGE_CONTEXT` if the command fails, produces an invalid UID, or produces a nonzero UID. The focused deterministic harness check includes a nonzero measured-UID rejection. No Android emulator or Golden Flow was started.
+
+## Rootful GraphRoot capacity follow-up — 2026-10-02T06:26:01Z
+
+The capacity probe now runs `/usr/bin/df -B1 --output=source,target,avail <GraphRoot>` through the same rootful `sudo -n --` executor as the Podman info and UID queries. This preserves the exact machine-reported graph root while avoiding an invoking-user traversal failure on rootful-only storage. Deterministic coverage injects a rootful executor for a root-only reported graph root and verifies that `/usr/bin/df` is dispatched through it. Existing parse and capacity threshold behavior is unchanged. No Android emulator or Golden Flow was started.

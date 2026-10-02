@@ -108,7 +108,15 @@ export function evaluateAndroidStorage(context: AndroidStorageContext): AndroidS
     : { status: 'BLOCKED_INSUFFICIENT_STORAGE', context };
 }
 
-function rootfulCommand(command: string, args: string[]) {
+export interface AndroidStorageCommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export type AndroidStorageCommandExecutor = (command: string, args: string[]) => AndroidStorageCommandResult;
+
+function rootfulCommand(command: string, args: string[]): AndroidStorageCommandResult {
   return spawnSync('sudo', ['-n', '--', command, ...args], {
     encoding: 'utf8',
     stdio: 'pipe',
@@ -117,14 +125,16 @@ function rootfulCommand(command: string, args: string[]) {
 }
 
 /** Query the same rootful Podman binary and sudo context as compose.sh before Compose starts Android. */
-function checkAndroidStorage(): AndroidStoragePreflight {
-  const executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN;
+export function checkAndroidStorage(
+  executor: AndroidStorageCommandExecutor = rootfulCommand,
+  executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN,
+): AndroidStoragePreflight {
   try {
-    const infoProc = rootfulCommand(executable, ['info', '--format', '{{json .}}']);
+    const infoProc = executor(executable, ['info', '--format', '{{json .}}']);
     if (infoProc.status !== 0) {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Podman info failed: ${infoProc.stderr || infoProc.stdout || infoProc.status}` };
     }
-    const uidProc = rootfulCommand('id', ['-u']);
+    const uidProc = executor('id', ['-u']);
     if (uidProc.status !== 0) {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not measure rootful UID: ${uidProc.stderr || uidProc.stdout || uidProc.status}` };
     }
@@ -139,11 +149,7 @@ function checkAndroidStorage(): AndroidStoragePreflight {
     if (typeof graphRoot !== 'string') {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: 'Podman info did not report GraphRoot.' };
     }
-    const dfProc = spawnSync('df', ['-B1', '--output=source,target,avail', graphRoot], {
-      encoding: 'utf8',
-      stdio: 'pipe',
-      timeout: 5_000,
-    });
+    const dfProc = executor('/usr/bin/df', ['-B1', '--output=source,target,avail', graphRoot]);
     if (dfProc.status !== 0) {
       return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Storage context query failed: ${dfProc.stderr || 'unknown error'}` };
     }

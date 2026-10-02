@@ -1,4 +1,5 @@
 import {
+  checkAndroidStorage,
   evaluateAndroidStorage,
   selectAndroidStorageContext,
 } from './android-runner';
@@ -45,7 +46,21 @@ function testStoragePreflight(): void {
   assert(evaluateAndroidStorage(insufficient).status === 'BLOCKED_INSUFFICIENT_STORAGE', 'available bytes below required bytes must block');
 }
 
+function testStorageQueryUsesRootfulExecutor(): void {
+  const calls: string[] = [];
+  const preflight = checkAndroidStorage((command, args) => {
+    calls.push(`${command} ${args.join(' ')}`);
+    if (command === '/canonical/podman') return { status: 0, stdout: JSON.stringify(info('/root-only/store', false)), stderr: '' };
+    if (command === 'id') return { status: 0, stdout: '0\n', stderr: '' };
+    if (command === '/usr/bin/df') return { status: 0, stdout: 'Filesystem Mounted on Avail\n/dev/root / 8372800000\n', stderr: '' };
+    throw new Error(`Unexpected command: ${command}`);
+  }, '/canonical/podman');
+  assert(preflight.status === 'PASS', 'storage query must use the supplied rootful executor');
+  assert(calls.some((call) => call.startsWith('/usr/bin/df ')), 'GraphRoot capacity must be queried through the rootful executor');
+}
+
 if (import.meta.main) {
   testStoragePreflight();
+  testStorageQueryUsesRootfulExecutor();
   console.log('PASS: Android storage preflight context and capacity checks');
 }
