@@ -1,6 +1,18 @@
 # Android E2E Execution Contract & Todo Backlog
 
 ## Iteration Log
+## Iteration 26 — Canonical Rootful Storage Preflight
+- GOAL: Gate Android emulator/build startup on available capacity for the rootful Podman `GraphRoot` selected by `scripts/compose.sh`.
+- RESULT: PASS (focused deterministic harness coverage; Android emulator and Golden Flow were not started).
+- ROOT_CAUSE: The former rootful-capacity blocker was a `TEST_HARNESS_BUG`: it promoted an in-emulator filesystem observation into a rootful Podman graph-root prerequisite without resolving the canonical rootful `GraphRoot`.
+- IMPLEMENTATION: `android/android-runner.ts` queries `sudo -n -- "$E2E_PODMAN_BIN" info --format '{{json .}}'`, records rootful context (`uid=0`, executable, effective storage config, `GraphRoot`, `RunRoot`, filesystem/mount, available/required bytes), and blocks before KVM/emulator work when context is invalid or `available < 8,372,800,000`.
+- CONTEXT_RULE: The check uses the same `E2E_PODMAN_BIN` default and rootful `sudo -n --` invocation as `scripts/compose.sh`; it derives storage paths from machine-readable rootful Podman info and does not hard-code `/var/lib` or use legacy `.runtime` storage state.
+- EVIDENCE: Authoritative manual observations retained in `artifacts/runtime-verification/android-golden-flow-storage-reconciliation-20261002T060512Z.md`: rootless `GraphRoot` available `106,917,838,848` bytes; rootful `GraphRoot` available `106,796,941,312` bytes; Android prerequisite `8,372,800,000` bytes. The rootful value exceeds the prerequisite by `98,424,141,312` bytes.
+- REGRESSION_COVERAGE: `bun run android/storage-preflight.test.ts` passes rootful/exact-threshold, rootless rejection, project-local reported-`GraphRoot` preservation, and one-byte-insufficient cases.
+- STATIC_CHECK: `bun build android/android-runner.ts android/storage-preflight.test.ts --target=bun --outdir /tmp/android-storage-preflight-build` passed. No repository lint configuration is present; standalone `tsc` could not run because the project does not install `node`/`bun-types` type definitions.
+- FILES_CHANGED: `android/android-runner.ts`, `android/storage-preflight.test.ts`, `ANDROID_E2E_TODO.md`, `artifacts/runtime-verification/android-golden-flow-storage-reconciliation-20261002T060512Z.md`.
+- DATE: 2026-10-02T06:17:56Z
+
 ## Iteration 25 — Rootful Podman Authorization Repair
 - GOAL: Canonicalize the rootful Podman command and make authorization probes exercise Podman and Podman Compose.
 - RESULT: PASS (static audit and doctor validation; no Compose or product test run).
