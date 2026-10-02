@@ -1,9 +1,9 @@
 import {
   checkAndroidStorage,
   evaluateAndroidStorage,
+  PODMAN_INFO_PREFLIGHT_TIMEOUT_MS,
   selectAndroidStorageContext,
 } from './android-runner';
-
 function info(graphRoot: string, rootless: boolean, allocated: number, used: number) {
   return {
     store: { graphRoot, runRoot: `${graphRoot}/run`, graphRootAllocated: allocated, graphRootUsed: used },
@@ -66,9 +66,41 @@ function testStorageQueryMissingCapacityFieldsBlocks(): void {
   assert(preflight.status === 'BLOCKED_STORAGE_CONTEXT', 'missing graphRootAllocated/graphRootUsed must block, not crash or fabricate capacity');
 }
 
+function testStorageQueryUsesDocumentedTimeout(): void {
+  let timeoutMs = 0;
+  const preflight = checkAndroidStorage((_command, _args, timeout) => {
+    timeoutMs = timeout;
+    return { status: 0, stdout: JSON.stringify(info('/root-only/store', false, 8_372_800_000, 0)), stderr: '' };
+  }, '/canonical/podman');
+  assert(preflight.status === 'PASS', 'storage preflight should still pass with the injected executor');
+  assert(timeoutMs === PODMAN_INFO_PREFLIGHT_TIMEOUT_MS, 'storage preflight must pass its named Podman-info timeout to the executor');
+  assert(timeoutMs === 30_000, 'Podman-info preflight timeout must provide 30 seconds of headroom');
+}
+
+function testStorageQueryTimeoutReportsProcessError(): void {
+  const preflight = checkAndroidStorage(() => ({
+    status: 1,
+    stdout: '',
+    stderr: '',
+    error: { code: 'ETIMEDOUT', message: 'spawnSync sudo ETIMEDOUT' },
+  }), '/canonical/podman');
+  assert(preflight.status === 'BLOCKED_STORAGE_CONTEXT', 'a timed-out Podman info query must block');
+  assert(preflight.status !== 'PASS' && preflight.error.includes('ETIMEDOUT'), 'timeout diagnostic must preserve proc.error code');
+  assert(preflight.status !== 'PASS' && preflight.error.includes('spawnSync sudo ETIMEDOUT'), 'timeout diagnostic must preserve proc.error message');
+}
+
+function testStorageQueryGenuineFailurePreservesCommandOutput(): void {
+  const preflight = checkAndroidStorage(() => ({ status: 1, stdout: '', stderr: 'rootful Podman unavailable' }), '/canonical/podman');
+  assert(preflight.status === 'BLOCKED_STORAGE_CONTEXT', 'a genuine Podman failure must still block');
+  assert(preflight.status !== 'PASS' && preflight.error.includes('rootful Podman unavailable'), 'genuine Podman stderr must remain actionable');
+}
+
 if (import.meta.main) {
   testStoragePreflight();
   testStorageQueryIsPodmanOnly();
   testStorageQueryMissingCapacityFieldsBlocks();
-  console.log('PASS: Android storage preflight context and capacity checks');
+  testStorageQueryUsesDocumentedTimeout();
+  testStorageQueryTimeoutReportsProcessError();
+  testStorageQueryGenuineFailurePreservesCommandOutput();
+  console.log('PASS: Android storage preflight context, timeout, and diagnostic checks');
 }

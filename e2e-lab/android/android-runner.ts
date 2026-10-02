@@ -37,6 +37,10 @@ export interface AndroidRunnerReport {
 
 const ANDROID_REQUIRED_STORAGE_BYTES = 8_372_800_000;
 const DEFAULT_E2E_PODMAN_BIN = '/home/linuxbrew/.linuxbrew/bin/podman';
+// Podman info can take several seconds while storage locks settle; this preflight
+// needs headroom without changing Compose or emulator operation timeouts.
+export const PODMAN_INFO_PREFLIGHT_TIMEOUT_MS = 30_000;
+
 
 export interface AndroidStorageContext {
   executable: string;
@@ -121,16 +125,28 @@ export interface AndroidStorageCommandResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  error?: { code?: string; message: string };
 }
 
-export type AndroidStorageCommandExecutor = (command: string, args: string[]) => AndroidStorageCommandResult;
+export type AndroidStorageCommandExecutor = (
+  command: string,
+  args: string[],
+  timeoutMs: number,
+) => AndroidStorageCommandResult;
 
-function rootfulCommand(command: string, args: string[]): AndroidStorageCommandResult {
+function rootfulCommand(command: string, args: string[], timeoutMs: number): AndroidStorageCommandResult {
   return spawnSync('sudo', ['-n', '--', command, ...args], {
     encoding: 'utf8',
     stdio: 'pipe',
-    timeout: 5_000,
+    timeout: timeoutMs,
   });
+}
+
+function podmanInfoFailure(result: AndroidStorageCommandResult): string {
+  const detail = result.error
+    ? `${result.error.code || 'ERROR'}: ${result.error.message}`
+    : result.stderr || result.stdout || String(result.status);
+  return `Podman info failed: ${detail}`;
 }
 
 /**
@@ -144,9 +160,9 @@ export function checkAndroidStorage(
   executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN,
 ): AndroidStoragePreflight {
   try {
-    const infoProc = executor(executable, ['info', '--format', '{{json .}}']);
+    const infoProc = executor(executable, ['info', '--format', '{{json .}}'], PODMAN_INFO_PREFLIGHT_TIMEOUT_MS);
     if (infoProc.status !== 0) {
-      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Podman info failed: ${infoProc.stderr || infoProc.stdout || infoProc.status}` };
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: podmanInfoFailure(infoProc) };
     }
     const info = JSON.parse(infoProc.stdout);
     const context = selectAndroidStorageContext(info, executable);
