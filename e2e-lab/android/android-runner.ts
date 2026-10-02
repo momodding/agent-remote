@@ -156,6 +156,17 @@ export function checkAndroidStorage(
   }
 }
 
+/**
+ * Pure evaluation of a KVM access check result into the runner's blocking decision.
+ * Exported as a test seam: proves the KVM short-circuit fires before Compose starts
+ * without needing to actually start or poll Compose.
+ */
+export function evaluateKvmPreflight(kvmCheck: { ok: boolean; error?: string }): { blocked: boolean; details: string } {
+  return kvmCheck.ok
+    ? { blocked: false, details: '' }
+    : { blocked: true, details: kvmCheck.error || 'KVM not available' };
+}
+
 interface ComposeService {
   Service: string;
   State: string;
@@ -630,14 +641,15 @@ export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
     }
     console.log(`[Android] Storage PASS: ${storageCheck.context.availableBytes} available bytes at ${storageCheck.context.graphRoot}; ${storageCheck.context.requiredBytes} required.`);
 
-    // 2. KVM check
+    // 2. KVM check: evaluated via a pure helper (evaluateKvmPreflight) so the
+    // short-circuit-before-Compose behavior is independently regression-tested.
     console.log(`[Android] Checking KVM access...`);
-    const kvmCheck = checkKVMAccess();
-    if (!kvmCheck) {
+    const kvmPreflight = evaluateKvmPreflight(checkKVMAccess());
+    if (kvmPreflight.blocked) {
       report.status = 'BLOCKED';
-      report.details = 'KVM not available';
+      report.details = kvmPreflight.details;
       report.blockers.push('KVM_UNAVAILABLE');
-      report.remediationSteps.push('Enable nested virtualization or run on a system with KVM support');
+      report.remediationSteps.push('Enable nested virtualization, grant the running user access to /dev/kvm (e.g. kvm group membership or a logind-granted ACL), or run on a system with KVM support.');
       writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
       return report;
     }
