@@ -610,3 +610,17 @@
 - [TODO] J01: Measure persistent Podman usage
 - [TODO] J02: Run Android E2E twice
 - [TODO] K01: Run complete test-all
+
+## Iteration 31 — 2026-10-02T07:11:30Z: Android golden-flow acceptance attempt — FAILED at Compose health (KVM permission), not storage
+
+Executed canonical `./scripts/test-android.sh` exactly once from a clean prepared state (HEAD `784997d904a028c6b4ddefcabd1cc298bdb5991a`, clean worktree), after independently confirmed rootful storage preflight PASS (`availableBytes=120557006848`, `requiredBytes=8372800000`).
+
+Result: `FAILED`, `Compose health check timeout`, wall time 394.85s. Storage preflight stage itself PASSED within this same run (`120553009152` bytes available) — the storage work landed this session is not implicated.
+
+Root cause (confirmed via read-only container inspection): the `android-emulator` container's `/home/androidusr/logs/device.stdout.log` shows `PermissionError: [Errno 13] Permission denied: '/dev/kvm'` raised by `emulator.py:change_permission`. `/dev/kvm` inside the container is group-owned by gid 994 (`kvm`); the container's `androidusr` (uid 1300, gid 1301) is not a member of gid 994. `e2e-lab/compose.yaml`'s `android-emulator` service passes the `/dev/kvm` device but does not grant `androidusr` supplementary membership in its owning group (no `group_add`). Host user `momodding` is also not in the host `kvm` group, independently confirmed via `fs.accessSync`/`os.access` probes.
+
+Also found (pre-existing, not introduced this session): `e2e-lab/android/android-runner.ts:636` checks `if (!kvmCheck)` instead of `if (!kvmCheck.ok)` — `checkKVMAccess()` always returns a non-null object, so this guard can never trip, silently masking the host-side KVM detection that had already correctly flagged the problem, and letting the run proceed into a much longer, less specific 394s Compose-health timeout instead of an immediate, actionable `KVM_UNAVAILABLE` block.
+
+Additional non-blocking findings recorded for future acceptance attempts: `runMaestroFlows()` only invokes `pairing-flow.yaml` (not `terminal-session.yaml`/`agent-chat.yaml`); `PAIRING_PAYLOAD_CHUNK_1`/`_2` consumed by `pairing-flow.yaml` are never set anywhere in the Android runner path; Plan Mode/Vibe Mode confirmed absent by design (matches `plans/android-runtime-ux-remediation.md`) and must not be fabricated in any future report.
+
+No container/volume/network was pruned/stopped/restarted/deleted. No source or Compose file was modified. Full evidence: `e2e-lab/artifacts/runtime-verification/android-golden-flow-acceptance-attempt-20261002T071130Z.md`, full run log `e2e-lab/artifacts/runtime-verification/android-golden-flow-run-20261002T071130Z.log`, runner-written `e2e-lab/artifacts/android-verification.json`.
