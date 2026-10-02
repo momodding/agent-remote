@@ -23,7 +23,7 @@ listener_details() {
 }
 
 stop_web_server() {
-  [[ -f "${WEB_PID_FILE}" ]] || return
+  [[ -f "${WEB_PID_FILE}" ]] || return 0
 
   local web_pid
   web_pid="$(<"${WEB_PID_FILE}")"

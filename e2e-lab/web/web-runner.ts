@@ -79,13 +79,27 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   if (fs.existsSync(upScript)) {
     try {
       execFileSync('bash', [upScript], { stdio: 'pipe', timeout: 180000 });
-    } catch {
+    } catch (error) {
+      let exitStatus = 'none';
+      let signal = 'none';
+      let code = 'none';
+      let stdout = '';
+      let stderr = '';
+
+      if (error && typeof error === 'object') {
+        if ('status' in error && (typeof error.status === 'number' || error.status === null)) exitStatus = String(error.status ?? 'none');
+        if ('signal' in error && (typeof error.signal === 'string' || error.signal === null)) signal = error.signal ?? 'none';
+        if ('code' in error && typeof error.code === 'string') code = error.code;
+        if ('stdout' in error && (typeof error.stdout === 'string' || Buffer.isBuffer(error.stdout))) stdout = String(error.stdout);
+        if ('stderr' in error && (typeof error.stderr === 'string' || Buffer.isBuffer(error.stderr))) stderr = String(error.stderr);
+      }
+
       return {
         timestamp: new Date().toISOString(),
         suite: 'Web Client Production & Browser E2E',
         status: 'BLOCKED_ENVIRONMENT',
-        details: 'Could not start the E2E topology.',
-        remediation: 'Inspect the E2E topology startup output and ensure required images are available.',
+        details: `Could not start the E2E topology. Exit status: ${exitStatus}; signal: ${signal}; code: ${code}.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+        remediation: 'Inspect the captured startup diagnostics above and ensure required images are available.',
         testsTotal: 0,
         testsPassed: 0,
         testsFailed: 0,
@@ -190,9 +204,17 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
       }
     }
 
-    if (total === 0) {
-      passed = 1;
-      total = 1;
+    if (passed + failed === 0) {
+      return {
+        timestamp: new Date().toISOString(),
+        suite: 'Web Client Production & Browser E2E',
+        status: 'BLOCKED_ENVIRONMENT',
+        details: 'Playwright completed without executing any tests.',
+        remediation: 'Inspect the Playwright configuration and results artifact before retrying.',
+        testsTotal: total,
+        testsPassed: passed,
+        testsFailed: failed,
+      };
     }
 
     return {
