@@ -102,3 +102,7 @@ The preflight no longer assumes UID zero from the use of `sudo`. Before interpre
 ## Rootful GraphRoot capacity follow-up — 2026-10-02T06:26:01Z
 
 The capacity probe now runs `/usr/bin/df -B1 --output=source,target,avail <GraphRoot>` through the same rootful `sudo -n --` executor as the Podman info and UID queries. This preserves the exact machine-reported graph root while avoiding an invoking-user traversal failure on rootful-only storage. Deterministic coverage injects a rootful executor for a root-only reported graph root and verifies that `/usr/bin/df` is dispatched through it. Existing parse and capacity threshold behavior is unchanged. No Android emulator or Golden Flow was started.
+
+## Canonical preflight execution — 2026-10-02T06:31:23Z
+
+The minimal `checkAndroidStorage()` invocation did not start Compose or Android. It returned `BLOCKED_STORAGE_CONTEXT`: `sudo -n -- id -u` was rejected with `sudo: a password is required`. The harness correctly failed closed before rootful `df`; it therefore cannot truthfully report a PASS or complete measured storage context in this run. This is an authorization/context blocker only. It does not change the reconciled capacity evidence that rootful storage had `106,796,941,312` available bytes versus `8,372,800,000` required. The complete structured result and APK/image/HEAD provenance are in `android-storage-preflight-20261002T063123Z.json`.

@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-10-02T06:31:23Z",
+  "invocation": {
+    "command": "bun -e \"import { checkAndroidStorage } from './android/android-runner.ts'; console.log(JSON.stringify(checkAndroidStorage(), null, 2));\"",
+    "workingDirectory": "e2e-lab",
+    "composeOrEmulatorInvoked": false
+  },
+  "checkAndroidStorageResult": {
+    "status": "BLOCKED_STORAGE_CONTEXT",
+    "error": "Could not measure rootful UID: sudo: a password is required\n"
+  },
+  "requiredStructuredFields": {
+    "effectiveUid": null,
+    "executable": "/home/linuxbrew/.linuxbrew/bin/podman",
+    "rootless": null,
+    "containersStorageConf": null,
+    "graphRoot": null,
+    "runRoot": null,
+    "filesystem": null,
+    "mount": null,
+    "availableBytes": null,
+    "requiredBytes": 8372800000,
+    "decision": "BLOCKED_STORAGE_CONTEXT"
+  },
+  "canonicalPodmanInfoObservedInThisTurn": {
+    "command": "sudo -n -- /home/linuxbrew/.linuxbrew/bin/podman info --format '{{json .}}'",
+    "rootless": false,
+    "configFile": "/home/linuxbrew/.linuxbrew/etc/containers/storage.conf",
+    "graphRoot": "/var/lib/containers/storage",
+    "runRoot": "/run/containers/storage"
+  },
+  "provenance": {
+    "head": "17d8f78709f1feb6a84c0a146dc8bff6e383cd08",
+    "gitStatusPorcelain": "",
+    "apk": {
+      "path": "e2e-lab/artifacts/android-b04-x86-app-debug.apk",
+      "sha256": "737c630ee279f6445b111e58984e05085a1f354444da5710d0041f2da780b8d0"
+    },
+    "androidImage": "budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894"
+  },
+  "reconciliation": "The earlier authoritative rootful capacity observation remains 106796941312 bytes available versus 8372800000 bytes required. This run cannot report PASS because the current harness correctly fails closed before it can measure the effective UID or rootful df result: sudo permits the canonical Podman info command but rejects sudo -n -- id -u.",
+  "nonActions": [
+    "No Compose command was invoked.",
+    "No Android emulator or Golden Flow was started.",
+    "No Podman resource was created, started, stopped, restarted, removed, pruned, or deleted."
+  ]
+}

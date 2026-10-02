@@ -1,6 +1,16 @@
 # Android E2E Execution Contract & Todo Backlog
 
 ## Iteration Log
+## Iteration 29 — Canonical Storage Preflight Execution
+- GOAL: Execute only `checkAndroidStorage()` through the current canonical rootful runner context and capture verification provenance without starting Android.
+- RESULT: BLOCKED_STORAGE_CONTEXT (not PASS).
+- CURRENT_FAILURE: `sudo -n -- id -u` returned `sudo: a password is required`; the harness therefore correctly failed closed before it could record a measured effective UID or execute rootful `df`.
+- RECONCILIATION: This is a sudo authorization/context blocker, not a capacity blocker. The retained authoritative rootful capacity observation is `106,796,941,312` bytes available against `8,372,800,000` required.
+- ARTIFACT: `artifacts/runtime-verification/android-storage-preflight-20261002T063123Z.json`.
+- PROVENANCE: HEAD `17d8f78709f1feb6a84c0a146dc8bff6e383cd08`; worktree clean; retained APK `artifacts/android-b04-x86-app-debug.apk` SHA-256 `737c630ee279f6445b111e58984e05085a1f354444da5710d0041f2da780b8d0`; pinned Android image `budtmo/docker-android:emulator_14.0_v3.7.0-p0@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894`.
+- NON_ACTIONS: No Compose command, Android emulator, Golden Flow, or Podman resource operation was run.
+- DATE: 2026-10-02T06:31:23Z
+
 ## Iteration 28 — Rootful GraphRoot Capacity Query
 - GOAL: Measure the reported rootful Podman `GraphRoot` without relying on invoking-user filesystem traversal permissions.
 - RESULT: PASS (focused deterministic harness coverage; Android emulator and Golden Flow were not started).
