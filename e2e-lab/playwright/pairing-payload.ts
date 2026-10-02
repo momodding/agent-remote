@@ -9,16 +9,18 @@ function currentAuthV2Payload(output: string): string {
     const candidate = line.trim();
     if (!candidate) continue;
 
+    const jsonStart = candidate.indexOf('{');
+    if (jsonStart === -1) continue;
+
+    const rawPayload = candidate.slice(jsonStart);
     try {
-      const payload: unknown = JSON.parse(candidate);
-      if (!payload || typeof payload !== 'object') continue;
+      const payload: unknown = JSON.parse(rawPayload);
+      if (!payload || typeof payload !== 'object' || !('v' in payload) || !('expiresAt' in payload)) continue;
+      if (payload.v !== 2 || typeof payload.expiresAt !== 'string') continue;
 
-      const authPayload = payload as { v?: unknown; expiresAt?: unknown };
-      if (authPayload.v !== 2 || typeof authPayload.expiresAt !== 'string') continue;
-
-      const expiresAt = Date.parse(authPayload.expiresAt);
+      const expiresAt = Date.parse(payload.expiresAt);
       if (Number.isFinite(expiresAt) && expiresAt - Date.now() >= MINIMUM_PAIRING_LIFETIME_MS) {
-        return candidate;
+        return rawPayload;
       }
     } catch {
       // Ignore non-payload daemon log lines.
