@@ -118,6 +118,7 @@ test.describe('Web Agent & Live Daemon Session Flow', () => {
     const xtermSurface = page.locator('.xterm, canvas, [data-testid="terminal-container"]').last();
     await expect(xtermSurface).toBeVisible({ timeout: 10000 });
 
+    await page.locator('[aria-label="More actions"]:visible').first().click();
     // 8. Close agent view to return cleanly to dashboard
     const closeViewBtn = page.locator('[aria-label="Close View"]:visible').first();
     await expect(closeViewBtn).toBeVisible({ timeout: 5000 });
