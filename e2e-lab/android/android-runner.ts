@@ -32,6 +32,135 @@ export interface AndroidRunnerReport {
     serial?: string;
     state?: string;
   };
+  storagePreflight?: AndroidStoragePreflight;
+}
+
+const ANDROID_REQUIRED_STORAGE_BYTES = 8_372_800_000;
+const DEFAULT_E2E_PODMAN_BIN = '/home/linuxbrew/.linuxbrew/bin/podman';
+
+export interface AndroidStorageContext {
+  uid: number;
+  executable: string;
+  rootless: boolean;
+  containersStorageConf?: string;
+  graphRoot: string;
+  runRoot: string;
+  filesystem: string;
+  mount: string;
+  availableBytes: number;
+  requiredBytes: number;
+}
+
+export type AndroidStoragePreflight =
+  | { status: 'PASS'; context: AndroidStorageContext }
+  | { status: 'BLOCKED_INSUFFICIENT_STORAGE'; context: AndroidStorageContext }
+  | { status: 'BLOCKED_STORAGE_CONTEXT'; error: string };
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function field(value: Record<string, unknown>, name: string): unknown {
+  return value[name] ?? value[`${name[0].toUpperCase()}${name.slice(1)}`];
+}
+
+export function selectAndroidStorageContext(
+  info: unknown,
+  uid: number,
+  executable: string,
+  containersStorageConf: string | undefined,
+  filesystem: string,
+  mount: string,
+  availableBytes: number,
+): AndroidStorageContext {
+  const root = record(info);
+  const store = record(field(root, 'store'));
+  const host = record(field(root, 'host'));
+  const security = record(field(host, 'security'));
+  const graphRoot = field(store, 'graphRoot');
+  const runRoot = field(store, 'runRoot');
+  if (typeof graphRoot !== 'string' || typeof runRoot !== 'string') {
+    throw new Error('Podman info did not report GraphRoot and RunRoot');
+  }
+  return {
+    uid,
+    executable,
+    rootless: field(security, 'rootless') === true,
+    containersStorageConf,
+    graphRoot,
+    runRoot,
+    filesystem,
+    mount,
+    availableBytes,
+    requiredBytes: ANDROID_REQUIRED_STORAGE_BYTES,
+  };
+}
+
+export function evaluateAndroidStorage(context: AndroidStorageContext): AndroidStoragePreflight {
+  if (context.uid !== 0 || context.rootless) {
+    return {
+      status: 'BLOCKED_STORAGE_CONTEXT',
+      error: `Expected rootful Podman through compose.sh; uid=${context.uid}, rootless=${context.rootless}.`,
+    };
+  }
+  return context.availableBytes >= context.requiredBytes
+    ? { status: 'PASS', context }
+    : { status: 'BLOCKED_INSUFFICIENT_STORAGE', context };
+}
+
+function rootfulCommand(command: string, args: string[]) {
+  return spawnSync('sudo', ['-n', '--', command, ...args], {
+    encoding: 'utf8',
+    stdio: 'pipe',
+    timeout: 5_000,
+  });
+}
+
+/** Query the same rootful Podman binary and sudo context as compose.sh before Compose starts Android. */
+function checkAndroidStorage(): AndroidStoragePreflight {
+  const executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN;
+  try {
+    const infoProc = rootfulCommand(executable, ['info', '--format', '{{json .}}']);
+    if (infoProc.status !== 0) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Podman info failed: ${infoProc.stderr || infoProc.stdout || infoProc.status}` };
+    }
+    const info = JSON.parse(infoProc.stdout);
+    const store = record(field(record(info), 'store'));
+    const storageConfig = field(store, 'configFile');
+    const graphRoot = field(store, 'graphRoot');
+    if (typeof graphRoot !== 'string') {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: 'Podman info did not report GraphRoot.' };
+    }
+    const dfProc = spawnSync('df', ['-B1', '--output=source,target,avail', graphRoot], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 5_000,
+    });
+    if (dfProc.status !== 0) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Storage context query failed: ${dfProc.stderr || 'unknown error'}` };
+    }
+    const data = dfProc.stdout.trim().split(/\r?\n/)[1];
+    if (!data) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse df output: ${dfProc.stdout}` };
+    }
+    const [filesystem, mount, available] = data.trim().split(/\s+/);
+    const availableBytes = Number(available);
+    if (!filesystem || !mount || !Number.isSafeInteger(availableBytes)) {
+      return { status: 'BLOCKED_STORAGE_CONTEXT', error: `Could not parse available bytes from df: ${dfProc.stdout}` };
+    }
+    const context = selectAndroidStorageContext(
+      info,
+      0,
+      executable,
+      typeof storageConfig === 'string' ? storageConfig : undefined,
+      filesystem,
+      mount,
+      availableBytes,
+    );
+    return evaluateAndroidStorage(context);
+  } catch (err: unknown) {
+    return { status: 'BLOCKED_STORAGE_CONTEXT', error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 interface ComposeService {
@@ -461,7 +590,7 @@ function cleanupTempDir(dir: string): void {
  * Main E2E runner.
  * Does NOT call compose down; teardown is owned by test-all.sh EXIT trap.
  */
-export async function runAndroidE2E(): Promise<AndroidRunnerReport> {
+export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
   const report: AndroidRunnerReport = {
     status: 'FAILED',
     details: '',
@@ -487,6 +616,26 @@ export async function runAndroidE2E(): Promise<AndroidRunnerReport> {
       writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
       return report;
     }
+
+    // 2. Query the canonical rootful Podman storage context before Android starts.
+    console.log(`[Android] Checking rootful Podman storage...`);
+    const storageCheck = checkAndroidStorage();
+    report.storagePreflight = storageCheck;
+    if (storageCheck.status !== 'PASS') {
+      report.status = 'BLOCKED';
+      report.details = storageCheck.status === 'BLOCKED_INSUFFICIENT_STORAGE'
+        ? `BLOCKED_INSUFFICIENT_STORAGE: ${storageCheck.context.availableBytes} available bytes at ${storageCheck.context.graphRoot}; ${storageCheck.context.requiredBytes} required.`
+        : `BLOCKED_STORAGE_CONTEXT: ${storageCheck.error}`;
+      report.blockers.push(report.details);
+      report.remediationSteps.push(
+        storageCheck.status === 'BLOCKED_INSUFFICIENT_STORAGE'
+          ? 'Free capacity in the reported rootful GraphRoot, then rerun the Android harness.'
+          : 'Repair the canonical rootful Podman context exposed by compose.sh, then rerun the Android harness.'
+      );
+      writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
+      return report;
+    }
+    console.log(`[Android] Storage PASS: ${storageCheck.context.availableBytes} available bytes at ${storageCheck.context.graphRoot}; ${storageCheck.context.requiredBytes} required.`);
 
     // 2. KVM check
     console.log(`[Android] Checking KVM access...`);
@@ -652,7 +801,7 @@ export async function runAndroidE2E(): Promise<AndroidRunnerReport> {
 // Main entry point
 if (import.meta.main) {
   const startTime = Date.now();
-  runAndroidE2E()
+  runAndroidVerification()
     .then((report) => {
       console.log('\n=== Android E2E Report ===');
       console.log(`Status: ${report.status}`);
