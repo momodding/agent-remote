@@ -2,7 +2,6 @@
 
 DAEMON_TARGETS ?= linux-amd64
 CLIENT_TARGETS ?= web
-ENABLE_NOVNC ?= true
 DAEMON_TARGET ?=
 CLIENT_TARGET ?=
 GOFLAGS ?=
@@ -14,9 +13,13 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DAEMON_BUILD_DIR ?= builds/daemon
 DAEMON_RELEASE_DIR ?= builds/release
 CLIENT_ANDROID_OUTPUT ?= builds/client-android.apk
+CLIENT_ANDROID_SDK ?= $(HOME)/android-sdk
+CLIENT_ANDROID_VARIANT ?= release
+CLIENT_ANDROID_GRADLE_OPTS ?= -Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC -Dorg.gradle.parallel=true -Dorg.gradle.caching=true -Dorg.gradle.workers.max=8
 DAEMON_BUILD_OUTPUT_DIR := $(abspath $(DAEMON_BUILD_DIR))
 DAEMON_RELEASE_OUTPUT_DIR := $(abspath $(DAEMON_RELEASE_DIR))
 CLIENT_ANDROID_OUTPUT_PATH := $(abspath $(CLIENT_ANDROID_OUTPUT))
+CLIENT_ANDROID_SDK_PATH := $(abspath $(CLIENT_ANDROID_SDK))
 
 DAEMON_BUILD_TARGETS := $(strip $(if $(DAEMON_TARGET),$(DAEMON_TARGET),$(DAEMON_TARGETS)))
 CLIENT_BUILD_TARGETS := $(strip $(if $(CLIENT_TARGET),$(CLIENT_TARGET),$(CLIENT_TARGETS)))
@@ -34,6 +37,7 @@ backend-build:
 	$(MAKE) daemon-build
 
 daemon-build:
+	@set -eu; \
 	for target in $(DAEMON_BUILD_TARGETS); do \
 		case "$$target" in \
 			linux) target=linux-amd64 ;; \
@@ -50,7 +54,7 @@ daemon-build:
 		exe=; \
 		if [ "$$goos" = windows ]; then exe=.exe; fi; \
 		mkdir -p "$(DAEMON_BUILD_OUTPUT_DIR)/$$target"; \
-		cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o "$(DAEMON_BUILD_OUTPUT_DIR)/$$target/agenticRemote$$exe" ./cmd/agenticRemote && cd ..; \
+		( cd backend && GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o "$(DAEMON_BUILD_OUTPUT_DIR)/$$target/agenticRemote$$exe" ./cmd/agenticRemote ); \
 	done
 
 daemon-release:
@@ -167,11 +171,31 @@ client-test:
 	cd client && bun install && bun run typecheck && bun run test
 
 client-build:
+	@set -eu; \
 	for target in $(CLIENT_BUILD_TARGETS); do \
 		case "$$target" in \
-			web) cd client && bun install && EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bun run build:web && cd .. ;; \
-		android) if [ ! -d "$$ANDROID_HOME" ] && [ ! -d "$$ANDROID_SDK_ROOT" ]; then echo "ANDROID_HOME (or ANDROID_SDK_ROOT) must point to an installed Android SDK directory; export one of them before running client-build-android" >&2; exit 1; fi; mkdir -p "$(dir $(CLIENT_ANDROID_OUTPUT_PATH))" && cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EAS_SKIP_AUTO_FINGERPRINT=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform android --profile preview --local --non-interactive --output "$(CLIENT_ANDROID_OUTPUT_PATH)" && cd .. ;; \
-			ios) cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 EXPO_PUBLIC_ENABLE_NOVNC=$(ENABLE_NOVNC) bunx eas-cli build --platform ios --local && cd .. ;; \
+			web) ( cd client && bun install && bun run build:web ) ;; \
+			android) \
+				sdk_dir=$(call shq,$(CLIENT_ANDROID_SDK_PATH)); \
+				if [ ! -d "$$sdk_dir" ]; then echo "android SDK not found at $$sdk_dir; set CLIENT_ANDROID_SDK to an installed Android SDK" >&2; exit 1; fi; \
+				mkdir -p "$(dir $(CLIENT_ANDROID_OUTPUT_PATH))"; \
+				( cd client && bun install ); \
+				if [ ! -f client/android/gradlew ]; then ( cd client && CI=1 bunx expo prebuild --platform android --no-install ); fi; \
+				if [ ! -f client/android/local.properties ]; then printf 'sdk.dir=%s\n' "$$sdk_dir" > client/android/local.properties; fi; \
+				variant=$(call shq,$(CLIENT_ANDROID_VARIANT)); \
+				variant_cap=$$(printf '%s' "$$variant" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+				assemble_task="assemble$$variant_cap"; \
+				lint_exclude=""; \
+				if [ "$$variant" = release ]; then lint_exclude="-x lintVital$$variant_cap"; fi; \
+				( cd client/android && ANDROID_HOME="$$sdk_dir" ANDROID_SDK_ROOT="$$sdk_dir" GRADLE_OPTS=$(call shq,$(CLIENT_ANDROID_GRADLE_OPTS)) ./gradlew "$$assemble_task" --console=plain $$lint_exclude ); \
+				apk_src="client/android/app/build/outputs/apk/$$variant/app-$$variant.apk"; \
+				if [ ! -f "$$apk_src" ]; then echo "gradle reported success but no APK at $$apk_src" >&2; exit 1; fi; \
+				cp "$$apk_src" "$(CLIENT_ANDROID_OUTPUT_PATH)"; \
+				echo "$(CLIENT_ANDROID_OUTPUT_PATH)" ;; \
+			ios) \
+				if [ "$$(uname -s)" != Darwin ]; then echo "client-build ios requires macOS" >&2; exit 1; fi; \
+				if ! command -v npm >/dev/null 2>&1; then echo "eas-cli local builds require npm on PATH; install Node.js with npm and retry" >&2; exit 1; fi; \
+				( cd client && bun install && EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP=1 bunx eas-cli build --platform ios --local ) ;; \
 			*) echo "unsupported client target: $$target" >&2; exit 1 ;; \
 		esac; \
 	done
@@ -180,7 +204,7 @@ client-build-web:
 	$(MAKE) client-build CLIENT_TARGETS=web
 
 client-build-android:
-	$(MAKE) client-build CLIENT_TARGETS=android ANDROID_HOME=$$HOME/android-sdk ANDROID_SDK_ROOT=$$HOME/android-sdk
+	$(MAKE) client-build CLIENT_TARGETS=android
 
 client-build-ios:
 	$(MAKE) client-build CLIENT_TARGETS=ios
@@ -250,9 +274,7 @@ help:
 	echo '  client-test           install client deps, typecheck, and run client tests'; \
 	echo '  client-build          build the client for CLIENT_TARGETS/CLIENT_TARGET'; \
 	echo '  client-build-web      alias for client-build CLIENT_TARGETS=web'; \
-	echo '  client-build-android  alias for client-build CLIENT_TARGETS=android'; \
-	echo '  client-build-ios      alias for client-build CLIENT_TARGETS=ios'; \
-	echo '  ENABLE_NOVNC=false disables the Desktop/noVNC button in client builds'; \
+	echo '  client-build-android  build a signed release APK via Gradle (CLIENT_ANDROID_SDK/CLIENT_ANDROID_OUTPUT)'; \
 	echo '  test                  run backend and client tests'; \
 	echo '  lint                  run backend vet and client typecheck'; \
 	echo '  run-daemon            run daemon using examples/config.local.json'; \
