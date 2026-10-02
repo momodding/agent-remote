@@ -78,7 +78,7 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
   const upScript = path.join(__dirname, '../scripts/up.sh');
   if (fs.existsSync(upScript)) {
     try {
-      execFileSync('bash', [upScript], { stdio: 'pipe', timeout: 180000 });
+      execFileSync('bash', [upScript], { stdio: 'pipe', timeout: 1800000 });
     } catch (error) {
       let exitStatus = 'none';
       let signal = 'none';
