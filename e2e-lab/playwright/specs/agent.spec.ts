@@ -156,6 +156,7 @@ test.describe('Web Agent & Live Daemon Session Flow', () => {
     await agentCard.scrollIntoViewIfNeeded();
     await expect(agentCard).toBeAttached({ timeout: 10000 });
     await agentCard.click();
+    await page.locator('[aria-label="More actions"]:visible').first().click();
     // Verify session view is loaded
     const terminateBtn = page.locator('[aria-label="Terminate Agent"]:visible').first();
     await expect(terminateBtn).toBeVisible({ timeout: 15000 });
