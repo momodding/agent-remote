@@ -11,6 +11,12 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
     const marker = `E2E_TERMINAL_MARKER_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const command = `printf '%s\\n' '${marker}'`;
     const provenancePath = resolve(process.cwd(), 'artifacts/terminal-marker-provenance.json');
+    let daemonImage = '';
+    try {
+      daemonImage = execFileSync(resolve(process.cwd(), 'scripts/compose.sh'), ['images', '--format', '{{.Repository}}:{{.Tag}} {{.ID}}', 'daemon'], { encoding: 'utf8' }).trim();
+    } catch {
+      // Preserve the regression result even when image inspection is unavailable.
+    }
     const provenance = {
       startedAt: new Date().toISOString(),
       finishedAt: '',
@@ -28,6 +34,7 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
         configuredTerminalBackend: 'tmux',
         configuredGoVersion: '1.26.4',
         configuredOMPVersion: '18.1.22',
+        image: daemonImage,
       },
       terminal: {
         sessionId: '',
