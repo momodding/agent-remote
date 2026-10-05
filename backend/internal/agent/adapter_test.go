@@ -877,7 +877,7 @@ func TestHandleBridgeSemanticDeliversToSubscribers(t *testing.T) {
 
 	now := time.Now().UTC()
 	if err := store.RecordAgent(runtimestore.AgentSummary{
-		ID:        "agent-sub-1",
+		ID:           "agent-sub-1",
 		Capabilities: []byte("[]"),
 		State:        "idle",
 		CreatedAt:    now,
@@ -943,7 +943,7 @@ func TestHandleBridgeSemanticDuplicateDedup(t *testing.T) {
 
 	now := time.Now().UTC()
 	if err := store.RecordAgent(runtimestore.AgentSummary{
-		ID:        "agent-sub-2",
+		ID:           "agent-sub-2",
 		Capabilities: []byte("[]"),
 		State:        "idle",
 		CreatedAt:    now,
@@ -1000,6 +1000,53 @@ func TestHandleBridgeSemanticDuplicateDedup(t *testing.T) {
 		t.Fatalf("unexpected duplicate event received: %+v", ev)
 	case <-time.After(200 * time.Millisecond):
 		// Success: duplicate was deduped
+	}
+}
+
+func TestFallbackTailerOwnsTranscriptAfterBridgeReconnect(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const agentID = "agent-fallback-owner"
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{ID: agentID, Capabilities: []byte("[]"), State: "idle", CreatedAt: now, UpdatedAt: now}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"message","id":"tailer-entry","message":{"role":"assistant","content":"one semantic response"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	inst := &agentInstance{
+		meta:        protocol.AgentSession{ID: agentID, State: "idle"},
+		sessionFile: path,
+		subscribers: make(map[int]*AgentSubscriber),
+		stopPoll:    make(chan struct{}),
+	}
+	svc.mu.Lock()
+	svc.agents[agentID] = inst
+	svc.mu.Unlock()
+
+	svc.checkTranscript(inst)
+	if inst.semanticOwner != semanticOwnerTailer {
+		t.Fatalf("semantic owner = %q, want tailer", inst.semanticOwner)
+	}
+	if !svc.handleBridgeHello(agentID, BridgeHello{SessionID: "omp-session", SessionFile: path}) {
+		t.Fatal("bridge hello rejected")
+	}
+	svc.handleBridgeSemantic(agentID, BridgeSemanticFrame{Event: "message.assistant", EventID: "bridge-entry", Text: "one semantic response"})
+
+	history, err := svc.History(agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 1 || history.Events[0].EventID != "tailer-entry:message" {
+		t.Fatalf("history after reconnect = %+v, want exactly tailer event", history.Events)
 	}
 }
 
@@ -1143,10 +1190,10 @@ func TestHandleBridgeHelloModelAndThinking(t *testing.T) {
 	}
 
 	hello := BridgeHello{
-		AgentID:     agent.ID,
-		Secret:      "test-secret",
-		SessionID:   "session-123",
-		SessionFile: sessionFile,
+		AgentID:      agent.ID,
+		Secret:       "test-secret",
+		SessionID:    "session-123",
+		SessionFile:  sessionFile,
 		Capabilities: []string{"prompt", "abort", "model", "thinking"},
 		Model: &protocol.AgentModelInfo{
 			ID:       "claude-3-7-sonnet",
@@ -1257,7 +1304,9 @@ func TestEmitBridgeActivityAllowlisted(t *testing.T) {
 
 	events := make(chan protocol.AgentEvent, 16)
 	unsub, err := svc.Subscribe(agent.ID, func(ev protocol.AgentEvent) { events <- ev })
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer unsub()
 	allowlisted := []string{"turn_start", "tool_start", "tool_end", "approval_requested", "approval_resolved"}
 	for i, ev := range allowlisted {

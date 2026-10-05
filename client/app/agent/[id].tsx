@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -13,24 +13,55 @@ import {
   TextInput,
   View,
   useWindowDimensions,
-} from 'react-native';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
-import * as Crypto from 'expo-crypto';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Feather from '@expo/vector-icons/Feather';
+} from "react-native";
+import { Stack, router, useLocalSearchParams } from "expo-router";
+import * as Crypto from "expo-crypto";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import Feather from "@expo/vector-icons/Feather";
 
-import { Terminal, type TerminalHandle } from '../../src/components/Terminal';
-import { TmuxPaneSheet, type TmuxPaneSheetHandle } from '../../src/components/TmuxPaneSheet';
-import { ModelThinkingSheet, type ModelThinkingSheetHandle } from '../../src/components/ModelThinkingSheet';
-import { ShortcutKeyboard, type ShortcutKeyboardHandle } from '../../src/components/ShortcutKeyboard';
-import { AgenticRemoteAPI, APIError } from '../../src/lib/api';
-import { getConnection, loadConnections, type Connection } from '../../src/lib/connection';
-import { createDaemonChannel, type DaemonChannel } from '../../src/lib/daemon-channel';
-import { createRuntimeChannel, type RuntimeChannel } from '../../src/lib/runtime-channel';
-import { base64, decodeBase64, utf8 } from '../../src/lib/bytes';
-import { addTab, updateTab, useTabStore } from '../../src/lib/tabs/tab-store';
-import type { AgentWorkspaceTab, FilesWorkspaceTab, TerminalWorkspaceTab } from '../../src/lib/tabs/types';
-import type { AgentCapability, AgentEvent, AgentModelInfo, TmuxPane } from '../../src/protocol';
+import { Terminal, type TerminalHandle } from "../../src/components/Terminal";
+import {
+  TmuxPaneSheet,
+  type TmuxPaneSheetHandle,
+} from "../../src/components/TmuxPaneSheet";
+import {
+  ModelThinkingSheet,
+  type ModelThinkingSheetHandle,
+} from "../../src/components/ModelThinkingSheet";
+import {
+  ShortcutKeyboard,
+  type ShortcutKeyboardHandle,
+} from "../../src/components/ShortcutKeyboard";
+import { AgenticRemoteAPI, APIError } from "../../src/lib/api";
+import {
+  getConnection,
+  loadConnections,
+  type Connection,
+} from "../../src/lib/connection";
+import {
+  createDaemonChannel,
+  type DaemonChannel,
+} from "../../src/lib/daemon-channel";
+import {
+  createRuntimeChannel,
+  type RuntimeChannel,
+} from "../../src/lib/runtime-channel";
+import { base64, decodeBase64, utf8 } from "../../src/lib/bytes";
+import { addTab, updateTab, useTabStore } from "../../src/lib/tabs/tab-store";
+import type {
+  AgentWorkspaceTab,
+  FilesWorkspaceTab,
+  TerminalWorkspaceTab,
+} from "../../src/lib/tabs/types";
+import type {
+  AgentCapability,
+  AgentEvent,
+  AgentModelInfo,
+  TmuxPane,
+} from "../../src/protocol";
 
 type MessageItem = {
   id: string;
@@ -74,27 +105,35 @@ export default function AgentScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { state, dispatch, closeTab } = useTabStore();
-  const tab = state.tabs.find((t): t is AgentWorkspaceTab => t.tabId === id && t.kind === 'agent') ?? null;
+  const tab =
+    state.tabs.find(
+      (t): t is AgentWorkspaceTab => t.tabId === id && t.kind === "agent",
+    ) ?? null;
 
   const [connection, setConnection] = useState<Connection | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
-  const [promptText, setPromptText] = useState('');
+  const [promptText, setPromptText] = useState("");
   const [sending, setSending] = useState(false);
-  const [viewMode, setViewMode] = useState<'chat' | 'terminal'>(tab?.view ?? 'chat');
+  const [viewMode, setViewMode] = useState<"chat" | "terminal">(
+    tab?.view ?? "chat",
+  );
   const [capabilities, setCapabilities] = useState<AgentCapability[]>([]);
-  const [terminalOutput, setTerminalOutput] = useState('');
-  const [agentCwd, setAgentCwd] = useState<string>(tab?.cwd ?? '');
+  const [terminalOutput, setTerminalOutput] = useState("");
+  const [agentCwd, setAgentCwd] = useState<string>(tab?.cwd ?? "");
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalInactive, setTerminalInactive] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
-  const [currentModel, setCurrentModel] = useState<AgentModelInfo | undefined>();
+  const [currentModel, setCurrentModel] = useState<
+    AgentModelInfo | undefined
+  >();
   const [currentThinking, setCurrentThinking] = useState<string | undefined>();
   const [availableModels, setAvailableModels] = useState<AgentModelInfo[]>([]);
   const [availableThinking, setAvailableThinking] = useState<string[]>([]);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadingThinking, setLoadingThinking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-
+  const [terminateConfirmationOpen, setTerminateConfirmationOpen] =
+    useState(false);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
@@ -105,41 +144,46 @@ export default function AgentScreen() {
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const [panes, setPanes] = useState<TmuxPane[]>([]);
-  const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(() => new Set());
+  const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const paneSheetRef = useRef<TmuxPaneSheetHandle>(null);
 
-  const api = useMemo(() => connection && new AgenticRemoteAPI(connection), [connection]);
+  const api = useMemo(
+    () => connection && new AgenticRemoteAPI(connection),
+    [connection],
+  );
 
   const openFiles = useCallback(() => {
     if (!tab) return;
     const tabId = Crypto.randomUUID();
-    const targetCwd = agentCwd || tab.cwd || '';
+    const targetCwd = agentCwd || tab.cwd || "";
     const filesTab: FilesWorkspaceTab = {
       tabId,
       daemonId: tab.daemonId,
-      kind: 'files',
-      title: 'Files',
+      kind: "files",
+      title: "Files",
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
       pinned: false,
       cwd: targetCwd,
     };
     dispatch((previous) => addTab(previous, filesTab));
-    router.push({ pathname: '/files/[id]', params: { id: tabId } });
+    router.push({ pathname: "/files/[id]", params: { id: tabId } });
   }, [tab, agentCwd, dispatch]);
   // Load connection
   useEffect(() => {
     if (!tab) {
-      Alert.alert('Could not load daemon connection');
-      router.replace('/');
+      Alert.alert("Could not load daemon connection");
+      router.replace("/");
       return;
     }
     void loadConnections().then((store) => {
       const resolved = getConnection(store, tab.daemonId);
       if (!resolved) {
-        Alert.alert('Could not load daemon connection');
-        router.replace('/');
+        Alert.alert("Could not load daemon connection");
+        router.replace("/");
         return;
       }
       daemonChannelRef.current = createDaemonChannel(resolved);
@@ -156,18 +200,24 @@ export default function AgentScreen() {
     let active = true;
     let isSyncing = false;
     const eventBuffer: AgentEvent[] = [];
-    void api.agent(tab.agentSessionId).then((agent) => {
-      if (!active) return;
-      setCapabilities(agent.capabilities);
-      if (agent.model) setCurrentModel(agent.model);
-      if (agent.thinking) setCurrentThinking(agent.thinking);
-      if (agent.availableModels) setAvailableModels(agent.availableModels);
-      if (agent.availableThinking) setAvailableThinking(agent.availableThinking);
-      if (agent.cwd !== undefined) {
-        setAgentCwd(agent.cwd);
-      }
-      dispatch((prev) => updateTab(prev, tab.tabId, { state: agent.state, cwd: agent.cwd }));
-    }).catch(() => {});
+    void api
+      .agent(tab.agentSessionId)
+      .then((agent) => {
+        if (!active) return;
+        setCapabilities(agent.capabilities);
+        if (agent.model) setCurrentModel(agent.model);
+        if (agent.thinking) setCurrentThinking(agent.thinking);
+        if (agent.availableModels) setAvailableModels(agent.availableModels);
+        if (agent.availableThinking)
+          setAvailableThinking(agent.availableThinking);
+        if (agent.cwd !== undefined) {
+          setAgentCwd(agent.cwd);
+        }
+        dispatch((prev) =>
+          updateTab(prev, tab.tabId, { state: agent.state, cwd: agent.cwd }),
+        );
+      })
+      .catch(() => {});
 
     const loadAndReplaceHistory = async (): Promise<number> => {
       isSyncing = true;
@@ -178,7 +228,11 @@ export default function AgentScreen() {
 
         for (let i = history.events.length - 1; i >= 0; i--) {
           if (history.events[i].state) {
-            dispatch((prev) => updateTab(prev, tab.tabId, { state: history.events[i].state as AgentWorkspaceTab['state'] }));
+            dispatch((prev) =>
+              updateTab(prev, tab.tabId, {
+                state: history.events[i].state as AgentWorkspaceTab["state"],
+              }),
+            );
             break;
           }
         }
@@ -211,9 +265,14 @@ export default function AgentScreen() {
       if (event.model) setCurrentModel(event.model);
       if (event.thinking) setCurrentThinking(event.thinking);
       if (event.availableModels) setAvailableModels(event.availableModels);
-      if (event.availableThinking) setAvailableThinking(event.availableThinking);
+      if (event.availableThinking)
+        setAvailableThinking(event.availableThinking);
       if (event.state) {
-        dispatch((prev) => updateTab(prev, tab.tabId, { state: event.state as AgentWorkspaceTab['state'] }));
+        dispatch((prev) =>
+          updateTab(prev, tab.tabId, {
+            state: event.state as AgentWorkspaceTab["state"],
+          }),
+        );
       }
       if (isSyncing) {
         eventBuffer.push(event);
@@ -238,7 +297,9 @@ export default function AgentScreen() {
           return await loadAndReplaceHistory();
         } catch (err) {
           if (attempt === maxAttempts - 1 || !active) throw err;
-          await new Promise((resolve) => setTimeout(resolve, Math.min(250 * 2 ** attempt, 2000)));
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(250 * 2 ** attempt, 2000)),
+          );
         }
       }
       return 0;
@@ -249,7 +310,7 @@ export default function AgentScreen() {
       try {
         initialCursor = await loadAndReplaceHistory();
       } catch (err) {
-        console.error('Failed to bootstrap agent history:', err);
+        console.error("Failed to bootstrap agent history:", err);
       }
       if (!active) return;
       try {
@@ -266,7 +327,7 @@ export default function AgentScreen() {
         currentAgentChannelIdRef.current = channelId;
       } catch (err) {
         if (active) {
-          console.error('Failed to open agent channel:', err);
+          console.error("Failed to open agent channel:", err);
         }
       }
     })();
@@ -284,32 +345,38 @@ export default function AgentScreen() {
   useEffect(() => {
     if (!tab || !connection || !daemonChannelRef.current) return;
     const daemon = daemonChannelRef.current;
-    setTerminalOutput('');
+    setTerminalOutput("");
     setTerminalError(null);
     setTerminalInactive(false);
     let decoder = new TextDecoder();
     let lastSeq = -1;
     ptyUnsubRef.current = daemon.subscribe(tab.terminalSessionId, (msg) => {
-      if (msg.type === 'pty.baseline') {
+      if (msg.type === "pty.baseline") {
         decoder = new TextDecoder();
         lastSeq = msg.seq;
-        setTerminalOutput(decoder.decode(decodeBase64(msg.data), { stream: true }));
-      } else if (msg.type === 'pty.output' && msg.seq > lastSeq) {
+        setTerminalOutput(
+          decoder.decode(decodeBase64(msg.data), { stream: true }),
+        );
+      } else if (msg.type === "pty.output" && msg.seq > lastSeq) {
         lastSeq = msg.seq;
         const chunk = decoder.decode(decodeBase64(msg.data), { stream: true });
         if (chunk) setTerminalOutput((prev) => prev + chunk);
-      } else if (msg.type === 'session.state' && msg.state === 'exited') {
-        setTerminalError('Terminal session ended');
+      } else if (msg.type === "session.state" && msg.state === "exited") {
+        setTerminalError("Terminal session ended");
         setTerminalInactive(true);
         setCapabilities([]);
-        dispatch((previous) => updateTab(previous, tab.tabId, { state: 'exited' }));
+        dispatch((previous) =>
+          updateTab(previous, tab.tabId, { state: "exited" }),
+        );
         ptyUnsubRef.current?.();
-      } else if (msg.type === 'error') {
-        if (msg.code === 'session_not_found') {
-          setTerminalError('Terminal session ended');
+      } else if (msg.type === "error") {
+        if (msg.code === "session_not_found") {
+          setTerminalError("Terminal session ended");
           setTerminalInactive(true);
           setCapabilities([]);
-          dispatch((previous) => updateTab(previous, tab.tabId, { state: 'exited' }));
+          dispatch((previous) =>
+            updateTab(previous, tab.tabId, { state: "exited" }),
+          );
           ptyUnsubRef.current?.();
         } else {
           setTerminalError(msg.message);
@@ -324,13 +391,18 @@ export default function AgentScreen() {
 
   // Keyboard inset handling for mobile
   useEffect(() => {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== "android") return;
     const show = (event: { endCoordinates: { screenY: number } }) =>
-      setKeyboardInset(Math.max(0, windowHeight - event.endCoordinates.screenY - insets.bottom));
+      setKeyboardInset(
+        Math.max(
+          0,
+          windowHeight - event.endCoordinates.screenY - insets.bottom,
+        ),
+      );
     const hide = () => setKeyboardInset(0);
-    const shown = Keyboard.addListener('keyboardDidShow', show);
-    const changed = Keyboard.addListener('keyboardDidChangeFrame', show);
-    const hidden = Keyboard.addListener('keyboardDidHide', hide);
+    const shown = Keyboard.addListener("keyboardDidShow", show);
+    const changed = Keyboard.addListener("keyboardDidChangeFrame", show);
+    const hidden = Keyboard.addListener("keyboardDidHide", hide);
     return () => {
       shown.remove();
       changed.remove();
@@ -340,7 +412,7 @@ export default function AgentScreen() {
 
   // A06: scroll chat to end when Android keyboard raises to keep last message visible
   useEffect(() => {
-    if (Platform.OS !== 'android' || keyboardInset <= 0) return;
+    if (Platform.OS !== "android" || keyboardInset <= 0) return;
     flatListRef.current?.scrollToEnd({ animated: false });
   }, [keyboardInset]);
 
@@ -350,65 +422,109 @@ export default function AgentScreen() {
       setPanes((await api.runtimeSnapshot()).topology);
       paneSheetRef.current?.present();
     } catch (error) {
-      Alert.alert('Could not load panes', error instanceof Error ? error.message : 'Unknown error');
+      Alert.alert(
+        "Could not load panes",
+        error instanceof Error ? error.message : "Unknown error",
+      );
     }
   }, [api]);
 
-	const selectPane = useCallback((pane: TmuxPane) => {
-		if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
-		const terminalTab: TerminalWorkspaceTab = {
-			tabId: Crypto.randomUUID(), daemonId: tab.daemonId, kind: 'terminal', title: pane.windowName || 'Shell',
-			createdAt: Date.now(), lastActiveAt: Date.now(), pinned: false, remoteSessionId: pane.terminalSessionId,
-			state: 'running', tmuxPaneId: pane.paneId,
-		};
-		dispatch((previous) => addTab(previous, terminalTab));
-		router.push({ pathname: '/terminal/[id]', params: { id: terminalTab.tabId } });
-	}, [dispatch, tab]);
+  const selectPane = useCallback(
+    (pane: TmuxPane) => {
+      if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
+      const terminalTab: TerminalWorkspaceTab = {
+        tabId: Crypto.randomUUID(),
+        daemonId: tab.daemonId,
+        kind: "terminal",
+        title: pane.windowName || "Shell",
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+        pinned: false,
+        remoteSessionId: pane.terminalSessionId,
+        state: "running",
+        tmuxPaneId: pane.paneId,
+      };
+      dispatch((previous) => addTab(previous, terminalTab));
+      router.push({
+        pathname: "/terminal/[id]",
+        params: { id: terminalTab.tabId },
+      });
+    },
+    [dispatch, tab],
+  );
 
   const sendPrompt = useCallback(async () => {
-    if (!promptText.trim() || !api || !tab || sending || !capabilities.some((capability) => capability.name === 'prompt' && capability.enabled)) return;
+    if (
+      !promptText.trim() ||
+      !api ||
+      !tab ||
+      sending ||
+      !capabilities.some(
+        (capability) => capability.name === "prompt" && capability.enabled,
+      )
+    )
+      return;
     const text = promptText.trim();
     setSending(true);
     try {
       await api.submitAgentPrompt(tab.agentSessionId, text);
-      setPromptText('');
+      setPromptText("");
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes('needs_terminal')) {
+      if (msg.includes("needs_terminal")) {
         Alert.alert(
-          'Terminal Interaction Required',
-          'OMP is currently running in TUI mode. Switched to terminal view so you can interact directly.',
-          [{ text: 'OK', onPress: () => setViewMode('terminal') }],
+          "Terminal Interaction Required",
+          "OMP is currently running in TUI mode. Switched to terminal view so you can interact directly.",
+          [{ text: "OK", onPress: () => setViewMode("terminal") }],
         );
-        setViewMode('terminal');
+        setViewMode("terminal");
       } else {
-        Alert.alert('Prompt Failed', msg);
+        Alert.alert("Prompt Failed", msg);
       }
     } finally {
       setSending(false);
     }
   }, [promptText, api, tab, sending, capabilities]);
   const abortAgent = useCallback(async () => {
-    if (!api || !tab || !capabilities.some((capability) => capability.name === 'abort' && capability.enabled)) return;
+    if (
+      !api ||
+      !tab ||
+      !capabilities.some(
+        (capability) => capability.name === "abort" && capability.enabled,
+      )
+    )
+      return;
     try {
       await api.abortAgent(tab.agentSessionId);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes('needs_terminal')) {
+      if (msg.includes("needs_terminal")) {
         Alert.alert(
-          'Terminal Interaction Required',
-          'OMP is running in TUI mode. Switch to terminal view to send Ctrl+C directly.',
-          [{ text: 'Switch to Terminal', onPress: () => setViewMode('terminal') }, { text: 'Cancel', style: 'cancel' }],
+          "Terminal Interaction Required",
+          "OMP is running in TUI mode. Switch to terminal view to send Ctrl+C directly.",
+          [
+            {
+              text: "Switch to Terminal",
+              onPress: () => setViewMode("terminal"),
+            },
+            { text: "Cancel", style: "cancel" },
+          ],
         );
       } else {
-        Alert.alert('Abort Failed', msg);
+        Alert.alert("Abort Failed", msg);
       }
     }
   }, [api, tab, capabilities]);
 
-  const abortEnabled = capabilities.some((c) => c.name === 'abort' && c.enabled);
-  const modelEnabled = capabilities.some((c) => c.name === 'model' && c.enabled);
-  const thinkingEnabled = capabilities.some((c) => c.name === 'thinking' && c.enabled);
+  const abortEnabled = capabilities.some(
+    (c) => c.name === "abort" && c.enabled,
+  );
+  const modelEnabled = capabilities.some(
+    (c) => c.name === "model" && c.enabled,
+  );
+  const thinkingEnabled = capabilities.some(
+    (c) => c.name === "thinking" && c.enabled,
+  );
   const compactHeader = windowWidth <= 360;
 
   const handleSelectModel = useCallback(
@@ -419,7 +535,7 @@ export default function AgentScreen() {
         availableModels.find((m) => m.id === modelId) ||
         (prevModel && prevModel.id === modelId
           ? prevModel
-          : { id: modelId, name: modelId, provider: '' });
+          : { id: modelId, name: modelId, provider: "" });
       setCurrentModel(target);
       setLoadingModel(true);
       try {
@@ -427,7 +543,7 @@ export default function AgentScreen() {
       } catch (error) {
         setCurrentModel(prevModel);
         const msg = error instanceof Error ? error.message : String(error);
-        Alert.alert('Model Change Failed', msg);
+        Alert.alert("Model Change Failed", msg);
       } finally {
         setLoadingModel(false);
       }
@@ -446,7 +562,7 @@ export default function AgentScreen() {
       } catch (error) {
         setCurrentThinking(prevThinking);
         const msg = error instanceof Error ? error.message : String(error);
-        Alert.alert('Thinking Level Change Failed', msg);
+        Alert.alert("Thinking Level Change Failed", msg);
       } finally {
         setLoadingThinking(false);
       }
@@ -465,82 +581,74 @@ export default function AgentScreen() {
     if (daemonChannelRef.current) {
       daemonChannelRef.current.closeChannel(tab.terminalSessionId);
     }
-    router.replace('/');
+    router.replace("/");
   }, [tab, closeTab]);
 
-  const terminateAgent = useCallback(() => {
+  const terminateAgent = useCallback(async () => {
     if (!tab || !api) return;
-    Alert.alert(
-      'Terminate Agent?',
-      'This will kill the agent process and underlying terminal. This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Terminate',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.terminateAgent(tab.agentSessionId);
-              ptyUnsubRef.current?.();
-              if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
-                runtimeChannelRef.current.closeChannel(currentAgentChannelIdRef.current);
-                currentAgentChannelIdRef.current = null;
-              }
-              if (daemonChannelRef.current) {
-                daemonChannelRef.current.closeChannel(tab.terminalSessionId);
-              }
-              closeTab(tab.tabId);
-              router.replace('/');
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              Alert.alert(
-                'Termination Failed',
-                `Failed to terminate agent: ${msg}\n\nThe agent may still be running remotely. You can retry.`,
-                [
-                  { text: 'Retry', onPress: () => terminateAgent() },
-                  { text: 'Dismiss', style: 'cancel' },
-                ],
-              );
-            }
-          },
-        },
-      ],
-    );
+    setTerminateConfirmationOpen(false);
+    try {
+      await api.terminateAgent(tab.agentSessionId);
+      ptyUnsubRef.current?.();
+      if (currentAgentChannelIdRef.current && runtimeChannelRef.current) {
+        runtimeChannelRef.current.closeChannel(
+          currentAgentChannelIdRef.current,
+        );
+        currentAgentChannelIdRef.current = null;
+      }
+      if (daemonChannelRef.current) {
+        daemonChannelRef.current.closeChannel(tab.terminalSessionId);
+      }
+      closeTab(tab.tabId);
+      router.replace("/");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert(
+        "Termination Failed",
+        `Failed to terminate agent: ${msg}\n\nThe agent may still be running remotely. You can retry.`,
+        [
+          { text: "Retry", onPress: () => setTerminateConfirmationOpen(true) },
+          { text: "Dismiss", style: "cancel" },
+        ],
+      );
+    }
   }, [tab, api, closeTab]);
 
   const stateColor = useMemo(() => {
     switch (tab?.state) {
-      case 'working':
-        return '#D19A2C';
-      case 'idle':
-        return '#46B86B';
-      case 'needsYou':
-        return '#F59E0B';
-      case 'exited':
-        return '#6B7280';
+      case "working":
+        return "#D19A2C";
+      case "idle":
+        return "#46B86B";
+      case "needsYou":
+        return "#F59E0B";
+      case "exited":
+        return "#6B7280";
       default:
-        return '#9CA3AF';
+        return "#9CA3AF";
     }
   }, [tab?.state]);
-  const promptEnabled = capabilities.some((capability) => capability.name === 'prompt' && capability.enabled);
+  const promptEnabled = capabilities.some(
+    (capability) => capability.name === "prompt" && capability.enabled,
+  );
 
   const renderMessage = ({ item }: { item: MessageItem }) => {
     switch (item.type) {
-      case 'message.user':
+      case "message.user":
         return (
           <View style={styles.userBubble}>
             <Text style={styles.userLabel}>User</Text>
             <Text style={styles.userText}>{item.text}</Text>
           </View>
         );
-      case 'message.assistant':
+      case "message.assistant":
         return (
           <View style={styles.assistantBubble}>
             <Text style={styles.assistantLabel}>Agent</Text>
             <Text style={styles.assistantText}>{item.text}</Text>
           </View>
         );
-      case 'tool.call':
+      case "tool.call":
         return (
           <View style={styles.toolBubble}>
             <View style={styles.toolHeader}>
@@ -549,62 +657,116 @@ export default function AgentScreen() {
             </View>
             {item.toolInput != null && (
               <Pressable
-                accessibilityLabel={`Toggle ${item.toolName || 'tool'} input`}
-                onPress={() => setExpandedPayloads((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
-                  return next;
-                })}
+                accessibilityLabel={`Toggle ${item.toolName || "tool"} input`}
+                onPress={() =>
+                  setExpandedPayloads((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(item.id)) next.delete(item.id);
+                    else next.add(item.id);
+                    return next;
+                  })
+                }
               >
-                <Text style={styles.toolPayload} numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}>
-                  {typeof item.toolInput === 'string' ? item.toolInput : JSON.stringify(item.toolInput, null, 2)}
+                <Text
+                  style={styles.toolPayload}
+                  numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}
+                >
+                  {typeof item.toolInput === "string"
+                    ? item.toolInput
+                    : JSON.stringify(item.toolInput, null, 2)}
                 </Text>
-                <Text style={styles.payloadToggle}>{expandedPayloads.has(item.id) ? 'Show less' : 'Show more'}</Text>
+                <Text style={styles.payloadToggle}>
+                  {expandedPayloads.has(item.id) ? "Show less" : "Show more"}
+                </Text>
               </Pressable>
             )}
           </View>
         );
-      case 'tool.result':
+      case "tool.result":
         return (
           <View style={styles.toolResultBubble}>
             <View style={styles.toolHeader}>
               <Feather name="check-circle" size={14} color="#46B86B" />
-              <Text style={styles.toolResultName}>{item.toolName || 'Tool Result'}</Text>
+              <Text style={styles.toolResultName}>
+                {item.toolName || "Tool Result"}
+              </Text>
             </View>
             {item.text ? (
               <Pressable
-                accessibilityLabel={`Toggle ${item.toolName || 'tool result'} output`}
-                onPress={() => setExpandedPayloads((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
-                  return next;
-                })}
+                accessibilityLabel={`Toggle ${item.toolName || "tool result"} output`}
+                onPress={() =>
+                  setExpandedPayloads((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(item.id)) next.delete(item.id);
+                    else next.add(item.id);
+                    return next;
+                  })
+                }
               >
-                <Text style={styles.toolResultPayload} numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}>{item.text}</Text>
-                <Text style={styles.payloadToggle}>{expandedPayloads.has(item.id) ? 'Show less' : 'Show more'}</Text>
+                <Text
+                  style={styles.toolResultPayload}
+                  numberOfLines={expandedPayloads.has(item.id) ? undefined : 4}
+                >
+                  {item.text}
+                </Text>
+                <Text style={styles.payloadToggle}>
+                  {expandedPayloads.has(item.id) ? "Show less" : "Show more"}
+                </Text>
               </Pressable>
             ) : null}
           </View>
         );
-      case 'activity.turn.started':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>Turn started</Text></View>;
-      case 'activity.tool.started':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`Running ${item.toolName || 'tool'}`}</Text></View>;
-      case 'activity.tool.completed':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`${item.toolName || 'Tool'} completed`}</Text></View>;
-      case 'activity.tool.failed':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>{`${item.toolName || 'Tool'} failed`}</Text></View>;
-      case 'activity.approval.requested':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>Approval requested</Text></View>;
-      case 'activity.approval.resolved':
-        return <View style={styles.activityBubble}><Text style={styles.activityText}>Approval resolved</Text></View>;
-      case 'state.change':
+      case "activity.turn.started":
         return (
-          <View style={styles.systemBubble}>
-            <Text style={styles.systemText}>Status changed to: {item.state}</Text>
+          <View style={styles.activityBubble}>
+            <Text style={styles.activityText}>Turn started</Text>
           </View>
         );
-      case 'message.fileMention':
+      case "activity.tool.started":
+        return (
+          <View style={styles.activityBubble}>
+            <Text
+              style={styles.activityText}
+            >{`Running ${item.toolName || "tool"}`}</Text>
+          </View>
+        );
+      case "activity.tool.completed":
+        return (
+          <View style={styles.activityBubble}>
+            <Text
+              style={styles.activityText}
+            >{`${item.toolName || "Tool"} completed`}</Text>
+          </View>
+        );
+      case "activity.tool.failed":
+        return (
+          <View style={styles.activityBubble}>
+            <Text
+              style={styles.activityText}
+            >{`${item.toolName || "Tool"} failed`}</Text>
+          </View>
+        );
+      case "activity.approval.requested":
+        return (
+          <View style={styles.activityBubble}>
+            <Text style={styles.activityText}>Approval requested</Text>
+          </View>
+        );
+      case "activity.approval.resolved":
+        return (
+          <View style={styles.activityBubble}>
+            <Text style={styles.activityText}>Approval resolved</Text>
+          </View>
+        );
+      case "state.change":
+        return (
+          <View style={styles.systemBubble}>
+            <Text style={styles.systemText}>
+              Status changed to: {item.state}
+            </Text>
+          </View>
+        );
+      case "message.fileMention":
         return (
           <View style={styles.systemBubble}>
             <Text style={styles.systemText}>{item.text}</Text>
@@ -620,65 +782,118 @@ export default function AgentScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* Header */}
       <View style={[styles.header, compactHeader && styles.headerCompact]}>
-        <Pressable accessibilityLabel="Back" style={styles.headerIcon} onPress={() => router.replace('/')}>
+        <Pressable
+          accessibilityLabel="Back"
+          style={styles.headerIcon}
+          onPress={() => router.replace("/")}
+        >
           <Feather name="arrow-left" size={20} color="#F0F0F0" />
         </Pressable>
         {!compactHeader && (
           <View style={styles.headerTitleContainer}>
             <View style={styles.headerTitleRow}>
-              <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
-              <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
-              <Text style={[styles.statusText, { color: stateColor }]}>{tab?.state || 'idle'}</Text>
+              <Text style={styles.title} numberOfLines={1}>
+                {tab?.title || "Agent"}
+              </Text>
+              <View
+                style={[styles.statusDot, { backgroundColor: stateColor }]}
+              />
+              <Text style={[styles.statusText, { color: stateColor }]}>
+                {tab?.state || "idle"}
+              </Text>
             </View>
           </View>
         )}
         <View style={styles.viewSwitcher}>
           <Pressable
             accessibilityLabel="Chat View"
-            style={[styles.switcherButton, viewMode === 'chat' && styles.switcherButtonActive]}
-            onPress={() => setViewMode('chat')}
+            style={[
+              styles.switcherButton,
+              viewMode === "chat" && styles.switcherButtonActive,
+            ]}
+            onPress={() => setViewMode("chat")}
           >
-            <Feather name="message-square" size={16} color={viewMode === 'chat' ? '#0A0A0A' : '#A0A0A0'} />
+            <Feather
+              name="message-square"
+              size={16}
+              color={viewMode === "chat" ? "#0A0A0A" : "#A0A0A0"}
+            />
           </Pressable>
           <Pressable
             accessibilityLabel="Terminal View"
-            style={[styles.switcherButton, viewMode === 'terminal' && styles.switcherButtonActive]}
-            onPress={() => setViewMode('terminal')}
+            style={[
+              styles.switcherButton,
+              viewMode === "terminal" && styles.switcherButtonActive,
+            ]}
+            onPress={() => setViewMode("terminal")}
           >
-            <Feather name="terminal" size={16} color={viewMode === 'terminal' ? '#0A0A0A' : '#A0A0A0'} />
+            <Feather
+              name="terminal"
+              size={16}
+              color={viewMode === "terminal" ? "#0A0A0A" : "#A0A0A0"}
+            />
           </Pressable>
         </View>
         {!compactHeader && abortEnabled && (
-          <Pressable accessibilityLabel="Abort" style={styles.headerIcon} onPress={abortAgent}>
+          <Pressable
+            accessibilityLabel="Abort"
+            style={styles.headerIcon}
+            onPress={abortAgent}
+          >
             <Feather name="slash" size={18} color="#EF4444" />
           </Pressable>
         )}
-        <Pressable accessibilityLabel="More actions" style={styles.headerIcon} onPress={() => setMenuOpen(true)}>
+        <Pressable
+          accessibilityLabel="More actions"
+          style={styles.headerIcon}
+          onPress={() => setMenuOpen(true)}
+        >
           <Feather name="more-vertical" size={18} color="#F0F0F0" />
         </Pressable>
         {compactHeader && (
-          <View accessibilityLabel="Agent title and status" style={styles.compactHeaderTitleContainer}>
+          <View
+            accessibilityLabel="Agent title and status"
+            style={styles.compactHeaderTitleContainer}
+          >
             <View style={styles.headerTitleRow}>
-              <Text style={styles.title} numberOfLines={1}>{tab?.title || 'Agent'}</Text>
-              <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
-              <Text style={[styles.statusText, { color: stateColor }]}>{tab?.state || 'idle'}</Text>
+              <Text style={styles.title} numberOfLines={1}>
+                {tab?.title || "Agent"}
+              </Text>
+              <View
+                style={[styles.statusDot, { backgroundColor: stateColor }]}
+              />
+              <Text style={[styles.statusText, { color: stateColor }]}>
+                {tab?.state || "idle"}
+              </Text>
             </View>
           </View>
         )}
       </View>
 
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
-        <Pressable style={styles.menuOverlay} accessibilityLabel="Dismiss menu" onPress={() => setMenuOpen(false)}>
+      <Modal
+        visible={menuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuOpen(false)}
+      >
+        <Pressable
+          style={styles.menuOverlay}
+          accessibilityLabel="Dismiss menu"
+          onPress={() => setMenuOpen(false)}
+        >
           <View style={styles.menuSheet} onStartShouldSetResponder={() => true}>
             <Pressable
               accessibilityLabel="Switch pane"
               style={styles.menuItem}
-              onPress={() => { setMenuOpen(false); void openPaneSwitcher(); }}
+              onPress={() => {
+                setMenuOpen(false);
+                void openPaneSwitcher();
+              }}
             >
               <Feather name="columns" size={18} color="#D19A2C" />
               <Text style={styles.menuItemText}>Switch pane</Text>
@@ -687,7 +902,10 @@ export default function AgentScreen() {
               <Pressable
                 accessibilityLabel="Abort"
                 style={styles.menuItem}
-                onPress={() => { setMenuOpen(false); void abortAgent(); }}
+                onPress={() => {
+                  setMenuOpen(false);
+                  void abortAgent();
+                }}
               >
                 <Feather name="slash" size={18} color="#EF4444" />
                 <Text style={styles.menuItemText}>Abort</Text>
@@ -697,7 +915,10 @@ export default function AgentScreen() {
               <Pressable
                 accessibilityLabel="Model and Thinking"
                 style={styles.menuItem}
-                onPress={() => { setMenuOpen(false); modelThinkingSheetRef.current?.present(); }}
+                onPress={() => {
+                  setMenuOpen(false);
+                  modelThinkingSheetRef.current?.present();
+                }}
               >
                 <Feather name="cpu" size={18} color="#818CF8" />
                 <Text style={styles.menuItemText}>Model and Thinking</Text>
@@ -706,7 +927,10 @@ export default function AgentScreen() {
             <Pressable
               accessibilityLabel="Open Files"
               style={styles.menuItem}
-              onPress={() => { setMenuOpen(false); openFiles(); }}
+              onPress={() => {
+                setMenuOpen(false);
+                openFiles();
+              }}
             >
               <Feather name="folder" size={18} color="#46B8C4" />
               <Text style={styles.menuItemText}>Open Files</Text>
@@ -714,7 +938,10 @@ export default function AgentScreen() {
             <Pressable
               accessibilityLabel="Terminate Agent"
               style={styles.menuItem}
-              onPress={() => { setMenuOpen(false); terminateAgent(); }}
+              onPress={() => {
+                setMenuOpen(false);
+                setTerminateConfirmationOpen(true);
+              }}
             >
               <Feather name="power" size={18} color="#DC2626" />
               <Text style={styles.menuItemText}>Terminate Agent</Text>
@@ -722,7 +949,10 @@ export default function AgentScreen() {
             <Pressable
               accessibilityLabel="Close View"
               style={styles.menuItem}
-              onPress={() => { setMenuOpen(false); close(); }}
+              onPress={() => {
+                setMenuOpen(false);
+                close();
+              }}
             >
               <Feather name="x" size={18} color="#888" />
               <Text style={styles.menuItemText}>Close View</Text>
@@ -730,16 +960,65 @@ export default function AgentScreen() {
           </View>
         </Pressable>
       </Modal>
+      <Modal
+        visible={terminateConfirmationOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTerminateConfirmationOpen(false)}
+      >
+        <Pressable
+          style={styles.confirmationOverlay}
+          accessibilityLabel="Dismiss termination confirmation"
+          onPress={() => setTerminateConfirmationOpen(false)}
+        >
+          <View
+            accessibilityViewIsModal
+            accessibilityLabel="Terminate Agent Confirmation"
+            style={styles.confirmationDialog}
+            onStartShouldSetResponder={() => true}
+          >
+            <Text style={styles.confirmationTitle}>Terminate Agent?</Text>
+            <Text style={styles.confirmationText}>
+              This will kill the agent process and underlying terminal. This
+              action cannot be undone.
+            </Text>
+            <View style={styles.confirmationActions}>
+              <Pressable
+                accessibilityLabel="Cancel Termination"
+                style={styles.confirmationCancel}
+                onPress={() => setTerminateConfirmationOpen(false)}
+              >
+                <Text style={styles.confirmationCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Confirm Terminate Agent"
+                style={styles.confirmationTerminate}
+                onPress={() => void terminateAgent()}
+              >
+                <Text style={styles.confirmationTerminateText}>Terminate</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Content Area */}
-      {viewMode === 'chat' ? (
+      {viewMode === "chat" ? (
         <KeyboardAvoidingView
-          style={[styles.chatContainer, Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : undefined]}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+          style={[
+            styles.chatContainer,
+            Platform.OS === "android" && keyboardInset > 0
+              ? { paddingBottom: keyboardInset }
+              : undefined,
+          ]}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 56 : 0}
         >
-          {tab?.state === 'needsYou' && (
-            <View style={styles.needsYouBanner} accessibilityLabel="Needs Approval Banner">
+          {tab?.state === "needsYou" && (
+            <View
+              style={styles.needsYouBanner}
+              accessibilityLabel="Needs Approval Banner"
+            >
               <View style={styles.needsYouContent}>
                 <Feather name="alert-triangle" size={18} color="#F59E0B" />
                 <View style={styles.needsYouTextCol}>
@@ -752,7 +1031,7 @@ export default function AgentScreen() {
               <Pressable
                 accessibilityLabel="Open Terminal"
                 style={styles.needsYouBtn}
-                onPress={() => setViewMode('terminal')}
+                onPress={() => setViewMode("terminal")}
               >
                 <Feather name="terminal" size={14} color="#0A0A0A" />
                 <Text style={styles.needsYouBtnText}>Open Terminal</Text>
@@ -765,12 +1044,16 @@ export default function AgentScreen() {
             keyExtractor={(item) => item.id}
             renderItem={renderMessage}
             contentContainerStyle={styles.messageList}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+            onContentSizeChange={() =>
+              flatListRef.current?.scrollToEnd({ animated: true })
+            }
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
                 <Feather name="cpu" size={36} color="#4B5563" />
                 <Text style={styles.emptyTitle}>Agent Chat</Text>
-                <Text style={styles.emptySubtitle}>Live transcript streaming from OMP session</Text>
+                <Text style={styles.emptySubtitle}>
+                  Live transcript streaming from OMP session
+                </Text>
               </View>
             }
           />
@@ -788,7 +1071,10 @@ export default function AgentScreen() {
               />
               <Pressable
                 accessibilityLabel="Send Prompt"
-                style={[styles.sendButton, (!promptText.trim() || sending) && styles.sendButtonDisabled]}
+                style={[
+                  styles.sendButton,
+                  (!promptText.trim() || sending) && styles.sendButtonDisabled,
+                ]}
                 onPress={sendPrompt}
                 disabled={!promptText.trim() || sending}
               >
@@ -800,43 +1086,82 @@ export default function AgentScreen() {
               </Pressable>
             </View>
           ) : (
-            <Pressable accessibilityLabel="Open Terminal to interact" style={styles.terminalFallback} onPress={() => setViewMode('terminal')}>
+            <Pressable
+              accessibilityLabel="Open Terminal to interact"
+              style={styles.terminalFallback}
+              onPress={() => setViewMode("terminal")}
+            >
               <Feather name="terminal" size={16} color="#D19A2C" />
-              <Text style={styles.terminalFallbackText}>Open Terminal to interact</Text>
+              <Text style={styles.terminalFallbackText}>
+                Open Terminal to interact
+              </Text>
             </Pressable>
           )}
         </KeyboardAvoidingView>
       ) : (
         <View style={styles.terminalContainer}>
-          {terminalError && <View style={styles.terminalError} accessibilityLabel="Terminal transport error"><Text style={styles.terminalErrorText}>{terminalError}</Text></View>}
+          {terminalError && (
+            <View
+              style={styles.terminalError}
+              accessibilityLabel="Terminal transport error"
+            >
+              <Text style={styles.terminalErrorText}>{terminalError}</Text>
+            </View>
+          )}
           {connection && tab ? (
             <Terminal
               ref={terminalRef}
               output={terminalOutput}
-              onInput={(data) => !terminalInactive && shortcutKeyboardRef.current?.input(data)}
+              onInput={(data) =>
+                !terminalInactive && shortcutKeyboardRef.current?.input(data)
+              }
               onResize={(cols, rows) =>
-                !terminalInactive && tab && daemonChannelRef.current?.send({ channelId: tab.terminalSessionId, kind: 'terminal', type: 'pty.resize', cols, rows })
+                !terminalInactive &&
+                tab &&
+                daemonChannelRef.current?.send({
+                  channelId: tab.terminalSessionId,
+                  kind: "terminal",
+                  type: "pty.resize",
+                  cols,
+                  rows,
+                })
               }
             />
           ) : (
             <Text style={styles.connectingText}>Connecting…</Text>
           )}
-          {!terminalInactive && <ShortcutKeyboard
-            ref={shortcutKeyboardRef}
-            onInput={(data) =>
-              tab && daemonChannelRef.current?.send({ channelId: tab.terminalSessionId, kind: 'terminal', type: 'pty.input', data: base64(utf8(data)) })
-            }
-            bottomInset={insets.bottom}
-            keyboardInset={keyboardInset}
-            onCopy={() => terminalRef.current?.copy()}
-            onPaste={() => terminalRef.current?.paste()}
-            onSelectAll={() => terminalRef.current?.selectAll()}
-            onExpand={() => { Keyboard.dismiss(); terminalRef.current?.blur(); }}
-            onCollapse={() => terminalRef.current?.focus()}
-          />}
+          {!terminalInactive && (
+            <ShortcutKeyboard
+              ref={shortcutKeyboardRef}
+              onInput={(data) =>
+                tab &&
+                daemonChannelRef.current?.send({
+                  channelId: tab.terminalSessionId,
+                  kind: "terminal",
+                  type: "pty.input",
+                  data: base64(utf8(data)),
+                })
+              }
+              bottomInset={insets.bottom}
+              keyboardInset={keyboardInset}
+              onCopy={() => terminalRef.current?.copy()}
+              onPaste={() => terminalRef.current?.paste()}
+              onSelectAll={() => terminalRef.current?.selectAll()}
+              onExpand={() => {
+                Keyboard.dismiss();
+                terminalRef.current?.blur();
+              }}
+              onCollapse={() => terminalRef.current?.focus()}
+            />
+          )}
         </View>
       )}
-      <TmuxPaneSheet ref={paneSheetRef} panes={panes} currentPaneId={tab?.tmuxPaneId} onSelect={selectPane} />
+      <TmuxPaneSheet
+        ref={paneSheetRef}
+        panes={panes}
+        currentPaneId={tab?.tmuxPaneId}
+        onSelect={selectPane}
+      />
       <ModelThinkingSheet
         ref={modelThinkingSheetRef}
         currentModel={currentModel}
@@ -855,186 +1180,291 @@ export default function AgentScreen() {
 }
 
 const styles = StyleSheet.create({
-  headerCompact: { flexWrap: 'wrap', paddingVertical: 4 },
-  compactHeaderTitleContainer: { flexBasis: '100%', justifyContent: 'center', minHeight: 24 },
-  screen: { flex: 1, backgroundColor: '#0A0A0A' },
+  headerCompact: { flexWrap: "wrap", paddingVertical: 4 },
+  compactHeaderTitleContainer: {
+    flexBasis: "100%",
+    justifyContent: "center",
+    minHeight: 24,
+  },
+  screen: { flex: 1, backgroundColor: "#0A0A0A" },
   header: {
     minHeight: 56,
     paddingHorizontal: 12,
-    alignItems: 'center',
-    flexDirection: 'row',
+    alignItems: "center",
+    flexDirection: "row",
     gap: 8,
     borderBottomWidth: 1,
-    borderColor: '#262626',
-    backgroundColor: '#121212',
+    borderColor: "#262626",
+    backgroundColor: "#121212",
   },
   headerIcon: {
     width: 48,
     height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 6,
   },
-  headerTitleContainer: { flex: 1, justifyContent: 'center' },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  title: { flexShrink: 1, color: '#F0F0F0', fontSize: 16, fontWeight: '700' },
+  headerTitleContainer: { flex: 1, justifyContent: "center" },
+  headerTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  title: { flexShrink: 1, color: "#F0F0F0", fontSize: 16, fontWeight: "700" },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { fontSize: 12, fontWeight: '600', textTransform: 'capitalize' },
+  statusText: { fontSize: 12, fontWeight: "600", textTransform: "capitalize" },
   viewSwitcher: {
-    flexDirection: 'row',
-    backgroundColor: '#1E1E1E',
+    flexDirection: "row",
+    backgroundColor: "#1E1E1E",
     borderRadius: 6,
     padding: 2,
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: "#333",
   },
   switcherButton: {
     width: 48,
     height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 4,
   },
   switcherButtonActive: {
-    backgroundColor: '#D19A2C',
+    backgroundColor: "#D19A2C",
   },
   menuOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
   },
   menuSheet: {
-    backgroundColor: '#1E1E1E',
+    backgroundColor: "#1E1E1E",
     paddingBottom: 24,
     paddingTop: 8,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
   },
   menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
     minHeight: 48,
     paddingHorizontal: 20,
     paddingVertical: 12,
   },
   menuItemText: {
-    color: '#F0F0F0',
+    color: "#F0F0F0",
     fontSize: 16,
   },
   chatContainer: { flex: 1 },
   messageList: { padding: 14, gap: 12 },
-  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, gap: 10 },
-  emptyTitle: { color: '#D1D5DB', fontSize: 18, fontWeight: '700' },
-  emptySubtitle: { color: '#6B7280', fontSize: 14, textAlign: 'center' },
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 40,
+    gap: 10,
+  },
+  emptyTitle: { color: "#D1D5DB", fontSize: 18, fontWeight: "700" },
+  emptySubtitle: { color: "#6B7280", fontSize: 14, textAlign: "center" },
+  confirmationOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
+  },
+  confirmationDialog: {
+    width: "100%",
+    maxWidth: 420,
+    gap: 16,
+    padding: 20,
+    borderRadius: 12,
+    backgroundColor: "#1E1E1E",
+    borderWidth: 1,
+    borderColor: "#444",
+  },
+  confirmationTitle: { color: "#F0F0F0", fontSize: 18, fontWeight: "700" },
+  confirmationText: { color: "#D1D5DB", fontSize: 14, lineHeight: 20 },
+  confirmationActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  confirmationCancel: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  confirmationCancelText: { color: "#D1D5DB", fontSize: 14, fontWeight: "600" },
+  confirmationTerminate: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: "#B91C1C",
+  },
+  confirmationTerminateText: { color: "#FFF", fontSize: 14, fontWeight: "700" },
   userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#1E3A5F',
+    alignSelf: "flex-end",
+    backgroundColor: "#1E3A5F",
     borderRadius: 12,
     padding: 12,
-    maxWidth: '85%',
+    maxWidth: "85%",
     borderWidth: 1,
-    borderColor: '#2563EB',
+    borderColor: "#2563EB",
   },
-  userLabel: { color: '#93C5FD', fontSize: 11, fontWeight: '700', marginBottom: 4 },
-  userText: { color: '#F0F0F0', fontSize: 14, lineHeight: 20 },
+  userLabel: {
+    color: "#93C5FD",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  userText: { color: "#F0F0F0", fontSize: 14, lineHeight: 20 },
   assistantBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#1E1E1E',
+    alignSelf: "flex-start",
+    backgroundColor: "#1E1E1E",
     borderRadius: 12,
     padding: 12,
-    maxWidth: '85%',
+    maxWidth: "85%",
     borderWidth: 1,
-    borderColor: '#333333',
+    borderColor: "#333333",
   },
-  assistantLabel: { color: '#A78BFA', fontSize: 11, fontWeight: '700', marginBottom: 4 },
-  assistantText: { color: '#E5E7EB', fontSize: 14, lineHeight: 20 },
+  assistantLabel: {
+    color: "#A78BFA",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  assistantText: { color: "#E5E7EB", fontSize: 14, lineHeight: 20 },
   toolBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#18181B',
+    alignSelf: "flex-start",
+    backgroundColor: "#18181B",
     borderRadius: 8,
     padding: 10,
-    maxWidth: '90%',
+    maxWidth: "90%",
     borderLeftWidth: 3,
-    borderLeftColor: '#A78BFA',
+    borderLeftColor: "#A78BFA",
     borderWidth: 1,
-    borderColor: '#27272A',
+    borderColor: "#27272A",
     gap: 4,
   },
-  toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  toolName: { color: '#C4B5FD', fontSize: 13, fontWeight: '600' },
-  toolPayload: { color: '#9CA3AF', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  payloadToggle: { color: '#C4B5FD', fontSize: 12, fontWeight: '600', marginTop: 4 },
+  toolHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
+  toolName: { color: "#C4B5FD", fontSize: 13, fontWeight: "600" },
+  toolPayload: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  payloadToggle: {
+    color: "#C4B5FD",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
+  },
   toolResultBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#141E18',
+    alignSelf: "flex-start",
+    backgroundColor: "#141E18",
     borderRadius: 8,
     padding: 10,
-    maxWidth: '90%',
+    maxWidth: "90%",
     borderLeftWidth: 3,
-    borderLeftColor: '#46B86B',
+    borderLeftColor: "#46B86B",
     borderWidth: 1,
-    borderColor: '#1C2E22',
+    borderColor: "#1C2E22",
     gap: 4,
   },
-  toolResultName: { color: '#86EFAC', fontSize: 13, fontWeight: '600' },
-  toolResultPayload: { color: '#A7F3D0', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  systemBubble: { alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 10 },
-  systemText: { color: '#6B7280', fontSize: 12, fontStyle: 'italic' },
-  activityBubble: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 10, marginVertical: 1, borderLeftWidth: 2, borderLeftColor: '#D19A2C' },
-  activityText: { color: '#D1D5DB', fontSize: 12 },
+  toolResultName: { color: "#86EFAC", fontSize: 13, fontWeight: "600" },
+  toolResultPayload: {
+    color: "#A7F3D0",
+    fontSize: 12,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  systemBubble: {
+    alignSelf: "center",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  systemText: { color: "#6B7280", fontSize: 12, fontStyle: "italic" },
+  activityBubble: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    marginVertical: 1,
+    borderLeftWidth: 2,
+    borderLeftColor: "#D19A2C",
+  },
+  activityText: { color: "#D1D5DB", fontSize: 12 },
   promptBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+    flexDirection: "row",
+    alignItems: "flex-end",
     padding: 10,
-    backgroundColor: '#121212',
+    backgroundColor: "#121212",
     borderTopWidth: 1,
-    borderColor: '#262626',
+    borderColor: "#262626",
     gap: 8,
   },
   promptInput: {
     flex: 1,
-    backgroundColor: '#1E1E1E',
-    color: '#F0F0F0',
+    backgroundColor: "#1E1E1E",
+    color: "#F0F0F0",
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     fontSize: 14,
     maxHeight: 100,
     borderWidth: 1,
-    borderColor: '#333333',
+    borderColor: "#333333",
   },
   sendButton: {
     width: 48,
     height: 48,
-    backgroundColor: '#D19A2C',
+    backgroundColor: "#D19A2C",
     borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   sendButtonDisabled: { opacity: 0.4 },
-  terminalFallback: { flexDirection: 'row', minHeight: 48, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: '#121212', borderTopWidth: 1, borderColor: '#262626' },
-  terminalFallbackText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
+  terminalFallback: {
+    flexDirection: "row",
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    padding: 14,
+    backgroundColor: "#121212",
+    borderTopWidth: 1,
+    borderColor: "#262626",
+  },
+  terminalFallbackText: { color: "#D1D5DB", fontSize: 14, fontWeight: "600" },
   terminalContainer: { flex: 1 },
-  terminalError: { margin: 12, padding: 12, borderRadius: 6, backgroundColor: '#3A1515', borderWidth: 1, borderColor: '#DC2626' },
-  terminalErrorText: { color: '#FECACA', fontSize: 14 },
-  connectingText: { flex: 1, textAlign: 'center', textAlignVertical: 'center', color: '#6B7280', fontSize: 14 },
+  terminalError: {
+    margin: 12,
+    padding: 12,
+    borderRadius: 6,
+    backgroundColor: "#3A1515",
+    borderWidth: 1,
+    borderColor: "#DC2626",
+  },
+  terminalErrorText: { color: "#FECACA", fontSize: 14 },
+  connectingText: {
+    flex: 1,
+    textAlign: "center",
+    textAlignVertical: "center",
+    color: "#6B7280",
+    fontSize: 14,
+  },
   needsYouBanner: {
-    backgroundColor: '#2A1F05',
-    borderColor: '#F59E0B',
+    backgroundColor: "#2A1F05",
+    borderColor: "#F59E0B",
     borderWidth: 1,
     borderRadius: 8,
     margin: 12,
     marginBottom: 0,
     padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 10,
   },
   needsYouContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
     flex: 1,
   },
@@ -1043,27 +1473,27 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   needsYouTitle: {
-    color: '#F59E0B',
+    color: "#F59E0B",
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   needsYouSubtitle: {
-    color: '#D1D5DB',
+    color: "#D1D5DB",
     fontSize: 11,
   },
   needsYouBtn: {
     minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
-    backgroundColor: '#F59E0B',
+    backgroundColor: "#F59E0B",
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 6,
   },
   needsYouBtnText: {
-    color: '#0A0A0A',
+    color: "#0A0A0A",
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: "700",
   },
 });

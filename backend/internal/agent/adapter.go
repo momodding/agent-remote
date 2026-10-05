@@ -24,6 +24,11 @@ var (
 
 const bridgeReconnectGrace = 6 * time.Second
 
+const (
+	semanticOwnerBridge = "bridge"
+	semanticOwnerTailer = "tailer"
+)
+
 func newAgentID() (string, error) {
 	data := make([]byte, 16)
 	if _, err := rand.Read(data); err != nil {
@@ -77,6 +82,7 @@ type agentInstance struct {
 	stopTerminal            func()
 	pollInterval            time.Duration
 	transcriptFallbackAfter time.Time
+	semanticOwner           string
 }
 
 type Service struct {
@@ -146,6 +152,9 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 		return false
 	}
 	inst.meta.OMPSessionID = hello.SessionID
+	if inst.semanticOwner == "" {
+		inst.semanticOwner = semanticOwnerBridge
+	}
 	inst.meta.OMPSessionFile = hello.SessionFile
 	inst.sessionFile = hello.SessionFile
 	capsMap := make(map[string]bool)
@@ -256,12 +265,18 @@ func (s *Service) emitBridgeActivity(inst *agentInstance, frame BridgeLifecycleF
 	inst.mu.RUnlock()
 	if s.store != nil {
 		payload, err := json.Marshal(event)
-		if err != nil { return }
+		if err != nil {
+			return
+		}
 		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, []runtimestore.AgentTranscriptEvent{{EventID: event.EventID, Kind: event.Type, Payload: payload}}, runtimestore.TranscriptState{})
-		if err != nil || len(committed) == 0 { return }
+		if err != nil || len(committed) == 0 {
+			return
+		}
 		event.Cursor = committed[0].Event.Cursor
 	}
-	for _, subscriber := range subscribers { subscriber(event) }
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
 }
 
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
@@ -345,8 +360,9 @@ func (s *Service) handleBridgeSemantic(agentID string, frame BridgeSemanticFrame
 
 	inst.mu.RLock()
 	curState := inst.meta.State
+	semanticOwner := inst.semanticOwner
 	inst.mu.RUnlock()
-	if curState == "exited" {
+	if curState == "exited" || semanticOwner == semanticOwnerTailer {
 		return
 	}
 
@@ -782,15 +798,25 @@ func (s *Service) pollTranscript(inst *agentInstance) {
 }
 
 func (s *Service) checkTranscript(inst *agentInstance) {
-	// The bridge is the authoritative live semantic stream. Tail only while it
-	// is unavailable; polling begins after bridgeReconnectGrace so startup and
-	// daemon recovery do not attach the fallback to another live OMP session.
+	// The bridge owns semantics when it connected before the fallback grace
+	// period. Otherwise the file tailer owns them for the lifetime of this
+	// agent, including after a bridge reconnect, so one OMP turn cannot be
+	// persisted under two unrelated event-ID schemes.
 	s.mu.RLock()
 	bridge := s.bridgeServer
 	s.mu.RUnlock()
-	if bridge != nil && bridge.IsConnected(inst.meta.ID) {
+	bridgeConnected := bridge != nil && bridge.IsConnected(inst.meta.ID)
+	inst.mu.Lock()
+	if inst.semanticOwner == semanticOwnerBridge || (inst.semanticOwner == "" && bridgeConnected) {
+		inst.semanticOwner = semanticOwnerBridge
+		inst.mu.Unlock()
 		return
 	}
+	if inst.semanticOwner == "" {
+		inst.semanticOwner = semanticOwnerTailer
+	}
+	inst.mu.Unlock()
+
 	inst.tailerMu.Lock()
 	defer inst.tailerMu.Unlock()
 	inst.mu.Lock()
@@ -832,25 +858,22 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 
 	inst.mu.Lock()
 	stateChanged := false
-	bridgeConnected := s.bridgeServer != nil && s.bridgeServer.IsConnected(inst.meta.ID)
-	if !bridgeConnected {
-		for _, event := range events {
-			switch event.Type {
-			case "message.user", "tool.call":
-				if inst.meta.State != "working" && inst.meta.State != "exited" {
-					inst.meta.State = "working"
-					stateChanged = true
-				}
-			case "message.assistant":
-				if inst.meta.State != "idle" && inst.meta.State != "exited" {
-					inst.meta.State = "idle"
-					stateChanged = true
-				}
-			case "state":
-				if event.State != "" && event.State != inst.meta.State {
-					inst.meta.State = event.State
-					stateChanged = true
-				}
+	for _, event := range events {
+		switch event.Type {
+		case "message.user", "tool.call":
+			if inst.meta.State != "working" && inst.meta.State != "exited" {
+				inst.meta.State = "working"
+				stateChanged = true
+			}
+		case "message.assistant":
+			if inst.meta.State != "idle" && inst.meta.State != "exited" {
+				inst.meta.State = "idle"
+				stateChanged = true
+			}
+		case "state":
+			if event.State != "" && event.State != inst.meta.State {
+				inst.meta.State = event.State
+				stateChanged = true
 			}
 		}
 	}

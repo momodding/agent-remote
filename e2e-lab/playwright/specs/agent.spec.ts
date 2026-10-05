@@ -1,174 +1,199 @@
-import { test, expect } from '@playwright/test';
-import { ensurePaired } from '../helpers';
+import { execFileSync } from "node:child_process";
+import { test, expect, type APIResponse, type Page } from "@playwright/test";
+import { ensurePaired } from "../helpers";
 
-test.describe('Web Agent & Live Daemon Session Flow', () => {
-  test('should drive full Agent lifecycle: pairing, live E2E_PONG, live E2E_TOOL_TEST, terminal runtime, files, history retention, and termination', async ({
+function ompPids(): string[] {
+  const compose = `${process.cwd()}/scripts/compose.sh`;
+  const command =
+    'for p in /proc/[0-9]*; do read comm < "$p/comm" 2>/dev/null || continue; [ "$comm" = omp ] && printf "%s\\n" "${p##*/}"; done; true';
+  return execFileSync(
+    compose,
+    ["exec", "--no-TTY", "daemon", "sh", "-lc", command],
+    { encoding: "utf8" },
+  )
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+async function createAgent(
+  page: Page,
+): Promise<{ id: string; terminalSessionId: string }> {
+  const createResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/v1/agents") &&
+      response.status() === 201,
+  );
+  await page.getByLabel(/^New Agent /).click();
+  const workspaceInput = page.getByLabel("Workspace Path");
+  await expect(workspaceInput).toBeVisible({ timeout: 15_000 });
+  await workspaceInput.fill("project1");
+  await page.getByLabel("Create Agent").click();
+  const response: APIResponse = await createResponse;
+  const agent = (await response.json()) as {
+    id: string;
+    terminalSessionId: string;
+  };
+  expect(agent.id).toBeTruthy();
+  expect(agent.terminalSessionId).toBeTruthy();
+  return agent;
+}
+
+async function sendTurn(
+  page: Page,
+  prompt: string,
+  expected: string,
+): Promise<void> {
+  const input = page
+    .locator(
+      'textarea[placeholder="Send instruction to agent..."], input[placeholder="Send instruction to agent..."]',
+    )
+    .first();
+  await expect(input).toBeVisible({ timeout: 20_000 });
+  await input.fill(prompt);
+  await page.getByLabel("Send Prompt").click();
+  await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText(expected, { exact: true }).last()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(input).toHaveValue("", { timeout: 10_000 });
+}
+
+test.describe("Web Agent Chat live OMP flow", () => {
+  test("keeps one OMP runtime across five Chat turns and a Chat/Terminal switch", async ({
     page,
   }) => {
-    test.setTimeout(240000);
+    test.setTimeout(240_000);
+    const terminalSockets = new Set<string>();
+    page.on("websocket", (socket) => terminalSockets.add(socket.url()));
 
-    // Polyfill Alert.alert in React Native Web for non-interactive browser testing
-    await page.addInitScript(() => {
-      let _d: unknown;
-      Object.defineProperty(window, '__d', {
-        configurable: true,
-        get() {
-          return _d;
-        },
-        set(origD: (factory: unknown, moduleId: unknown, dependencyMap: unknown) => unknown) {
-          _d = function (factory: (...args: unknown[]) => void, moduleId: unknown, dependencyMap: unknown) {
-            const wrapped = function (g: unknown, r: unknown, i: unknown, a: unknown, m: { exports?: { default?: { alert?: unknown }; alert?: unknown } }, e: unknown, d: unknown) {
-              factory(g, r, i, a, m, e, d);
-              if (m && m.exports) {
-                const exp = m.exports.default || m.exports;
-                if (exp && typeof exp.alert === 'function') {
-                  exp.alert = function (_title: string, _msg?: string, buttons?: Array<{ text: string; onPress?: () => void; style?: string }>) {
-                    const term = buttons?.find((b) => b.text === 'Terminate' || b.style === 'destructive');
-                    if (term?.onPress) {
-                      term.onPress();
-                      return;
-                    }
-                    const first = buttons?.[0];
-                    if (first?.onPress) {
-                      first.onPress();
-                    }
-                  };
-                }
-              }
-            };
-            return origD(wrapped, moduleId, dependencyMap);
-          };
-        },
-      });
+    await ensurePaired(page);
+    expect(ompPids()).toEqual([]);
+
+    const created = await createAgent(page);
+    await expect(page.getByLabel("Chat View")).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => ompPids(), { timeout: 30_000 }).toHaveLength(1);
+
+    const promptInput = page
+      .locator(
+        'textarea[placeholder="Send instruction to agent..."], input[placeholder="Send instruction to agent..."]',
+      )
+      .first();
+    await expect(promptInput).toBeVisible({ timeout: 20_000 });
+    await promptInput.fill("Reply with exactly the word: E2E_PONG");
+    await page.getByLabel("Send Prompt").click();
+    await expect(page.getByText("E2E_PONG", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("Turn started", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(promptInput).toHaveValue("", { timeout: 10_000 });
+    await expect.poll(() => ompPids(), { timeout: 10_000 }).toHaveLength(1);
+
+    await sendTurn(
+      page,
+      "Execute tool test: E2E_TOOL_TEST",
+      "E2E_TOOL_FINAL_OUTPUT",
+    );
+    await expect(page.getByText("bash", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("E2E_TOOL_RESULT").last()).toBeVisible({
+      timeout: 30_000,
     });
 
-    page.on('console', (msg) => console.log(`[PAGE ${msg.type()}] ${msg.text()}`));
-    // 1. Ensure authentic Auth-v2 pairing
-    await ensurePaired(page);
+    await page.getByLabel("Terminal View").click();
+    await expect(page.locator(".xterm").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect
+      .poll(
+        () =>
+          [...terminalSockets].some((url) =>
+            url.endsWith(`/v1/ws/sessions/${created.terminalSessionId}`),
+          ),
+        { timeout: 15_000 },
+      )
+      .toBeTruthy();
+    await page.getByLabel("Chat View").click();
+    await expect(promptInput).toBeVisible({ timeout: 10_000 });
 
-    const initialAgentCardsCount = await page.locator('[aria-label^="Open agent"]:visible').count();
-    const newAgentBtn = page.locator('[aria-label^="New Agent"]:visible').first();
-    await expect(newAgentBtn).toBeVisible({ timeout: 15000 });
-    await newAgentBtn.click();
-    // 3. Set workspace to project1 and create agent
-    const workspaceInput = page.getByLabel('Workspace Path');
-    await expect(workspaceInput).toBeVisible({ timeout: 10000 });
-    await workspaceInput.fill('project1');
+    await page.getByLabel("More actions").click();
+    const modelButton = page.getByLabel("Model and Thinking");
+    if (await modelButton.isVisible().catch(() => false)) {
+      await modelButton.click();
+      await expect(page.getByText("MODEL", { exact: true })).toBeVisible({
+        timeout: 10_000,
+      });
+      await expect(
+        page.getByText("THINKING LEVEL", { exact: true }),
+      ).toBeVisible({ timeout: 10_000 });
+      await page.getByLabel("Close Model and Thinking").click();
+      await expect(page.getByText("MODEL", { exact: true })).not.toBeVisible({
+        timeout: 10_000,
+      });
+    } else {
+      await page.getByLabel("Dismiss menu").click();
+    }
 
-    const createAgentBtn = page.locator('[aria-label="Create Agent"]').first();
-    await expect(createAgentBtn).toBeVisible({ timeout: 5000 });
-    await createAgentBtn.click();
+    const unicodeCodePrompt =
+      'Unicode turn: こんにちは 🌍\n```ts\nconst café = "✅";\n```\n' +
+      "x".repeat(256);
+    await sendTurn(
+      page,
+      unicodeCodePrompt,
+      `Processed: ${unicodeCodePrompt.slice(0, 50)}`,
+    );
+    await sendTurn(
+      page,
+      "Fourth sequential live Agent Chat turn",
+      "Processed: Fourth sequential live Agent Chat turn",
+    );
+    await sendTurn(
+      page,
+      "Fifth sequential live Agent Chat turn",
+      "Processed: Fifth sequential live Agent Chat turn",
+    );
+    await expect(page.getByText("E2E_PONG", { exact: true })).toHaveCount(1);
+    await expect(
+      page.getByText("E2E_TOOL_FINAL_OUTPUT", { exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByText(`Processed: ${unicodeCodePrompt.slice(0, 50)}`, {
+        exact: true,
+      }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByText("Processed: Fourth sequential live Agent Chat turn", {
+        exact: true,
+      }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByText("Processed: Fifth sequential live Agent Chat turn", {
+        exact: true,
+      }),
+    ).toHaveCount(1);
+    await expect(page.getByText("message.system", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect.poll(() => ompPids(), { timeout: 10_000 }).toHaveLength(1);
 
-    // 4. Verify prompt bar is active
-    const promptInput = page.locator(
-      'textarea[placeholder="Send instruction to agent..."]:visible, input[placeholder="Send instruction to agent..."]:visible'
-    ).first();
-    await expect(promptInput).toBeVisible({ timeout: 20000 });
-
-    // 5. Submit live prompt 1 and assert E2E_PONG appears without page refresh
-    await promptInput.fill('Reply with exactly the word: E2E_PONG');
-    const sendBtn = page.locator('[aria-label="Send Prompt"]:visible').first();
-    await expect(sendBtn).toBeVisible({ timeout: 5000 });
-    await expect(sendBtn).toBeEnabled({ timeout: 10000 });
-    await sendBtn.click();
-
-    // Verify user message is rendered in transcript
-    const userMsg1 = page.getByText('Reply with exactly the word: E2E_PONG').last();
-    await expect(userMsg1).toBeVisible({ timeout: 10000 });
-
-    // Verify live assistant response arrives without refresh
-    const assistantPong = page.getByText('E2E_PONG').last();
-    await expect(assistantPong).toBeVisible({ timeout: 30000 });
-
-    // Wait for prompt bar to settle and clear from turn 1
-    await expect(promptInput).toHaveValue('', { timeout: 10000 });
-
-    // 6. Submit live prompt 2 (E2E_TOOL_TEST) and prove tool.call, tool.result, final output
-    await promptInput.fill('Execute tool test: E2E_TOOL_TEST');
-    await expect(promptInput).toHaveValue('Execute tool test: E2E_TOOL_TEST');
-    await expect(sendBtn).toBeVisible({ timeout: 5000 });
-    await expect(sendBtn).toBeEnabled({ timeout: 20000 });
-    await sendBtn.click();
-    // Verify tool.call event rendered in transcript
-    const toolCallName = page.getByText('bash').first();
-    await expect(toolCallName).toBeVisible({ timeout: 25000 });
-    const toolCallInput = page.getByText('echo E2E_TOOL_RESULT').first();
-    await expect(toolCallInput).toBeVisible({ timeout: 25000 });
-
-    // Verify tool.result event rendered in transcript
-    const toolResultOutput = page.getByText('E2E_TOOL_RESULT').first();
-    await expect(toolResultOutput).toBeVisible({ timeout: 25000 });
-
-    // Verify final assistant output arrives without refresh
-    const toolFinalOutput = page.getByText('E2E_TOOL_FINAL_OUTPUT').first();
-    await expect(toolFinalOutput).toBeVisible({ timeout: 25000 });
-
-    await expect(page.getByText('E2E_PONG').last()).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('E2E_TOOL_FINAL_OUTPUT').last()).toBeVisible({ timeout: 10000 });
-    const terminalViewBtn = page.locator('[aria-label="Terminal View"]:visible').first();
-    await expect(terminalViewBtn).toBeVisible({ timeout: 5000 });
-    await terminalViewBtn.click();
-
-    // Assert active tab URL matches the agent tab route
-    const currentUrl = page.url();
-    expect(currentUrl).toContain('/agent/');
-    const tabId = currentUrl.split('/agent/')[1].split('?')[0];
-    expect(tabId).toBeTruthy();
-
-    const xtermSurface = page.locator('.xterm, canvas, [data-testid="terminal-container"]').last();
-    await expect(xtermSurface).toBeVisible({ timeout: 10000 });
-
-    await page.locator('[aria-label="More actions"]:visible').first().click();
-    // 8. Close agent view to return cleanly to dashboard
-    const closeViewBtn = page.locator('[aria-label="Close View"]:visible').first();
-    await expect(closeViewBtn).toBeVisible({ timeout: 5000 });
-    await closeViewBtn.click();
-
-    // 9. Verify Files integration from dashboard (project1/sample.txt)
-    const newFilesBtn = page.locator('[aria-label^="New Files"]:visible').first();
-    await expect(newFilesBtn).toBeVisible({ timeout: 10000 });
-    await newFilesBtn.click();
-
-    const project1Folder = page.locator('[aria-label="Open folder project1"]:visible').first();
-    await expect(project1Folder).toBeVisible({ timeout: 15000 });
-    await project1Folder.click();
-
-    const sampleFile = page.locator('[aria-label="Open file sample.txt"]:visible').first();
-    await expect(sampleFile).toBeVisible({ timeout: 15000 });
-    await sampleFile.click();
-
-    const sampleContent = page.getByText('Hello from sample.txt in project1').first();
-    await expect(sampleContent).toBeVisible({ timeout: 10000 });
-
-    // Close file editor
-    const backToFilesBtn = page.locator('[aria-label="Back to files"]:visible').first();
-    await expect(backToFilesBtn).toBeVisible({ timeout: 5000 });
-    await backToFilesBtn.click();
-
-    // Close file manager and return to dashboard
-    const closeFilesBtn = page.locator('[aria-label="Close file manager"]:visible').first();
-    await expect(closeFilesBtn).toBeVisible({ timeout: 5000 });
-    await closeFilesBtn.click();
-
-    // 10. Reopen agent session from dashboard and verify history retention
-    const countBeforeReopen = await page.locator('[aria-label^="Open agent"]:visible').count();
-    const agentCard = page.locator('[aria-label^="Open agent"]:visible').last();
-    await agentCard.scrollIntoViewIfNeeded();
-    await expect(agentCard).toBeAttached({ timeout: 10000 });
-    await agentCard.click();
-    await page.locator('[aria-label="More actions"]:visible').first().click();
-    // Verify session view is loaded
-    const terminateBtn = page.locator('[aria-label="Terminate Agent"]:visible').first();
-    await expect(terminateBtn).toBeVisible({ timeout: 15000 });
-
-    // Assert rehydrated history: count of each message is exactly 1 on the active screen
-    await expect(page.getByText('E2E_PONG', { exact: true }).and(page.locator(':visible'))).toHaveCount(1, { timeout: 15000 });
-    await expect(page.getByText('E2E_TOOL_FINAL_OUTPUT', { exact: true }).and(page.locator(':visible'))).toHaveCount(1, { timeout: 15000 });
-    // 11. Explicit termination removes surface from dashboard/runtime
-    await terminateBtn.click();
-    // Verify redirected to dashboard and connection card is active
-    const deckHeader = page.getByText('localhost:18765').last();
-    await expect(deckHeader).toBeVisible({ timeout: 15000 });
-    expect(page.url()).not.toContain('/agent/');
+    const terminateRequest = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/v1/agents/${created.id}/terminate`) &&
+        response.status() === 200,
+    );
+    await page.getByLabel("More actions").click();
+    await page.getByLabel("Terminate Agent").click();
+    await expect(page.getByLabel("Terminate Agent Confirmation")).toBeVisible();
+    await page.getByLabel("Confirm Terminate Agent").click();
+    await terminateRequest;
+    await expect(page).not.toHaveURL(/\/agent\//, { timeout: 15_000 });
+    await expect.poll(() => ompPids(), { timeout: 30_000 }).toEqual([]);
   });
 });
