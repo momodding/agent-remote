@@ -30,6 +30,7 @@ type Config struct {
 	PairingPageUsername         string   `json:"pairingPageUsername"`
 	PairingPagePassword         string   `json:"pairingPagePassword"`
 	VNCPort                     int      `json:"vncPort"`
+	DesktopAllowedOrigins       []string `json:"desktopAllowedOrigins"`
 	TerminalBackend             string   `json:"terminalBackend"`
 }
 

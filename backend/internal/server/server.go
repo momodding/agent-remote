@@ -205,7 +205,7 @@ func cors(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-AgenticRemote-Desktop-Attempt")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
@@ -1515,12 +1515,21 @@ func (s *Server) desktopOriginAllowed(origin string) bool {
 	if origin == "" {
 		return true
 	}
-	expected, err := url.Parse(s.cfg.PublicEndpoint)
-	if err != nil {
+	actual, err := url.Parse(origin)
+	if err != nil || actual.Scheme == "" || actual.Host == "" {
 		return false
 	}
-	actual, err := url.Parse(origin)
-	return err == nil && actual.Scheme == expected.Scheme && strings.EqualFold(actual.Host, expected.Host)
+	expected, err := url.Parse(s.cfg.PublicEndpoint)
+	if err == nil && actual.Scheme == expected.Scheme && strings.EqualFold(actual.Host, expected.Host) {
+		return true
+	}
+	for _, allowed := range s.cfg.DesktopAllowedOrigins {
+		configured, err := url.Parse(allowed)
+		if err == nil && actual.Scheme == configured.Scheme && strings.EqualFold(actual.Host, configured.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopDiagnosticAttempt(value string) string {
@@ -1584,7 +1593,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
-	acceptOpts := &websocket.AcceptOptions{OriginPatterns: []string{s.cfg.PublicEndpoint}}
+	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
 	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
 		for _, p := range strings.Split(h, ",") {
 			acceptOpts.Subprotocols = append(acceptOpts.Subprotocols, strings.TrimSpace(p))

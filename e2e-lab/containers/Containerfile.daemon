@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     tmux \
     tar \
+    xvfb \
+    x11vnc \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pinned Go compiler
@@ -52,6 +54,7 @@ RUN echo '{\n\
   "channelBufferSize": 256,\n\
   "maxScrollbackBytes": 1048576,\n\
   "allowDestructiveFiles": true,\n\
+  "desktopAllowedOrigins": ["http://127.0.0.1:8081", "http://localhost:8081"],\n\
   "skipFingerprintVerification": false,\n\
   "pairingRotationSeconds": 900,\n\
   "terminalBackend": "tmux"\n\
@@ -122,6 +125,7 @@ modelRoles:\n\
   cp /root/.omp/agent/settings.json /root/.omp/settings.json && \
   cp /root/.omp/agent/models.yml /root/.omp/models.yml && \
   cp /root/.omp/agent/config.yml /root/.omp/config.yml
+COPY e2e-lab/containers/daemon-entrypoint.sh /usr/local/bin/e2e-daemon
 EXPOSE 18765
 
-ENTRYPOINT ["agenticRemote", "serve", "--config", "/app/.agenticremote/config.json"]
+ENTRYPOINT ["/usr/local/bin/e2e-daemon"]
