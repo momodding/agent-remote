@@ -1,0 +1,30 @@
+Android rootful KVM mapping and next-boundary evidence
+Captured UTC: 2026-10-05T03:07:03Z
+Source commit before this runtime attempt: 66a66c7
+
+Rootful preflight command:
+bun -e "import { checkRootfulKvmMapping } from './e2e-lab/android/android-runner.ts'; console.log(JSON.stringify(checkRootfulKvmMapping()));"
+Result:
+{"status":"PASS","gid":994}
+
+Canonical launch:
+e2e-lab/scripts/run-android-emulator-only.sh
+Result:
+agenticremote-e2e-android-emulator-1 created and started by e2e-lab/scripts/compose.sh.
+
+Container runtime observation:
+ID=e9a5cdb3d96712aa8181d761b1949a179fede981453c24691007978f375b7486
+IMAGE=docker.io/budtmo/docker-android@sha256:7826cd345543736c9502293926f383af4ca9caf96bd47d12d15bce8d31fd9894
+ARGS=["-c","${APP_PATH}/mixins/scripts/run.sh"]
+USER=1300:1301
+DEVICES=[{"PathOnHost":"/dev/kvm","PathInContainer":"/dev/kvm","CgroupPermissions":""}]
+GROUP_ADD=["994"]
+container id: uid=1300(androidusr) gid=1301(androidusr) groups=1301(androidusr),994(994)
+container /dev/kvm: mode=660 owner=0 group=994 type=character special file
+emulator process: qemu-system-x86_64 ... -accel on ...
+
+Next actual boundary:
+e2e-lab/scripts/verify-android-emulator-only.sh exited 1 before ADB connect or boot polling:
+FAIL: adb is required on PATH.
+
+The configured canonical SDK binary exists at /home/momodding/android-sdk/platform-tools/adb, but verify-android-emulator-only.sh does not add that existing path. Therefore this is an Android harness PATH-resolution failure, not a KVM mapping, Android boot, system-ANR, pairing, or Golden Flow result. No Android UI flow, ADB operation, build, install, or Golden Flow was run after this failure.
