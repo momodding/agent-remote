@@ -14,6 +14,36 @@ export interface AndroidEnvironment {
   env: Record<string, string>;
 }
 
+export type AndroidAdbResolution =
+  | { ok: true; executable: string }
+  | { ok: false; searched: string[] };
+
+/**
+ * Resolve an executable from the existing host SDK without installing or downloading tooling.
+ * Configured SDK roots take precedence over the home-directory convention.
+ */
+export function resolveAndroidAdbExecutable(
+  environment: NodeJS.ProcessEnv = process.env,
+  isExecutable: (candidate: string) => boolean = (candidate) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+): AndroidAdbResolution {
+  const home = environment.HOME || environment.USERPROFILE || '/root';
+  const sdkRoots = [environment.ANDROID_HOME, environment.ANDROID_SDK_ROOT, path.join(home, 'android-sdk')]
+    .filter((root): root is string => typeof root === 'string' && root.length > 0);
+  const searched = [
+    ...sdkRoots.map((root) => path.join(root, 'platform-tools', 'adb')),
+    path.join(__dirname, '../.runtime/platform-tools/adb'),
+  ];
+  const executable = searched.find(isExecutable);
+  return executable ? { ok: true, executable } : { ok: false, searched };
+}
+
 /**
  * Assemble Android development environment with inherited SDK paths.
  * Ensures host ADB discovery via $HOME/android-sdk/platform-tools.

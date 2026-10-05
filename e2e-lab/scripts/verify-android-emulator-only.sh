@@ -15,26 +15,38 @@ run() { log "+ $*"; "$@" 2>&1 | tee -a "${EVIDENCE_FILE}"; return "${PIPESTATUS[
 preserve_logs() { "${SCRIPT_DIR}/compose.sh" logs android-emulator >>"${EVIDENCE_FILE}" 2>&1 || true; }
 trap 'status=$?; (( status )) && preserve_logs; exit "${status}"' EXIT
 
-command -v adb >/dev/null || { log 'FAIL: adb is required on PATH.'; exit 1; }
+adb_candidates=()
+[[ -n "${ANDROID_HOME:-}" ]] && adb_candidates+=("${ANDROID_HOME}/platform-tools/adb")
+[[ -n "${ANDROID_SDK_ROOT:-}" ]] && adb_candidates+=("${ANDROID_SDK_ROOT}/platform-tools/adb")
+adb_candidates+=("${HOME:-/root}/android-sdk/platform-tools/adb" "${LAB_DIR}/.runtime/platform-tools/adb")
+ADB=""
+for candidate in "${adb_candidates[@]}"; do
+  if [[ -x "${candidate}" ]]; then
+    ADB="${candidate}"
+    break
+  fi
+done
+[[ -n "${ADB}" ]] || { log "FAIL: existing Android SDK adb was not found. Searched: ${adb_candidates[*]}"; exit 1; }
+log "Using existing Android SDK adb: ${ADB}"
 run "${SCRIPT_DIR}/compose.sh" ps android-emulator
 "${SCRIPT_DIR}/compose.sh" ps --status running --services | grep -Fxq android-emulator || { log 'FAIL: android-emulator is not running.'; exit 1; }
 
-adb disconnect "${ADB_SERIAL}" >>"${EVIDENCE_FILE}" 2>&1 || true
-run adb connect "${ADB_SERIAL}"
+"${ADB}" disconnect "${ADB_SERIAL}" >>"${EVIDENCE_FILE}" 2>&1 || true
+run "${ADB}" connect "${ADB_SERIAL}"
 deadline=$((SECONDS + TIMEOUT))
 while :; do
-  state="$(adb -s "${ADB_SERIAL}" get-state 2>&1 || true)"
-  log "+ adb -s ${ADB_SERIAL} get-state: ${state}"
+  state="$("${ADB}" -s "${ADB_SERIAL}" get-state 2>&1 || true)"
+  log "+ ${ADB} -s ${ADB_SERIAL} get-state: ${state}"
   [[ "${state}" == device ]] && break
   (( SECONDS < deadline )) || { log "FAIL: adb never reached device state within ${TIMEOUT}s."; exit 1; }
   sleep 1
 done
 while :; do
-  boot_completed="$(adb -s "${ADB_SERIAL}" shell getprop sys.boot_completed 2>&1 || true)"
-  log "+ adb -s ${ADB_SERIAL} shell getprop sys.boot_completed: ${boot_completed}"
+  boot_completed="$("${ADB}" -s "${ADB_SERIAL}" shell getprop sys.boot_completed 2>&1 || true)"
+  log "+ ${ADB} -s ${ADB_SERIAL} shell getprop sys.boot_completed: ${boot_completed}"
   [[ "${boot_completed}" == 1 ]] && break
   (( SECONDS < deadline )) || { log "FAIL: Android never booted within ${TIMEOUT}s."; exit 1; }
   sleep 1
 done
-run adb -s "${ADB_SERIAL}" shell pm list packages
+run "${ADB}" -s "${ADB_SERIAL}" shell pm list packages
 log "PASS: android-emulator booted and ADB package listing succeeded on ${ADB_SERIAL}."

@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { getAndroidEnvironment } from './env';
+import { getAndroidEnvironment, resolveAndroidAdbExecutable } from './env';
 
 const LAB_DIR = path.resolve(__dirname, '..');
 const ROOT = path.resolve(__dirname, '../..');
@@ -578,10 +578,10 @@ function copyAPKToHost(containerAPKPath: string): { ok: boolean; hostPath?: stri
 /**
  * Connect host ADB and return device serial.
  */
-function hostADBConnect(): { ok: boolean; serial?: string; error?: string } {
+function hostADBConnect(adbExecutable: string): { ok: boolean; serial?: string; error?: string } {
   try {
-    console.log(`[Android] Connecting ADB...`);
-    const proc = spawnSync('adb', ['connect', '127.0.0.1:5555'], {
+    console.log(`[Android] Connecting ADB via ${adbExecutable}...`);
+    const proc = spawnSync(adbExecutable, ['connect', '127.0.0.1:5555'], {
       encoding: 'utf8',
       stdio: 'pipe',
       timeout: 15_000,
@@ -602,10 +602,10 @@ function hostADBConnect(): { ok: boolean; serial?: string; error?: string } {
 /**
  * Install APK on device via ADB.
  */
-function installAPKOnDevice(serial: string, apkPath: string): { ok: boolean; error?: string } {
+function installAPKOnDevice(adbExecutable: string, serial: string, apkPath: string): { ok: boolean; error?: string } {
   try {
     console.log(`[Android] Installing APK on device ${serial}...`);
-    const proc = spawnSync('adb', ['-s', serial, 'install', '-r', apkPath], {
+    const proc = spawnSync(adbExecutable, ['-s', serial, 'install', '-r', apkPath], {
       encoding: 'utf8',
       stdio: 'pipe',
       timeout: 60_000,
@@ -701,6 +701,18 @@ export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
       writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
       return report;
     }
+
+    const adbResolution = resolveAndroidAdbExecutable();
+    if (!adbResolution.ok) {
+      report.status = 'BLOCKED';
+      report.details = `BLOCKED_ADB_UNAVAILABLE: Existing Android SDK ADB was not found. Searched: ${adbResolution.searched.join(', ')}`;
+      report.blockers.push(report.details);
+      report.remediationSteps.push('Expose an existing Android SDK platform-tools/adb through ANDROID_HOME, ANDROID_SDK_ROOT, or $HOME/android-sdk; do not install a second SDK.');
+      writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
+      return report;
+    }
+    const adbExecutable = adbResolution.executable;
+    console.log(`[Android] Using existing Android SDK ADB: ${adbExecutable}`);
 
     // 2. Query the canonical rootful Podman storage context before Android starts.
     console.log(`[Android] Checking rootful Podman storage...`);
@@ -826,7 +838,7 @@ export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
 
     // 10. Connect ADB
     console.log(`[Android] Connecting ADB...`);
-    const adbResult = hostADBConnect();
+    const adbResult = hostADBConnect(adbExecutable);
     if (!adbResult.ok) {
       report.status = 'FAILED';
       report.details = adbResult.error || 'ADB connection failed';
@@ -838,7 +850,7 @@ export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
 
     // 11. Install APK
     console.log(`[Android] Installing APK...`);
-    const installResult = installAPKOnDevice(adbResult.serial!, copyResult.hostPath!);
+    const installResult = installAPKOnDevice(adbExecutable, adbResult.serial!, copyResult.hostPath!);
     if (!installResult.ok) {
       report.status = 'FAILED';
       report.details = installResult.error || 'APK install failed';
