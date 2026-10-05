@@ -38,10 +38,15 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
         markerOutputSeen: false,
       },
     };
+    const persistProvenance = () => {
+      mkdirSync(resolve(provenancePath, '..'), { recursive: true });
+      writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
+    };
+    persistProvenance();
+
     let terminalSocket: WebSocket | undefined;
     let sentInput = '';
-    let resolveOutput: ((output: string) => void) | undefined;
-    const markerOutput = new Promise<string>((resolve) => { resolveOutput = resolve; });
+    let receivedOutput = '';
 
     page.on('websocket', (socket) => {
       if (!socket.url().includes('/v1/ws/sessions/')) return;
@@ -50,12 +55,14 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
       terminalSocket = socket;
       provenance.terminal.sessionId = sessionId;
       provenance.terminal.webSocketPath = url.pathname;
+      persistProvenance();
       socket.on('framesent', ({ payload }) => {
         try {
           const frame = JSON.parse(payload.toString());
           if (frame.type === 'pty.input' && typeof frame.data === 'string') {
             provenance.terminal.inputFrames += 1;
             sentInput += Buffer.from(frame.data, 'base64').toString('utf8');
+            persistProvenance();
           }
         } catch {
           // Ignore non-terminal WebSocket frames.
@@ -68,10 +75,9 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
             provenance.terminal.outputFrames += 1;
             if (frame.type === 'pty.baseline') provenance.terminal.initialBaselineSeen = true;
             const output = Buffer.from(frame.data, 'base64').toString('utf8');
-            if (output.includes(marker)) {
-              provenance.terminal.markerOutputSeen = true;
-              resolveOutput?.(output);
-            }
+            receivedOutput += output;
+            if (output.includes(marker)) provenance.terminal.markerOutputSeen = true;
+            persistProvenance();
           }
         } catch {
           // Ignore non-terminal WebSocket frames.
@@ -98,11 +104,10 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
 
       await expect.poll(() => terminalSocket, { timeout: 10000 }).toBeTruthy();
       await expect.poll(() => sentInput.includes(command) && /\r?\n?$/.test(sentInput), { timeout: 10000 }).toBeTruthy();
-      await expect(await markerOutput).toContain(marker);
+      await expect.poll(() => receivedOutput.includes(marker), { timeout: 30000 }).toBeTruthy();
     } finally {
       provenance.finishedAt = new Date().toISOString();
-      mkdirSync(resolve(provenancePath, '..'), { recursive: true });
-      writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
+      persistProvenance();
     }
   });
 });
