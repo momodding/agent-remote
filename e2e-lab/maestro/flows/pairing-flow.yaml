@@ -1,6 +1,5 @@
 # Supply a fresh v2 payload in safe transport-sized chunks (170 chars maximum).
-# The caller must enable “Skip fingerprint verification” in the visible switch
-# before running this flow; it is required for the emulator's self-signed daemon.
+# The flow enables the visible fingerprint switch; no preference is pre-seeded.
 appId: com.paperplain.agenticremote
 ---
 - launchApp
@@ -18,7 +17,15 @@ appId: com.paperplain.agenticremote
 - inputText: ${PAIRING_PAYLOAD_CHUNK_2}
 
 - assertVisible:
-    text: Skip fingerprint verification
+    id: skip-fingerprint-verification
+    checked: false
+
+- tapOn:
+    id: skip-fingerprint-verification
+
+- assertVisible:
+    id: skip-fingerprint-verification
+    checked: true
 
 - tapOn:
     text: Connect

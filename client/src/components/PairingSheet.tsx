@@ -165,7 +165,7 @@ export function PairingSheet({ visible, onDismiss, onConnect }: Props) {
             </View>
             <Text style={[styles.hint, { color: palette.textSecondary }]}>Give this device a name, then scan or paste the temporary pairing payload.</Text>
             <TextInput style={[styles.input, { color: palette.text, borderColor: palette.border }]} value={name} onChangeText={setName} placeholder="Device name" placeholderTextColor="#888" autoCapitalize="none" editable={!busy} />
-            <View style={styles.row}><Text style={[styles.label, { color: palette.text }]}>Skip fingerprint verification</Text><Switch value={skip} onValueChange={setSkip} disabled={busy} /></View>
+            <View style={styles.row}><Text style={[styles.label, { color: palette.text }]}>Skip fingerprint verification</Text><Switch testID="skip-fingerprint-verification" accessibilityLabel="Skip fingerprint verification" accessibilityState={{ checked: skip, disabled: busy }} value={skip} onValueChange={setSkip} disabled={busy} /></View>
             <Text style={[styles.warning, { color: palette.warning }]}>Expo Go cannot dynamically trust a self-signed daemon certificate. Direct LAN pairing must enable this option.</Text>
             {scan ? (
               <>
