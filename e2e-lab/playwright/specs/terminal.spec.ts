@@ -164,7 +164,9 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
       await page.goto('/');
       const dashboardTerminalRows = page.locator('[aria-label^="Open terminal"]');
       provenance.terminal.dashboardTerminalRowsAfterExit = await dashboardTerminalRows.count();
-      provenance.terminal.dashboardTerminalStatusAfterExit = await dashboardTerminalRows.first().innerText();
+      if (provenance.terminal.dashboardTerminalRowsAfterExit > 0) {
+        provenance.terminal.dashboardTerminalStatusAfterExit = await dashboardTerminalRows.first().innerText();
+      }
       persistProvenance();
       await expect(dashboardTerminalRows).toHaveCount(0, { timeout: 15000 });
       await page.reload();
