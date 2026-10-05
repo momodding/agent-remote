@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 const viewports = [
   { name: 'mobile', width: 390, height: 844 },
-  { name: 'tablet', width: 820, height: 1180 },
+  { name: 'tablet', width: 768, height: 1024 },
   { name: 'desktop', width: 1920, height: 1080 },
 ];
 
