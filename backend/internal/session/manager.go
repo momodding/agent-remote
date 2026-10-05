@@ -273,6 +273,40 @@ func (m *Manager) SetTmux(client *tmux.ControlClient) {
 		<-client.Lost()
 		m.markTmuxRuntimesLost()
 	}()
+	go m.watchTmuxPanes(client)
+}
+
+func (m *Manager) watchTmuxPanes(client *tmux.ControlClient) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-client.Lost():
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := client.RefreshTopology(ctx)
+			cancel()
+			if err == nil {
+				m.markMissingTmuxRuntimes()
+			}
+		}
+	}
+}
+
+func (m *Manager) markMissingTmuxRuntimes() {
+	m.mu.Lock()
+	runtimes := make([]*TerminalRuntime, 0, len(m.sessions))
+	for _, runtime := range m.sessions {
+		if backend, ok := runtime.backend.(*tmux.TmuxBackend); ok && !backend.Alive() {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	m.mu.Unlock()
+	for _, runtime := range runtimes {
+		_ = runtime.backend.Close()
+		m.markExited(runtime)
+	}
 }
 
 // markTmuxRuntimesLost exits every tmux-backed runtime after the control

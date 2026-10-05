@@ -820,6 +820,77 @@ func TestSessionWSTmuxInputProducesLiveOutput(t *testing.T) {
 	}
 }
 
+func TestSessionTmuxExitTransitionsAndRemovesWindow(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not found")
+	}
+	srv, _ := newBootstrapServer(t)
+	mgr, ok := srv.sessions.(*session.Manager)
+	if !ok {
+		t.Fatal("sessions is not *session.Manager")
+	}
+	client := tmux.NewControlClient(filepath.Join(t.TempDir(), "tmux"), tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	mgr.SetTmux(client)
+	summary, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "tmux-exit", Command: "sh", Backend: "tmux"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := make(chan protocol.SessionStateEnvelope, 1)
+	unsubscribe, err := mgr.Subscribe(summary.ID, func(_ protocol.PTYOutputEnvelope, state protocol.SessionStateEnvelope) {
+		if state.State == "exited" {
+			states <- state
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	if err := mgr.Input(summary.ID, []byte("exit\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case state := <-states:
+		if state.SessionID != summary.ID {
+			t.Fatalf("exited state session = %q, want %q", state.SessionID, summary.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tmux shell exit did not transition terminal state")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snapshot, err := srv.runtime.RuntimeSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, terminal := range snapshot.Terminals {
+			if terminal.ID == summary.ID && terminal.Exited {
+				goto persisted
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("exited terminal was not persisted to the runtime snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+persisted:
+	if err := client.RefreshTopology(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, window := range client.GetTopology().Windows {
+		if window.Name == summary.ID {
+			t.Fatalf("terminal window %q remains after shell exit", summary.ID)
+		}
+	}
+}
+
 func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
