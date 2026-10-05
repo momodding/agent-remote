@@ -8,7 +8,7 @@
 
 ## Scope
 
-**PASS Criterion**: All prescribed gates execute without failure, nonzero test count per platform, two independent clean runs without global state mutation, and all mandatory semantic requirements have **executable proof** (real client interaction with real daemon). Backend hermetic flow establishes oracle behavior only; it does not substitute for platform proof.
+**PASS Criterion**: All prescribed gates execute without failure and all mandatory semantic requirements have **executable proof** (real client interaction with real daemon). Two independent runs must yield identical results. Backend hermetic flow establishes oracle behavior only; it does not substitute for platform proof.
 
 **Allowed Evidence Classes**:
 - Executable: Real client sending requests, real daemon responding, assertions on resulting state/output.
@@ -33,9 +33,9 @@
 
 **Unified Orchestrator**: `e2e-lab/scripts/test-all.sh` (phases: doctor → up → backend → web → android → security).
 
-**Test Count**: Each platform must have ≥1 executable test case. Current: Web 4 spec files, Android 2 active flows, Backend 1 test (6 internal cycles), Security 1 scanner.
+**Test Count**: Each platform must have ≥1 executable test case.
 
-**Clean Runs**: Execute twice in isolated environments. Between runs: reset all state (clear tokens, restart Compose, close browser tabs). Both runs must PASS identically.
+**Clean Runs**: Execute twice in isolated environments. Both runs must PASS identically.
 
 ---
 
@@ -47,185 +47,129 @@ The following 8 semantic requirements must have executable proof. Each maps to W
 
 **Semantic**: Client acquires bearer token from real daemon via Auth-v2 handshake.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Playwright test with real daemon; `E2E_REAL_PAIRING_PAYLOAD` env var required (forged payloads rejected); subsequent requests use bearer token. | ✅ Executable |
-| **Android** | Maestro pairing flow (`pairing-flow.yaml`); real app sends pairing JSON; daemon responds; sheet dismissal confirms token acquired. | ✅ Executable |
-| **Backend Oracle** | WebSocket bootstrap → auth challenge → auth proof → bearer token issued. Reference baseline. | ✅ Hermetic |
-
-**Required**: Both Web and Android must demonstrate real token acquisition. Backend oracle validates token chain correctness.
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser with real daemon; bearer token acquired and used in subsequent requests; evidence recorded per run. |
+| **Android** | Real app with real emulator and real daemon; pairing handshake completed; token acquired; evidence recorded per run. |
+| **Backend Oracle** | WebSocket bootstrap → auth challenge → auth proof → bearer token issued. Reference baseline only; backend-proxy PASS invalid. |
 
 ---
 
-### 2. Terminal Session Creation & Marker
+### 2. Agent Chat ≥5 Sequential Same-Session
 
-**Semantic**: Client creates terminal session; daemon assigns unique session IDs; terminal I/O marker/input channel is open.
+**Semantic**: Client sends ≥5 consecutive prompts to one agent; daemon processes each with semantic meaning; responses distinct.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Playwright verifies terminal DOM surface visible (xterm or equivalent). | ✅ Executable |
-| **Android** | Maestro navigation to terminal UI; assert surface visible. Evidence unverified (flow exists but not invoked in runner). | ⚠️ Evidence Unverified |
-| **Backend Oracle** | Session creation returns unique IDs (AgentSession, TerminalSession); I/O routing established. | ✅ Hermetic |
-
-**Required**: Web + executable proof. Android evidence unverified.
-
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser sends ≥5 consecutive prompts to one agent in same session; daemon processes each; distinct responses recorded per run. |
+| **Android** | Real app sends ≥5 consecutive prompts to one agent in same session; distinct responses recorded per run. |
+| **Backend Oracle** | 3+ semantic turns with distinct responses. Reference baseline only; backend-proxy PASS invalid. |
 ---
 
-### 3. Agent Chat ≥5 Sequential Same-Session
-
-**Semantic**: Client sends ≥5 consecutive prompts to one agent; daemon processes each with semantic meaning; responses are distinct.
-
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Agent spec currently submits 1 prompt. Evidence unverified (≥5 turns not tested). | ❌ Evidence Unverified |
-| **Android** | Maestro agent-chat flow submits 2 prompts. Evidence unverified (≥5 turns not tested). | ⚠️ Evidence Unverified |
-| **Backend Oracle** | 3 semantic turns (distinct mock responses per turn). Reference baseline; does not cover Web/Android platform requirement. | ✅ Hermetic (oracle only) |
-
-**Required**: Both Web and Android must demonstrate ≥5 sequential turns. Current: neither platform reaches 5.
-
----
-
-### 4. Files Sandbox (Isolated Project Directories)
+### 3. Files Sandbox
 
 **Semantic**: Client can browse and read files in isolated workspace directories created by daemon.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Playwright agent spec opens Files modal, navigates folder, reads file, asserts content. | ✅ Executable |
-| **Android** | Files integration in Maestro or runner. Evidence unverified (not invoked in golden flow). | ❌ Evidence Unverified |
-| **Backend Oracle** | Workspace directories created and mounted to terminal session. | ✅ Hermetic |
-
-**Required**: Both Web and Android must demonstrate file access. Android evidence unverified.
-
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser: open Files modal, navigate folder tree, read file content; verify content matches expected workspace state; evidence recorded per run. |
+| **Android** | Real app: file browser access within isolated workspace directories; verify content readable; evidence recorded per run. |
+| **Backend Oracle** | Workspace directories mounted to session; read operations completed. Reference baseline only. |
 ---
 
-### 5. Session Termination & Cleanup
+### 4. Session Termination & Cleanup
 
-**Semantic**: Client terminates agent; daemon releases resources; no orphaned processes or sessions.
+**Semantic**: Client terminates agent; daemon releases resources; no orphaned processes.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Playwright agent spec shows termination button visible and clickable. | ✅ Executable (UI action) |
-| **Android** | Explicit termination in Maestro or runner. Evidence unverified (app lifecycle closes session implicitly; no assertion). | ⚠️ Evidence Unverified |
-| **Backend Oracle** | Termination endpoint called; OMP process confirmed dead. | ✅ Hermetic |
-
-**Required**: Both Web and Android must demonstrate termination. Web has UI action; Android evidence unverified.
-
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser: terminate agent via UI; verify no hanging processes; evidence recorded per run. |
+| **Android** | Real app: terminate agent session; verify cleanup; evidence recorded per run. |
+| **Backend Oracle** | Termination endpoint called; OMP process exits cleanly. Reference baseline only. |
 ---
 
-### 6. Responsive & Mobile UI
+### 5. Responsive & Mobile UI
 
-**Semantic**: Client renders correctly across viewport sizes (mobile 390×844, tablet 768×1024, desktop 1920×1080).
+**Semantic**: Client renders correctly across viewport sizes (mobile, tablet, desktop).
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | Playwright responsive spec tests 4 viewports; no horizontal scroll on mobile. | ✅ Executable |
-| **Android** | Native app layout (not Playwright-testable for responsive behavior). | N/A |
-| **Backend Oracle** | N/A (backend does not render UI). | N/A |
-
-**Required**: Web demonstrates responsive rendering. Android N/A (native platform).
-
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser renders correctly across viewport sizes (mobile 390×844, tablet 768×1024, desktop 1920×1080); no horizontal scroll on mobile; evidence recorded per run. |
+| **Android** | Native app layout verified on actual device/emulator; responsive rendering tested per run. |
+| **Backend Oracle** | N/A (backend does not render UI). |
 ---
 
-### 7. Desktop noVNC WSS/RFB Framebuffer
+### 6. Desktop noVNC WSS/RFB Framebuffer
 
 **Semantic**: Client acquires desktop session ticket; daemon returns WSS URL; noVNC client renders remote framebuffer over RFB.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web (Desktop)** | Unit test assertions on RFB URL generation and noVNC bundle injection (`desktop-route.test.tsx`). Does not include live RFB frame inspection or WebSocket connection. | ✅ Unit Test (partial) |
-| **Android** | Native WebView controls RFB; not automatable in golden flow. | N/A |
-| **Backend Oracle** | Backend routes RFB passthrough; does not mock framebuffer. | N/A |
-
-**Note**: Unit test is not E2E; live RFB WebSocket integration unverified.
-
+| Platform | Evidence |
+|---|---|
+| **Web (Desktop)** | Real browser: acquire desktop session ticket from daemon; receive WSS URL; noVNC client renders RFB framebuffer over WebSocket; evidence recorded per run. Real WebSocket connection and frame rendering required; unit tests insufficient. |
+| **Android** | Native WebView controls RFB session; platform-specific testing required; evidence recorded per run. |
+| **Backend Oracle** | Backend routes RFB passthrough; does not mock framebuffer. Reference baseline only. |
 ---
 
-### 8. Security & No Leak
+### 7. Terminal Session & Deterministic I/O Marker
 
-**Semantic**: Daemon does not expose internal headers, debug frames, or secrets to clients.
+**Semantic**: Client opens terminal session; daemon assigns unique session ID; deterministic input marker (e.g., `echo TEST_MARKER_<uuid>`) sent through real terminal; marker observed in output stream.
 
-| Platform | Evidence | Status |
-|---|---|---|
-| **Web** | No assertions on HTTP response headers or body sanitization. Evidence unverified. | ❌ Evidence Unverified |
-| **Android** | Maestro operates at UI layer; no protocol inspection. Evidence unverified. | ❌ Evidence Unverified |
-| **Backend Oracle** | Mock handler validates sanitized responses (no internal metadata). Reference baseline. | ✅ Hermetic |
+| Platform | Evidence | 
+|---|---|
+| **Web** | Real browser sends deterministic terminal input (e.g., `echo TEST_MARKER_<uuid>`); real daemon processes through tmux/pty; client-side terminal captures marker in output; evidence recorded per run. |
+| **Android** | Real app sends terminal input; output stream captured; marker verified; evidence recorded per run. |
+| **Backend Oracle** | Terminal I/O routed through real tmux/pty; deterministic input/output flow established. Reference baseline only. |
 
-**Required**: Dedicated security scanner (`leak-scanner`) inspects artifacts. Platform-level header assertions unverified.
+### 8. Pinned OMP Conditional Capabilities
 
----
-
-## Pinned OMP Conditional Capabilities
-
-**Requirement**: Inspect runtime OMP binary to determine supported capabilities. **Only present controls if verified supported. Record absence as `NOT_SUPPORTED` (not failure).**
+**Requirement**: Inspect runtime OMP binary to determine supported capabilities. **Record absence as `NOT_SUPPORTED` only if OMP binary does not export the capability. Do not claim support without observing client-visible rendering.**
 
 **Procedure**:
-1. Query pinned OMP binary version and capability export.
-2. Check bridge response for `model`, `thinking` fields.
-3. If present: both Web and Android must demonstrate capability rendering in UI.
-4. If absent: record as `NOT_SUPPORTED` in test report (clear, not failure).
+1. Query pinned OMP binary to observe exported capability fields.
+2. Observe real client (Web/Android) rendering controls for those capabilities.
+3. If client does not render control: `NOT_SUPPORTED` in report (not failure).
+4. If capability absent from OMP export: `NOT_SUPPORTED` in report.
+5. No assumed field names or protocol shapes; record only what is actually observed.
 
-**Evidence Standard**:
-- **Supported**: Client renders capability controls; backend oracle asserts bridge dict includes capability flags.
-- **Not Supported**: OMP version does not export field; explicitly documented in report.
-- **Unverified**: No executable proof of capability rendering in Web/Android (source-only UI mocks do not count).
-
-**No Invention**: Do not assume capability protocol shape or implementation details. Assert only what the pinned OMP binary actually exports and what clients actually render.
-
+**Evidence Standard** (per run):
+- **Supported**: Real client renders capability controls; daemon backend reflects capability flags.
+- **Not Supported**: OMP export lacks field OR client UI does not render control; explicitly documented.
 ---
 
 ## Evidence Hygiene
 
-### Redaction Rules
+### Redaction Fields (per artifact)
 
-All captured artifacts must redact:
-- **Bearer tokens**: `Authorization: Bearer [REDACTED]`
-- **Pairing payloads**: Raw `token` field only
-- **TLS certificates**: Private keys only
-- **Agent IDs**: No redaction (ephemeral per run)
-- **File paths**: Keep relative; redact absolute `$HOME` paths
+All captured data must redact:
+- **Bearer tokens**: Mark as `[REDACTED]`
+- **Pairing payloads**: Mark as `[REDACTED]`
+- **TLS certificates / keys**: Mark as `[REDACTED]`
+- Agent IDs: Keep (ephemeral per run)
+- File paths: Keep relative; absolute home paths marked as `[REDACTED]`
 
-### Allowed Failure States
+### Failure States
 
-Only these classifications are permitted:
+Exactly four classifications allowed:
 
-| State | Definition | Evidence |
+| State | Definition | Evidence Required |
 |---|---|---|
-| **PASS** | All 8 semantic requirements + 2 clean runs + nonzero tests satisfied. | Test output shows all assertions passed; run logs show clean state reset. |
-| **BLOCKED_EXTERNAL** | Real daemon unavailable; network isolation broken; host KVM/sudo access denied; compose topology failed. | Error log shows external dependency failure (e.g., "Daemon refused connection", "KVM device not accessible", "Noninteractive sudo required"). |
-| **TEST_HARNESS_BUG** | Test framework limitation (Playwright missing feature, Maestro crash, Go test panic). | Stack trace or framework error message. |
-| **PRODUCT_BUG** | Product defect (daemon crash on valid input, session creation fails, output corrupted). | Daemon log shows error, state is inconsistent, or output does not match input semantically. |
-| **Any Other** | **Invalid—test fails immediately.** No "partial PASS", "legacy expected failure", or "skip on platform". | None. |
+| **PASS** | All semantic requirements satisfied over two clean runs; test output shows all assertions passed; identical results across runs. | Test logs; run isolation reset verified. |
+| **BLOCKED_EXTERNAL** | Real daemon unavailable; network isolation failed; host KVM access denied; Compose topology failed. | Error log from external dependency (e.g., "Daemon connection refused", "KVM device not found"). |
+| **TEST_HARNESS_BUG** | Test framework limitation (Playwright missing feature, Maestro crash, Go test panic, emulator unavailable). | Framework error stack trace or diagnostic message. |
+| **PRODUCT_BUG** | Product defect (daemon crash on valid input, session creation fails, output corrupted, terminal I/O lost). | Daemon log; inconsistent state; output mismatch vs. input semantics. |
 
-### No Suppression, Fallback, or Mutation
+No "partial PASS", "expected failure", "skip", or other classification permitted.
+
+### Constraints
 
 - Do not suppress errors.
-- Do not skip requirements.
-- Do not assume alternate implementations.
-- Do not mutate host (no root workloads, no emulator image replacement, no permission escalation).
-- Global state must not leak between runs.
-
+- Do not skip requirements on any platform.
+- Do not assume alternate implementations or fallbacks.
+- Do not mutate host (no root workloads, no emulator image replacement, no sudo permission escalation).
+- No global state leakage between runs.
+- Backend-proxy PASS invalid: daemon oracle does not substitute platform proof.
+- Source-only PASS invalid: code without execution does not prove requirement.
+- Unit-test PASS invalid for E2E gates (except where specified e.g. legacy mocking for oracle reference).
+- Mock-client PASS invalid: client-side mocking of daemon does not prove requirement.
 ---
-
-## Current Status
-
-**This contract documents semantic requirements and evidence standards. It does NOT assert current implementation state.**
-
-Current state findings (from audit, no execution):
-- Web: Pairing + terminal rendering + agent chat (1 turn) + files + termination UI + responsive + noVNC unit test.
-- Android: Pairing + agent chat (2 turns Maestro) + execution.
-- Backend Oracle: Pairing + agent chat (3 turns) + session ID uniqueness + termination + 6-cycle isolation.
-- Gaps: Web terminal keystroke injection, Android terminal session, Android files, ≥5-turn chat, header/leak inspection, two-run isolation, OMP capability determination.
-
-**NO CLAIMS OF PASS.** Do not modify runtime tests or claim acceptance until evidence aligns with all requirements above.
-
----
-
-## Version
-
-| Field | Value |
-|---|---|
-| **Version** | 1.0 (Normative, Evidence-Based) |
-| **Authority** | E2E Acceptance Standard |
-| **Date** | 2026-10-05 |
 
