@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { getAndroidEnvironment, checkKVMAccess } from './env';
+import { getAndroidEnvironment } from './env';
 
 const LAB_DIR = path.resolve(__dirname, '..');
 const ROOT = path.resolve(__dirname, '../..');
@@ -172,15 +172,80 @@ export function checkAndroidStorage(
   }
 }
 
+export const ROOTFUL_KVM_SMOKE_TIMEOUT_MS = 30_000;
+const KVM_PERMISSION_EXIT = 42;
+const KVM_SMOKE_SCRIPT = `test "$(id -un)" = androidusr || exit 41
+test -c /dev/kvm || exit 40
+test -r /dev/kvm && test -w /dev/kvm || exit ${KVM_PERMISSION_EXIT}
+python3 -c 'import os; fd = os.open("/dev/kvm", os.O_RDWR); os.close(fd)' || exit ${KVM_PERMISSION_EXIT}`;
+
+export type RootfulKvmPreflight =
+  | { status: 'PASS'; gid: number }
+  | { status: 'KVM_DEVICE_MISSING'; error: string }
+  | { status: 'ROOTFUL_PODMAN_AUTH_UNAVAILABLE'; error: string }
+  | { status: 'ROOTFUL_KVM_MAPPING_FAILED'; error: string }
+  | { status: 'ROOTFUL_KVM_PERMISSION_FAILED'; error: string };
+
+interface KvmDeviceStat {
+  gid: number;
+  isCharacterDevice(): boolean;
+}
+
+interface RootfulKvmPreflightDependencies {
+  stat(device: string): KvmDeviceStat;
+  rootfulPodman(command: string, args: string[], timeoutMs: number): AndroidStorageCommandResult;
+  composeProbe(args: string[], timeoutMs: number): AndroidStorageCommandResult;
+}
+
+function commandFailure(result: AndroidStorageCommandResult): string {
+  return [result.error?.message, result.stderr, result.stdout, result.status === null ? 'no exit status' : `exit ${result.status}`]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /**
- * Pure evaluation of a KVM access check result into the runner's blocking decision.
- * Exported as a test seam: proves the KVM short-circuit fires before Compose starts
- * without needing to actually start or poll Compose.
+ * The smoke probe uses `compose run` so its device and dynamic group_add
+ * configuration are exactly the android-emulator service configuration.
  */
-export function evaluateKvmPreflight(kvmCheck: { ok: boolean; error?: string }): { blocked: boolean; details: string } {
-  return kvmCheck.ok
-    ? { blocked: false, details: '' }
-    : { blocked: true, details: kvmCheck.error || 'KVM not available' };
+export function rootfulAndroidComposeProbeArgs(): string[] {
+  return ['run', '--rm', '--no-deps', '--entrypoint', 'bash', 'android-emulator', '-lc', KVM_SMOKE_SCRIPT];
+}
+
+export function checkRootfulKvmMapping(
+  dependencies: RootfulKvmPreflightDependencies = {
+    stat: (device) => fs.statSync(device),
+    rootfulPodman: rootfulCommand,
+    composeProbe: (args, timeoutMs) => spawnSync(COMPOSE_SCRIPT, args, {
+      encoding: 'utf8', stdio: 'pipe', timeout: timeoutMs,
+    }),
+  },
+  device = '/dev/kvm',
+  executable = process.env.E2E_PODMAN_BIN || DEFAULT_E2E_PODMAN_BIN,
+): RootfulKvmPreflight {
+  let stat: KvmDeviceStat;
+  try {
+    stat = dependencies.stat(device);
+  } catch (err: unknown) {
+    return { status: 'KVM_DEVICE_MISSING', error: `${device} is unavailable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!stat.isCharacterDevice()) {
+    return { status: 'KVM_DEVICE_MISSING', error: `${device} is not a character device` };
+  }
+  if (!Number.isInteger(stat.gid) || stat.gid < 0) {
+    return { status: 'ROOTFUL_KVM_MAPPING_FAILED', error: `${device} has no numeric group gid` };
+  }
+
+  const auth = dependencies.rootfulPodman(executable, ['info', '--format', '{{json .}}'], PODMAN_INFO_PREFLIGHT_TIMEOUT_MS);
+  if (auth.status !== 0) {
+    return { status: 'ROOTFUL_PODMAN_AUTH_UNAVAILABLE', error: `Rootful Podman authorization failed: ${commandFailure(auth)}` };
+  }
+
+  const probe = dependencies.composeProbe(rootfulAndroidComposeProbeArgs(), ROOTFUL_KVM_SMOKE_TIMEOUT_MS);
+  if (probe.status === 0) return { status: 'PASS', gid: stat.gid };
+  if (probe.status === KVM_PERMISSION_EXIT) {
+    return { status: 'ROOTFUL_KVM_PERMISSION_FAILED', error: `androidusr cannot read/write ${device}: ${commandFailure(probe)}` };
+  }
+  return { status: 'ROOTFUL_KVM_MAPPING_FAILED', error: `Rootful Android KVM mapping probe failed: ${commandFailure(probe)}` };
 }
 
 interface ComposeService {
@@ -657,18 +722,23 @@ export async function runAndroidVerification(): Promise<AndroidRunnerReport> {
     }
     console.log(`[Android] Storage PASS: ${storageCheck.context.availableBytes} available bytes at ${storageCheck.context.graphRoot}; ${storageCheck.context.requiredBytes} required.`);
 
-    // 2. KVM check: evaluated via a pure helper (evaluateKvmPreflight) so the
-    // short-circuit-before-Compose behavior is independently regression-tested.
-    console.log(`[Android] Checking KVM access...`);
-    const kvmPreflight = evaluateKvmPreflight(checkKVMAccess());
-    if (kvmPreflight.blocked) {
+    // 3. KVM must be tested through the exact rootful Compose service mapping.
+    // Host-user access is intentionally not a gate: rootful Podman owns the device mapping.
+    console.log(`[Android] Checking rootful Android KVM mapping...`);
+    const kvmPreflight = checkRootfulKvmMapping();
+    if (kvmPreflight.status !== 'PASS') {
       report.status = 'BLOCKED';
-      report.details = kvmPreflight.details;
-      report.blockers.push('KVM_UNAVAILABLE');
-      report.remediationSteps.push('Enable nested virtualization, grant the running user access to /dev/kvm (e.g. kvm group membership or a logind-granted ACL), or run on a system with KVM support.');
+      report.details = `${kvmPreflight.status}: ${kvmPreflight.error}`;
+      report.blockers.push(kvmPreflight.status);
+      report.remediationSteps.push(
+        kvmPreflight.status === 'KVM_DEVICE_MISSING'
+          ? 'Provide a host /dev/kvm character device to the rootful E2E environment.'
+          : 'Repair the rootful Podman Android device mapping; do not change host-user KVM permissions.'
+      );
       writeArtifact('android-verification.json', JSON.stringify(report, null, 2));
       return report;
     }
+    console.log(`[Android] Rootful Android KVM mapping PASS (gid ${kvmPreflight.gid}).`);
 
     // 3. Prepare temporary source (entire client tree)
     console.log(`[Android] Preparing temporary source...`);

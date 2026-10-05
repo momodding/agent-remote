@@ -1,29 +1,57 @@
-import { evaluateKvmPreflight } from './android-runner';
+import { checkRootfulKvmMapping, rootfulAndroidComposeProbeArgs } from './android-runner';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function testKvmAccessibleDoesNotBlock(): void {
-  const result = evaluateKvmPreflight({ ok: true });
-  assert(result.blocked === false, 'accessible KVM must not block the harness');
+const characterDevice = { gid: 1234, isCharacterDevice: () => true };
+const base = (overrides: Partial<Parameters<typeof checkRootfulKvmMapping>[0]> = {}) => ({
+  stat: () => characterDevice,
+  rootfulPodman: () => ({ status: 0, stdout: '{}', stderr: '' }),
+  composeProbe: () => ({ status: 0, stdout: '', stderr: '' }),
+  ...overrides,
+});
+
+function testADeviceMissing(): void {
+  const result = checkRootfulKvmMapping(base({ stat: () => { throw new Error('ENOENT'); } }));
+  assert(result.status === 'KVM_DEVICE_MISSING', 'missing /dev/kvm must have its own classification');
 }
 
-function testKvmInaccessibleBlocksWithDetails(): void {
-  const result = evaluateKvmPreflight({ ok: false, error: '/dev/kvm not accessible. BLOCKED_EXTERNAL: Enable via rootful Podman or contact host administrator for KVM ACL adjustment.' });
-  assert(result.blocked === true, 'inaccessible KVM must block before Compose starts (regression for the inverted !kvmCheck guard)');
-  assert(result.details.includes('/dev/kvm not accessible'), 'blocked result must surface the underlying KVM error for diagnosis');
+function testBDeviceMustBeCharacterDevice(): void {
+  const result = checkRootfulKvmMapping(base({ stat: () => ({ gid: 1234, isCharacterDevice: () => false }) }));
+  assert(result.status === 'KVM_DEVICE_MISSING', 'a non-character /dev/kvm path must block');
 }
 
-function testKvmInaccessibleWithoutErrorStillBlocks(): void {
-  const result = evaluateKvmPreflight({ ok: false });
-  assert(result.blocked === true, 'inaccessible KVM must block even if no error string is provided');
-  assert(result.details.length > 0, 'blocked result must always carry a non-empty details message');
+function testCRootfulAuthorization(): void {
+  const result = checkRootfulKvmMapping(base({ rootfulPodman: () => ({ status: 1, stdout: '', stderr: 'sudo: a password is required' }) }));
+  assert(result.status === 'ROOTFUL_PODMAN_AUTH_UNAVAILABLE', 'rootful authorization failure must not become a host-user KVM failure');
+}
+
+function testDMappingFailure(): void {
+  const result = checkRootfulKvmMapping(base({ composeProbe: () => ({ status: 125, stdout: '', stderr: 'device setup failed' }) }));
+  assert(result.status === 'ROOTFUL_KVM_MAPPING_FAILED', 'Compose/device setup failure must retain the mapping classification');
+}
+
+function testEPermissionFailure(): void {
+  const result = checkRootfulKvmMapping(base({ composeProbe: () => ({ status: 42, stdout: '', stderr: 'Permission denied' }) }));
+  assert(result.status === 'ROOTFUL_KVM_PERMISSION_FAILED', 'androidusr KVM denial must retain the permission classification');
+}
+
+function testFExactComposeServiceProbe(): void {
+  const args = rootfulAndroidComposeProbeArgs();
+  assert(args.slice(0, 5).join(' ') === 'run --rm --no-deps --entrypoint bash', 'probe must use Compose run rather than an alternate container configuration');
+  assert(args.includes('android-emulator'), 'probe must use the real android-emulator service');
+  assert(args.at(-1)?.includes('id -un)" = androidusr'), 'probe must verify the normal androidusr identity');
+  const result = checkRootfulKvmMapping(base());
+  assert(result.status === 'PASS' && result.gid === 1234, 'successful rootful service probe must pass with detected numeric gid');
 }
 
 if (import.meta.main) {
-  testKvmAccessibleDoesNotBlock();
-  testKvmInaccessibleBlocksWithDetails();
-  testKvmInaccessibleWithoutErrorStillBlocks();
-  console.log('PASS: Android KVM preflight short-circuit checks');
+  testADeviceMissing();
+  testBDeviceMustBeCharacterDevice();
+  testCRootfulAuthorization();
+  testDMappingFailure();
+  testEPermissionFailure();
+  testFExactComposeServiceProbe();
+  console.log('PASS: rootful Android KVM mapping preflight checks A-F');
 }

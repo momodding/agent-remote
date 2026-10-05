@@ -162,13 +162,14 @@ class Emulator(Device):
             self._use_override_config()
             self.logger.info(f"{self.device_type} is created!")
 
-    def change_permission(self) -> None:
+    def check_kvm_access(self) -> None:
+        """Confirm the normal emulator identity can open the mapped KVM device."""
         kvm_path = "/dev/kvm"
         if not os.path.exists(kvm_path):
             raise RuntimeError("/dev/kvm cannot be found!")
         try:
             os.close(os.open(kvm_path, os.O_RDWR))
-            self.logger.info("KVM already accessible; skipping chown (rootless container).")
+            self.logger.info("KVM access confirmed for the emulator runtime identity.")
         except OSError as e:
             raise RuntimeError(f"/dev/kvm not accessible: {e}")
 
@@ -185,7 +186,7 @@ class Emulator(Device):
 
     def start(self) -> None:
         super().start()
-        self.change_permission()
+        self.check_kvm_access()
         self.deploy()
 
     def check_adb_command(self, readiness_check_type: ReadinessCheck, bash_command: str,
