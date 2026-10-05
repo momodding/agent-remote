@@ -36,6 +36,8 @@ type ControlClient struct {
 	lostOnce         sync.Once
 }
 
+const privateSessionName = "agenticremote"
+
 // NewControlClient creates a client for private socket
 func NewControlClient(stateDir, tmuxPath string) *ControlClient {
 	socketPath := filepath.Join(stateDir, "tmux.sock")
@@ -85,7 +87,7 @@ func (c *ControlClient) Start(ctx context.Context) error {
 	// anchor session so the private server survives control-client reconnects.
 	probe := exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "has-session")
 	if err := probe.Run(); err != nil {
-		anchor := exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "new-session", "-d", "-s", "agenticremote")
+		anchor := exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "new-session", "-d", "-s", privateSessionName)
 		if output, createErr := anchor.CombinedOutput(); createErr != nil {
 			return fmt.Errorf("start private tmux server: %w: %s", createErr, strings.TrimSpace(string(output)))
 		}
@@ -104,7 +106,7 @@ func (c *ControlClient) Start(ctx context.Context) error {
 	}
 	c.serverID = c.socketPath + ":" + generation
 
-	c.cmd = exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "-C")
+	c.cmd = exec.CommandContext(ctx, c.tmuxPath, "-S", c.socketPath, "-C", "attach-session", "-t", privateSessionName)
 
 	stdout, err := c.cmd.StdoutPipe()
 	if err != nil {
@@ -453,9 +455,10 @@ func (c *ControlClient) SubscribeNotifications() (<-chan NotificationEvent, func
 	return ch, unsubscribe
 }
 
-// CreatePane starts one terminal command in its own persistent tmux session.
+// CreatePane starts one terminal command in its own window of the private
+// control client's session so pane output is delivered on that control client.
 func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command string, args []string, cwd string, cols, rows int) (*TmuxBackend, error) {
-	words := []string{"new-session", "-d", "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows), "-s", sessionName, "-c", cwd, command}
+	words := []string{"new-window", "-d", "-t", privateSessionName, "-n", sessionName, "-c", cwd, command}
 	words = append(words, args...)
 	for i, word := range words {
 		words[i] = strconv.Quote(word)
@@ -477,25 +480,31 @@ func (c *ControlClient) CreatePane(ctx context.Context, sessionName, command str
 	}
 	topology := c.GetTopology()
 	for _, session := range topology.Sessions {
-		if session.Name != sessionName || len(session.Windows) == 0 {
+		if session.Name != privateSessionName {
 			continue
 		}
-		window := topology.Windows[session.Windows[0]]
-		if window == nil || len(window.Panes) == 0 {
-			continue
-		}
-		pane := topology.Panes[window.Panes[0]]
-		if pane != nil {
+		for _, windowID := range session.Windows {
+			window := topology.Windows[windowID]
+			if window == nil || window.Name != sessionName || len(window.Panes) == 0 {
+				continue
+			}
+			pane := topology.Panes[window.Panes[0]]
+			if pane == nil {
+				continue
+			}
+			if err := c.ResizePane(ctx, pane.PaneID, cols, rows); err != nil {
+				return nil, err
+			}
 			backend := NewTmuxBackend(c, pane.PaneID, pane.SessionID, pane.WindowID)
 			ch := c.BeginPaneCapture(pane.PaneID)
 			if err := c.captureBaselineAndAttach(ctx, pane.PaneID, backend, ch); err != nil {
-				backend.Close()
+				_ = backend.Close()
 				return nil, err
 			}
 			return backend, nil
 		}
 	}
-	return nil, fmt.Errorf("tmux did not create session %q", sessionName)
+	return nil, fmt.Errorf("tmux did not create terminal window %q", sessionName)
 }
 
 // captureBaselineAndAttach atomically snapshots history and activates the

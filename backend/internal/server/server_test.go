@@ -755,6 +755,71 @@ func TestSessionWSAcceptsPTYAfterToken(t *testing.T) {
 	t.Fatal(ctx.Err())
 }
 
+func TestSessionWSTmuxInputProducesLiveOutput(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not found")
+	}
+	srv, pairings := newBootstrapServer(t)
+	mgr, ok := srv.sessions.(*session.Manager)
+	if !ok {
+		t.Fatal("sessions is not *session.Manager")
+	}
+	tmuxStateDir := filepath.Join(t.TempDir(), "tmux")
+	client := tmux.NewControlClient(tmuxStateDir, tmuxPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	mgr.SetTmux(client)
+
+	summary, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "tmux-live-output", Command: "sh", Backend: "tmux"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	conn, _, err := websocket.Dial(ctx, ts.URL+"/v1/ws/sessions/"+summary.ID, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := wsWriteJSON(ctx, conn, protocol.AuthToken{Type: "auth.token", Token: testBearerToken(t, srv, pairings)}); err != nil {
+		t.Fatal(err)
+	}
+	var baseline protocol.PTYOutputEnvelope
+	if err := wsReadJSON(ctx, conn, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Type != "pty.baseline" {
+		t.Fatalf("expected baseline, got %+v", baseline)
+	}
+	const marker = "__AGENT_REMOTE_TERM_INTEGRATION__"
+	if err := wsWriteJSON(ctx, conn, protocol.PTYInputEnvelope{Type: "pty.input", SessionID: summary.ID, Data: base64.StdEncoding.EncodeToString([]byte("printf '" + marker + "\\n'\r"))}); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	for {
+		var output protocol.PTYOutputEnvelope
+		if err := wsReadJSON(readCtx, conn, &output); err != nil {
+			t.Fatalf("read terminal output: %v", err)
+		}
+		if output.Type != "pty.output" {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(output.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), marker) {
+			return
+		}
+	}
+}
+
 func TestSessionWSReconnectSeedsNoisyShellBaseline(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	summary, err := srv.sessions.Create(context.Background(), protocol.CreateSessionRequest{
@@ -2098,6 +2163,14 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 	}
 	defer client.Close()
 	mgr.SetTmux(client)
+	terminalWindowExists := func(name string) bool {
+		for _, window := range client.GetTopology().Windows {
+			if window.Name == name {
+				return true
+			}
+		}
+		return false
+	}
 
 	// 1. Create a tmux-backed raw terminal session to test REST POST /v1/sessions/:id/close
 	s1, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "raw-tmux-rest", Command: "sh", Args: []string{"-c", "sleep 100"}, Backend: "tmux"})
@@ -2105,18 +2178,12 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 		t.Fatalf("create s1: %v", err)
 	}
 
-	// Verify s1 is in tmux server topology
+	// Verify s1 is in the private tmux workspace topology.
 	if err := client.RefreshTopology(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var s1Found bool
-	for _, s := range client.GetTopology().Sessions {
-		if s.Name == s1.ID {
-			s1Found = true
-		}
-	}
-	if !s1Found {
-		t.Fatalf("session %s not found in tmux topology before close", s1.ID)
+	if !terminalWindowExists(s1.ID) {
+		t.Fatalf("terminal window %s not found in tmux topology before close", s1.ID)
 	}
 
 	// Hit REST POST /v1/sessions/:id/close
@@ -2128,14 +2195,12 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 		t.Fatalf("expected 200 on /close, got %d: %s", resp.Code, resp.Body.String())
 	}
 
-	// Verify s1 is KILLED in tmux server topology
+	// Verify s1's terminal window is killed in tmux server topology.
 	if err := client.RefreshTopology(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range client.GetTopology().Sessions {
-		if s.Name == s1.ID {
-			t.Fatalf("session %s still exists in tmux server after REST /close (should be killed)", s1.ID)
-		}
+	if terminalWindowExists(s1.ID) {
+		t.Fatalf("terminal window %s still exists in tmux after REST /close", s1.ID)
 	}
 
 	// 2. Create another tmux-backed raw terminal session to test WS terminal.close
@@ -2144,18 +2209,12 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 		t.Fatalf("create s2: %v", err)
 	}
 
-	// Verify s2 is in tmux server topology
+	// Verify s2 is in the private tmux workspace topology.
 	if err := client.RefreshTopology(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var s2Found bool
-	for _, s := range client.GetTopology().Sessions {
-		if s.Name == s2.ID {
-			s2Found = true
-		}
-	}
-	if !s2Found {
-		t.Fatalf("session %s not found in tmux topology before close", s2.ID)
+	if !terminalWindowExists(s2.ID) {
+		t.Fatalf("terminal window %s not found in tmux topology before close", s2.ID)
 	}
 
 	// Execute WS terminal.close
@@ -2173,13 +2232,11 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 		t.Fatalf("expected successful WS result, got %+v", wsResults)
 	}
 
-	// Verify s2 is KILLED in tmux server topology
+	// Verify s2's terminal window is killed in tmux server topology.
 	if err := client.RefreshTopology(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range client.GetTopology().Sessions {
-		if s.Name == s2.ID {
-			t.Fatalf("session %s still exists in tmux server after WS terminal.close (should be killed)", s2.ID)
-		}
+	if terminalWindowExists(s2.ID) {
+		t.Fatalf("terminal window %s still exists in tmux after WS terminal.close", s2.ID)
 	}
 }

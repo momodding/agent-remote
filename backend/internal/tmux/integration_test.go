@@ -61,29 +61,26 @@ func TestRealTmuxControlMode(t *testing.T) {
 	topology = svc.GetTopology()
 	sessionID := ""
 	for sid, info := range topology.Sessions {
-		if info.Name == "test-agent" {
+		if info.Name == privateSessionName {
 			sessionID = sid
 			break
 		}
 	}
-
 	if sessionID == "" {
-		t.Fatal("new session not found in topology")
+		t.Fatal("private tmux session not found in topology")
 	}
 
-	t.Logf("created session %s", sessionID)
-
-	// Find the pane
 	var paneID string
-	for pid, pane := range topology.Panes {
-		if pane.SessionID == sessionID {
-			paneID = pid
-			break
+	for _, windowID := range topology.Sessions[sessionID].Windows {
+		window := topology.Windows[windowID]
+		if window == nil || window.Name != "test-agent" || len(window.Panes) == 0 {
+			continue
 		}
+		paneID = window.Panes[0]
+		break
 	}
-
 	if paneID == "" {
-		t.Fatal("no pane found in new session")
+		t.Fatal("no pane found in terminal window")
 	}
 
 	t.Logf("pane %s: TTY=%s Width=%d Height=%d", paneID, topology.Panes[paneID].TTY, topology.Panes[paneID].Width, topology.Panes[paneID].Height)
@@ -375,7 +372,7 @@ func TestSameSocketGenerationRegression(t *testing.T) {
 	}
 }
 
-func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
+func TestRealTmuxTerminateKillsWindowVsCloseDetaches(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Skip("tmux binary not found in PATH, skipping real tmux integration test")
@@ -406,17 +403,18 @@ func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
 		t.Fatalf("refresh topology failed: %v", err)
 	}
 	topo := svc.GetTopology()
-	var detachFound, termFound bool
-	for _, s := range topo.Sessions {
-		if s.Name == "session-detach" {
-			detachFound = true
+	windowExists := func(paneID string) bool {
+		for _, window := range topo.Windows {
+			for _, id := range window.Panes {
+				if id == paneID {
+					return true
+				}
+			}
 		}
-		if s.Name == "session-term" {
-			termFound = true
-		}
+		return false
 	}
-	if !detachFound || !termFound {
-		t.Fatalf("expected both sessions created, detach=%v term=%v", detachFound, termFound)
+	if !windowExists(backendDetach.GetPaneID()) || !windowExists(backendTerm.GetPaneID()) {
+		t.Fatal("expected both terminal windows created")
 	}
 
 	// Close backendDetach (presentation detach)
@@ -427,19 +425,13 @@ func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
 		t.Fatalf("expected backendDetach.Alive() == false after Close()")
 	}
 
-	// Tmux server still has session-detach
+	// Tmux server still has the detached terminal window.
 	if err := svc.RefreshTopology(ctx); err != nil {
 		t.Fatalf("refresh topology failed: %v", err)
 	}
 	topo = svc.GetTopology()
-	detachFound = false
-	for _, s := range topo.Sessions {
-		if s.Name == "session-detach" {
-			detachFound = true
-		}
-	}
-	if !detachFound {
-		t.Fatalf("session-detach should still exist in tmux after Close()")
+	if !windowExists(backendDetach.GetPaneID()) {
+		t.Fatalf("terminal window should still exist in tmux after Close()")
 	}
 
 	// Terminate backendTerm (explicit kill)
@@ -450,16 +442,10 @@ func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
 		t.Fatalf("expected backendTerm.Alive() == false after Terminate()")
 	}
 
-	// Tmux server must NOT have session-term
+	// Tmux server must NOT have the terminated terminal window.
 	topo = svc.GetTopology()
-	termFound = false
-	for _, s := range topo.Sessions {
-		if s.Name == "session-term" {
-			termFound = true
-		}
-	}
-	if termFound {
-		t.Fatalf("session-term should be killed and gone from tmux after Terminate()")
+	if windowExists(backendTerm.GetPaneID()) {
+		t.Fatalf("terminal window should be killed and gone from tmux after Terminate()")
 	}
 
 	// Now Terminate backendDetach to clean it up too
@@ -467,13 +453,7 @@ func TestRealTmuxTerminateKillsSessionVsCloseDetaches(t *testing.T) {
 		t.Fatalf("Terminate backendDetach failed: %v", err)
 	}
 	topo = svc.GetTopology()
-	detachFound = false
-	for _, s := range topo.Sessions {
-		if s.Name == "session-detach" {
-			detachFound = true
-		}
-	}
-	if detachFound {
-		t.Fatalf("session-detach should be killed and gone after Terminate()")
+	if windowExists(backendDetach.GetPaneID()) {
+		t.Fatalf("terminal window should be killed and gone after Terminate()")
 	}
 }

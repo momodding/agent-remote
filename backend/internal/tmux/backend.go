@@ -171,19 +171,13 @@ func (b *TmuxBackend) Terminate(ctx context.Context) error {
 		close(b.done)
 	}
 	client := b.client
-	sessionID := b.sessionID
 	paneID := b.paneID
 	b.mu.Unlock()
 
-	if client == nil {
+	if client == nil || paneID == "" {
 		return nil
 	}
-	var killErr error
-	if sessionID != "" {
-		killErr = client.KillSession(ctx, sessionID)
-	} else if paneID != "" {
-		killErr = client.KillPane(ctx, paneID)
-	}
+	killErr := client.KillPane(ctx, paneID)
 	_ = client.RefreshTopology(ctx)
 	return killErr
 }

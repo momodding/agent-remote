@@ -935,18 +935,20 @@ func (s *Server) handlePTYWS(ctx context.Context, conn *websocket.Conn, sessionI
 		if err := wsReadJSON(ctx, conn, &frame); err != nil {
 			return
 		}
-		switch frame["type"] {
+		frameType, _ := frame["type"].(string)
+		switch frameType {
 		case "pty.input":
 			var env protocol.PTYInputEnvelope
-			if err := mapToStruct(frame, &env); err == nil {
-				data, err := base64.StdEncoding.DecodeString(env.Data)
-				if err != nil {
-					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
-					continue
-				}
-				if err := s.sessions.Input(sessionID, data); err != nil {
-					_ = write(protocol.ErrorEnvelope{Type: "error", Code: "session_not_running", Message: err.Error()})
-				}
+			if err := mapToStruct(frame, &env); err != nil {
+				continue
+			}
+			data, err := base64.StdEncoding.DecodeString(env.Data)
+			if err != nil {
+				_ = write(protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "invalid pty input data"})
+				continue
+			}
+			if err := s.sessions.Input(sessionID, data); err != nil {
+				_ = write(protocol.ErrorEnvelope{Type: "error", Code: "session_not_running", Message: err.Error()})
 			}
 		case "pty.resize":
 			var env protocol.PTYResizeEnvelope
@@ -1306,7 +1308,7 @@ func (s *Server) handleRuntimeWS(w http.ResponseWriter, r *http.Request) {
 
 func isAgentEventKind(kind string) bool {
 	switch kind {
-case "message.user", "message.assistant", "message.fileMention", "message.thinking", "tool.call", "tool.result", "state", "activity.turn.started", "activity.tool.started", "activity.tool.completed", "activity.tool.failed", "activity.approval.requested", "activity.approval.resolved":
+	case "message.user", "message.assistant", "message.fileMention", "message.thinking", "tool.call", "tool.result", "state", "activity.turn.started", "activity.tool.started", "activity.tool.completed", "activity.tool.failed", "activity.approval.requested", "activity.approval.resolved":
 		return true
 	default:
 		return false
