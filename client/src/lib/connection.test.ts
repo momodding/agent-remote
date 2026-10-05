@@ -47,15 +47,20 @@ describe('connection storage', () => {
     const { loadConnections, saveConnection } = loadModule();
     await expect(saveConnection(first)).resolves.toEqual({ connections: [first] });
     await expect(loadConnections()).resolves.toEqual({ connections: [first] });
-    if (platform === 'web') expect(mockAsyncStorage.getItem).toHaveBeenCalledTimes(2);
-    else expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(2);
+    if (platform === 'web') {
+      expect(mockAsyncStorage.getItem).toHaveBeenCalledTimes(2);
+      expect(stored).not.toContain(first.token);
+    } else {
+      expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(2);
+      expect(stored).toContain(first.token);
+    }
   });
 
-  it('migrates the legacy single connection and derives its name', async () => {
+  it('purges legacy plaintext web token persistence and requires a new pairing', async () => {
     const legacy = { ...first, hostId: 'legacy-host' } as Partial<Connection>; delete legacy.name; stored = JSON.stringify(legacy);
     const { loadConnections } = loadModule();
-    const expected = { connections: [{ ...first, hostId: 'legacy-host', name: 'daemon.example:8765' }] };
-    await expect(loadConnections()).resolves.toEqual(expected); expect(stored).toBe(JSON.stringify(expected));
+    await expect(loadConnections()).resolves.toEqual(empty);
+    expect(stored).toBe(JSON.stringify(empty));
   });
 
   it('upserts a normalized endpoint with one write', async () => {
@@ -72,24 +77,24 @@ describe('connection storage', () => {
   });
 
   it('rejects changing a connection to an owned hostId', async () => {
-    stored = JSON.stringify({ connections: [first, second] });
+    mockPlatform = 'ios'; stored = JSON.stringify({ connections: [first, second] });
     await expect(loadModule().updateConnection(first.hostId, { ...first, hostId: second.hostId })).rejects.toThrow('already exists');
   });
 
   it('deletes a connection while leaving the others untouched', async () => {
-    stored = JSON.stringify({ connections: [first, second] });
+    mockPlatform = 'ios'; stored = JSON.stringify({ connections: [first, second] });
     await expect(loadModule().deleteConnection(second.hostId)).resolves.toEqual({ connections: [first] });
   });
 
   it('returns an empty store after deleting the last connection', async () => {
-    stored = JSON.stringify({ connections: [first] });
+    mockPlatform = 'ios'; stored = JSON.stringify({ connections: [first] });
     await expect(loadModule().deleteConnection(first.hostId)).resolves.toEqual(empty);
   });
 
   it('drops a legacy selectedHostId field from persisted storage on load', async () => {
-    stored = JSON.stringify({ connections: [first], selectedHostId: first.hostId });
+    mockPlatform = 'ios'; stored = JSON.stringify({ connections: [first], selectedHostId: first.hostId });
     await expect(loadModule().loadConnections()).resolves.toEqual({ connections: [first] });
-    expect(mockAsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    expect(mockSecureStore.setItemAsync).toHaveBeenCalledTimes(1);
   });
 
   it.each(['{malformed', JSON.stringify({ connections: [{}] })])('removes malformed storage', async (value) => {

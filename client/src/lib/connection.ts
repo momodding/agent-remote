@@ -4,6 +4,8 @@ import { Platform } from 'react-native';
 
 const CONNECTION_KEY = 'agenticremote.connection';
 
+const webSessionTokens = new Map<string, string>();
+
 export type Connection = {
   name: string;
   endpoint: string;
@@ -49,12 +51,12 @@ function normalizeHostId(value: unknown): string {
   return trimmed;
 }
 
-function normalizeConnection(value: unknown, legacy = false): Connection {
+function normalizeConnection(value: unknown, legacy = false, allowMissingToken = false): Connection {
   if (!value || typeof value !== 'object') throw new Error('Invalid daemon connection');
   const input = value as Record<string, unknown>;
   const endpoint = normalizeEndpoint(input.endpoint);
   const token = typeof input.token === 'string' ? input.token.trim() : '';
-  if (!token) throw new Error('Session token is required');
+  if (!token && !allowMissingToken) throw new Error('Session token is required');
   if (typeof input.fingerprint !== 'string') throw new Error('Fingerprint must be a string');
   const skipFingerprintVerification = legacy && input.skipFingerprintVerification === undefined ? false : input.skipFingerprintVerification;
   if (typeof skipFingerprintVerification !== 'boolean') throw new Error('Skip fingerprint verification must be a boolean');
@@ -69,11 +71,11 @@ function normalizeConnection(value: unknown, legacy = false): Connection {
   };
 }
 
-function normalizeStore(value: unknown): ConnectionStore {
+function normalizeStore(value: unknown, allowMissingToken = false): ConnectionStore {
   if (!value || typeof value !== 'object') throw new Error('Invalid daemon connection store');
   const input = value as Record<string, unknown>;
   if (!Array.isArray(input.connections)) throw new Error('Invalid daemon connection store');
-  const connections = input.connections.map((connection) => normalizeConnection(connection));
+  const connections = input.connections.map((connection) => normalizeConnection(connection, false, allowMissingToken));
   if (new Set(connections.map(({ endpoint }) => endpoint)).size !== connections.length) throw new Error('Duplicate daemon endpoint');
   if (new Set(connections.map(({ hostId }) => hostId)).size !== connections.length) throw new Error('Duplicate daemon host');
   return { connections };
@@ -100,6 +102,11 @@ async function removeConnectionValue(): Promise<void> {
   await SecureStore.deleteItemAsync(CONNECTION_KEY);
 }
 
+function persistedStore(store: ConnectionStore): ConnectionStore {
+  if (Platform.OS !== 'web') return store;
+  return { connections: store.connections.map(({ token: _token, ...connection }) => ({ ...connection, token: '' })) };
+}
+
 async function readConnections(persistRepair: boolean): Promise<ConnectionStore> {
   const raw = await getConnectionValue();
   if (!raw) return emptyStore();
@@ -107,16 +114,23 @@ async function readConnections(persistRepair: boolean): Promise<ConnectionStore>
   let store: ConnectionStore;
   try {
     parsed = JSON.parse(raw) as unknown;
+    const allowMissingToken = Platform.OS === 'web';
     if (parsed && typeof parsed === 'object' && !Array.isArray((parsed as Record<string, unknown>).connections)) {
-      store = { connections: [normalizeConnection(parsed, true)] };
+      store = { connections: [normalizeConnection(parsed, true, allowMissingToken)] };
     } else {
-      store = normalizeStore(parsed);
+      store = normalizeStore(parsed, allowMissingToken);
+    }
+    if (Platform.OS === 'web') {
+      store = { connections: store.connections.flatMap((connection) => {
+        const token = webSessionTokens.get(connection.hostId);
+        return token ? [{ ...connection, token }] : [];
+      }) };
     }
   } catch {
     if (persistRepair) await removeConnectionValue();
     return emptyStore();
   }
-  if (persistRepair && JSON.stringify(store) !== JSON.stringify(parsed)) await setConnectionValue(JSON.stringify(store));
+  if (persistRepair && JSON.stringify(persistedStore(store)) !== JSON.stringify(parsed)) await setConnectionValue(JSON.stringify(persistedStore(store)));
   return store;
 }
 
@@ -132,10 +146,11 @@ export function getConnection(store: ConnectionStore, hostId: string | null): Co
 export async function saveConnection(connection: Connection): Promise<ConnectionStore> {
   const store = await readConnections(false);
   const replacement = normalizeConnection(connection);
+  if (Platform.OS === 'web') webSessionTokens.set(replacement.hostId, replacement.token);
   const index = store.connections.findIndex(({ hostId }) => hostId === replacement.hostId);
   if (index < 0) store.connections.push(replacement);
   else store.connections[index] = replacement;
-  await setConnectionValue(JSON.stringify(store));
+  await setConnectionValue(JSON.stringify(persistedStore(store)));
   return store;
 }
 
@@ -145,8 +160,12 @@ export async function updateConnection(originalHostId: string, replacement: Conn
   if (index < 0) throw new Error('Daemon connection not found');
   const normalized = normalizeConnection(replacement);
   if (store.connections.some(({ hostId }, candidate) => candidate !== index && hostId === normalized.hostId)) throw new Error('A daemon with this host already exists');
+  if (Platform.OS === 'web') {
+    webSessionTokens.delete(originalHostId);
+    webSessionTokens.set(normalized.hostId, normalized.token);
+  }
   store.connections[index] = normalized;
-  await setConnectionValue(JSON.stringify(store));
+  await setConnectionValue(JSON.stringify(persistedStore(store)));
   return store;
 }
 
@@ -155,6 +174,7 @@ export async function deleteConnection(hostId: string): Promise<ConnectionStore>
   const index = store.connections.findIndex((connection) => connection.hostId === hostId);
   if (index < 0) throw new Error('Daemon connection not found');
   store.connections.splice(index, 1);
-  await setConnectionValue(JSON.stringify(store));
+  if (Platform.OS === 'web') webSessionTokens.delete(hostId);
+  await setConnectionValue(JSON.stringify(persistedStore(store)));
   return store;
 }
