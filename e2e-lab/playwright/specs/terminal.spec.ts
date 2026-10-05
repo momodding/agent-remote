@@ -13,7 +13,7 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
     const provenancePath = resolve(process.cwd(), 'artifacts/terminal-marker-provenance.json');
     let daemonImage = '';
     try {
-      daemonImage = execFileSync(resolve(process.cwd(), 'scripts/compose.sh'), ['images', '--format', '{{.Repository}}:{{.Tag}} {{.ID}}', 'daemon'], { encoding: 'utf8' }).trim();
+      daemonImage = execFileSync(resolve(process.cwd(), 'scripts/compose.sh'), ['images', '--format', 'json', 'daemon'], { encoding: 'utf8' }).trim();
     } catch {
       // Preserve the regression result even when image inspection is unavailable.
     }
