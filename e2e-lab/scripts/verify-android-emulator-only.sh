@@ -15,18 +15,8 @@ run() { log "+ $*"; "$@" 2>&1 | tee -a "${EVIDENCE_FILE}"; return "${PIPESTATUS[
 preserve_logs() { "${SCRIPT_DIR}/compose.sh" logs android-emulator >>"${EVIDENCE_FILE}" 2>&1 || true; }
 trap 'status=$?; (( status )) && preserve_logs; exit "${status}"' EXIT
 
-adb_candidates=()
-[[ -n "${ANDROID_HOME:-}" ]] && adb_candidates+=("${ANDROID_HOME}/platform-tools/adb")
-[[ -n "${ANDROID_SDK_ROOT:-}" ]] && adb_candidates+=("${ANDROID_SDK_ROOT}/platform-tools/adb")
-adb_candidates+=("${HOME:-/root}/android-sdk/platform-tools/adb" "${LAB_DIR}/.runtime/platform-tools/adb")
-ADB=""
-for candidate in "${adb_candidates[@]}"; do
-  if [[ -x "${candidate}" ]]; then
-    ADB="${candidate}"
-    break
-  fi
-done
-[[ -n "${ADB}" ]] || { log "FAIL: existing Android SDK adb was not found. Searched: ${adb_candidates[*]}"; exit 1; }
+source "${SCRIPT_DIR}/lib/android-diagnostic.sh"
+ADB="$(resolve_existing_android_adb)" || { log "FAIL: existing Android SDK adb was not found."; exit 1; }
 log "Using existing Android SDK adb: ${ADB}"
 run "${SCRIPT_DIR}/compose.sh" ps android-emulator
 "${SCRIPT_DIR}/compose.sh" ps --status running --services | grep -Fxq android-emulator || { log 'FAIL: android-emulator is not running.'; exit 1; }

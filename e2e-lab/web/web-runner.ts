@@ -266,7 +266,7 @@ async function main() {
   console.log('=== Web Runner Execution ===');
   const report = await runPlaywrightTests();
   console.log(JSON.stringify(report, null, 2));
-  if (report.status === 'FAIL') {
+  if (report.status !== 'PASS') {
     process.exit(1);
   }
 }
