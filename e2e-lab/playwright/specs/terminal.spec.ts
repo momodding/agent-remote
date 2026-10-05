@@ -43,6 +43,9 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
         outputFrames: 0,
         initialBaselineSeen: false,
         markerOutputSeen: false,
+        webSocketClosed: false,
+        dashboardTerminalRowsAfterExit: -1,
+        dashboardTerminalStatusAfterExit: '',
       },
     };
     const persistProvenance = () => {
@@ -52,6 +55,7 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
     persistProvenance();
 
     let terminalSocket: WebSocket | undefined;
+    let terminalSocketClosed = false;
     let sentInput = '';
     let receivedOutput = '';
 
@@ -63,6 +67,9 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
       provenance.terminal.sessionId = sessionId;
       provenance.terminal.webSocketPath = url.pathname;
       persistProvenance();
+      socket.on('close', () => {
+        terminalSocketClosed = true;
+      });
       socket.on('framesent', ({ payload }) => {
         try {
           const frame = JSON.parse(payload.toString());
@@ -113,6 +120,56 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
       await expect.poll(() => sentInput.includes(command) && /\r?\n?$/.test(sentInput), { timeout: 10000 }).toBeTruthy();
       await expect.poll(() => receivedOutput.includes(marker), { timeout: 30000 }).toBeTruthy();
       await expect(xtermSurface).toContainText(marker, { timeout: 10000 });
+
+      const pwdMarker = `E2E_PWD_${Date.now()}`;
+      await xtermInput.pressSequentially(`pwd; printf '%s\\n' '${pwdMarker}'`);
+      await xtermInput.press('Enter');
+      await expect.poll(() => receivedOutput.includes(pwdMarker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(pwdMarker, { timeout: 10000 });
+
+      const lsMarker = `E2E_LS_${Date.now()}`;
+      await xtermInput.pressSequentially(`ls; printf '%s\\n' '${lsMarker}'`);
+      await xtermInput.press('Enter');
+      await expect.poll(() => receivedOutput.includes(lsMarker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(lsMarker, { timeout: 10000 });
+
+      const backspaceMarker = `E2E_BACKSPACE_${Date.now()}`;
+      await xtermInput.pressSequentially(`printf '%s\\n' '${backspaceMarker}x`);
+      await xtermInput.press('Backspace');
+      await xtermInput.pressSequentially("'");
+      await xtermInput.press('Enter');
+      await expect.poll(() => receivedOutput.includes(backspaceMarker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(backspaceMarker, { timeout: 10000 });
+
+      const unicodeMarker = `E2E_UNICODE_こんにちは_${Date.now()}`;
+      const unicodeEscapes = [...Buffer.from(`${unicodeMarker}\n`)].map((byte) => `\\${byte.toString(8).padStart(3, '0')}`).join('');
+      await xtermInput.pressSequentially(`printf '${unicodeEscapes}'`);
+      await xtermInput.press('Enter');
+      await expect.poll(() => receivedOutput.includes(unicodeMarker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(unicodeMarker, { timeout: 10000 });
+
+      const interruptMarker = `E2E_INTERRUPT_${Date.now()}`;
+      await xtermInput.pressSequentially('sleep 30');
+      await xtermInput.press('Control+C');
+      await xtermInput.pressSequentially(`printf '%s\\n' '${interruptMarker}'`);
+      await xtermInput.press('Enter');
+      await expect.poll(() => sentInput.includes('\u0003'), { timeout: 10000 }).toBeTruthy();
+      await expect.poll(() => receivedOutput.includes(interruptMarker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(interruptMarker, { timeout: 10000 });
+
+      await xtermInput.pressSequentially('exit');
+      await xtermInput.press('Enter');
+      await expect.poll(() => terminalSocketClosed, { timeout: 30000 }).toBeTruthy();
+      provenance.terminal.webSocketClosed = terminalSocketClosed;
+      await page.goto('/');
+      const dashboardTerminalRows = page.locator('[aria-label^="Open terminal"]');
+      provenance.terminal.dashboardTerminalRowsAfterExit = await dashboardTerminalRows.count();
+      provenance.terminal.dashboardTerminalStatusAfterExit = await dashboardTerminalRows.first().innerText();
+      persistProvenance();
+      await expect(dashboardTerminalRows).toHaveCount(0, { timeout: 15000 });
+      await page.reload();
+      await ensurePaired(page);
+      await expect(page.locator('[aria-label^="Open terminal"]')).toHaveCount(0, { timeout: 15000 });
     } finally {
       provenance.finishedAt = new Date().toISOString();
       persistProvenance();
