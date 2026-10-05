@@ -105,6 +105,7 @@ test.describe('Web Terminal & Real Daemon Session Flow', () => {
       await expect.poll(() => terminalSocket, { timeout: 10000 }).toBeTruthy();
       await expect.poll(() => sentInput.includes(command) && /\r?\n?$/.test(sentInput), { timeout: 10000 }).toBeTruthy();
       await expect.poll(() => receivedOutput.includes(marker), { timeout: 30000 }).toBeTruthy();
+      await expect(xtermSurface).toContainText(marker, { timeout: 10000 });
     } finally {
       provenance.finishedAt = new Date().toISOString();
       persistProvenance();
