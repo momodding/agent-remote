@@ -1,5 +1,5 @@
-import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 
 const MINIMUM_PAIRING_LIFETIME_MS = 15_000;
 const MAX_DAEMON_LOG_BYTES = 256 * 1024;
@@ -9,17 +9,26 @@ function currentAuthV2Payload(output: string): string {
     const candidate = line.trim();
     if (!candidate) continue;
 
-    const jsonStart = candidate.indexOf('{');
+    const jsonStart = candidate.indexOf("{");
     if (jsonStart === -1) continue;
 
     const rawPayload = candidate.slice(jsonStart);
     try {
       const payload: unknown = JSON.parse(rawPayload);
-      if (!payload || typeof payload !== 'object' || !('v' in payload) || !('expiresAt' in payload)) continue;
-      if (payload.v !== 2 || typeof payload.expiresAt !== 'string') continue;
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        !("v" in payload) ||
+        !("expiresAt" in payload)
+      )
+        continue;
+      if (payload.v !== 2 || typeof payload.expiresAt !== "string") continue;
 
       const expiresAt = Date.parse(payload.expiresAt);
-      if (Number.isFinite(expiresAt) && expiresAt - Date.now() >= MINIMUM_PAIRING_LIFETIME_MS) {
+      if (
+        Number.isFinite(expiresAt) &&
+        expiresAt - Date.now() >= MINIMUM_PAIRING_LIFETIME_MS
+      ) {
         return rawPayload;
       }
     } catch {
@@ -27,7 +36,7 @@ function currentAuthV2Payload(output: string): string {
     }
   }
 
-  return '';
+  return "";
 }
 
 /** Resolves a fresh Auth-v2 pairing payload without persisting or logging it. */
@@ -38,15 +47,19 @@ export function getRealPairingPayload(): string {
     if (currentPayload) return currentPayload;
   }
 
-  const composeScript = path.resolve(__dirname, '../scripts/compose.sh');
+  const composeScript = path.resolve(__dirname, "../scripts/compose.sh");
   for (let attempt = 0; attempt < 25; attempt++) {
     try {
-      const output = execFileSync(composeScript, ['logs', 'daemon'], {
-        encoding: 'utf-8',
-        timeout: 4_000,
-        maxBuffer: MAX_DAEMON_LOG_BYTES,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
+      const output = execFileSync(
+        composeScript,
+        ["logs", "--tail", "200", "daemon"],
+        {
+          encoding: "utf-8",
+          timeout: 4_000,
+          maxBuffer: MAX_DAEMON_LOG_BYTES,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
       const currentPayload = currentAuthV2Payload(output);
       if (currentPayload) return currentPayload;
     } catch {
@@ -55,12 +68,12 @@ export function getRealPairingPayload(): string {
 
     if (attempt < 24) {
       try {
-        execFileSync('sleep', ['3'], { stdio: 'ignore' });
+        execFileSync("sleep", ["3"], { stdio: "ignore" });
       } catch {
         break;
       }
     }
   }
 
-  return '';
+  return "";
 }
