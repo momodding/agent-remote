@@ -8,7 +8,7 @@
 
 ## Scope
 
-**PASS Criterion**: All prescribed gates execute without failure and all mandatory semantic requirements have **executable proof** (real client interaction with real daemon). Two independent runs must yield identical results. Backend hermetic flow establishes oracle behavior only; it does not substitute for platform proof.
+**PASS Criterion**: All prescribed gates must execute with ≥1 nonzero test case per platform and yield identical results across two independent clean runs. All mandatory semantic requirements have **executable proof** (real client interaction with real daemon). Backend hermetic flow establishes oracle baseline only; it does not substitute for platform proof.
 
 **Allowed Evidence Classes**:
 - Executable: Real client sending requests, real daemon responding, assertions on resulting state/output.
@@ -33,29 +33,39 @@
 
 **Unified Orchestrator**: `e2e-lab/scripts/test-all.sh` (phases: doctor → up → backend → web → android → security).
 
-**Test Count**: Each platform must have ≥1 executable test case.
-
-**Clean Runs**: Execute twice in isolated environments. Both runs must PASS identically.
+**Prescribed Gates Per-Run Test Requirement**: Web (≥1 executable case), Android (≥1 executable case), Backend (≥1 executable case), Security (≥1 scan). Each must execute twice in isolation and pass identically both times.
 
 ---
 
 ## Semantic Evidence Matrix
 
-The following 8 semantic requirements must have executable proof. Each maps to Web adapter, Android adapter, and backend oracle. Mark "evidence unverified" where proof is absent; do not fabricate or claim backend proxy suffices.
+The following exactly 8 semantic requirements must have executable proof. Each maps to Web adapter, Android adapter, and backend oracle reference. No addition or reordering.
 
-### 1. Pairing & Real Authentication
+### 1. Pairing & Reconnect
 
-**Semantic**: Client acquires bearer token from real daemon via Auth-v2 handshake.
+**Semantic**: Client acquires bearer token from real daemon via Auth-v2 handshake; subsequent requests use token; reconnect restores session.
 
 | Platform | Evidence |
 |---|---|
-| **Web** | Real browser with real daemon; bearer token acquired and used in subsequent requests; evidence recorded per run. |
-| **Android** | Real app with real emulator and real daemon; pairing handshake completed; token acquired; evidence recorded per run. |
-| **Backend Oracle** | WebSocket bootstrap → auth challenge → auth proof → bearer token issued. Reference baseline only; backend-proxy PASS invalid. |
+| **Web** | Real browser: complete Auth-v2 handshake; daemon issues bearer token; subsequent requests use token; session survives reconnect (close/reopen browser context); evidence recorded per run. |
+| **Android** | Real app: pairing handshake completed; token acquired; subsequent requests use token; reconnect verified; evidence recorded per run. |
+| **Backend Oracle** | WebSocket bootstrap → auth challenge → auth proof → bearer token issued; session state persisted; reference baseline only. |
 
 ---
 
-### 2. Agent Chat ≥5 Sequential Same-Session
+### 2. Terminal Creation & Deterministic I/O Marker
+
+**Semantic**: Client opens terminal session; daemon assigns unique session ID; deterministic input marker (e.g., `echo TEST_MARKER_<uuid>`) sent through real terminal; marker observed in output stream.
+
+| Platform | Evidence |
+|---|---|
+| **Web** | Real browser: open terminal session; send deterministic input (e.g., `echo TEST_MARKER_<uuid>`); daemon processes through real tmux/pty; client-side terminal captures marker in output; evidence recorded per run. |
+| **Android** | Real app: open terminal; send deterministic input; output stream captures marker; evidence recorded per run. |
+| **Backend Oracle** | Terminal I/O routed through real tmux/pty; deterministic input/output flow established; reference baseline only. |
+
+---
+
+### 3. Agent Chat ≥5 Same-Session Consecutive
 
 **Semantic**: Client sends ≥5 consecutive prompts to one agent; daemon processes each with semantic meaning; responses distinct.
 
@@ -63,21 +73,23 @@ The following 8 semantic requirements must have executable proof. Each maps to W
 |---|---|
 | **Web** | Real browser sends ≥5 consecutive prompts to one agent in same session; daemon processes each; distinct responses recorded per run. |
 | **Android** | Real app sends ≥5 consecutive prompts to one agent in same session; distinct responses recorded per run. |
-| **Backend Oracle** | 3+ semantic turns with distinct responses. Reference baseline only; backend-proxy PASS invalid. |
+| **Backend Oracle** | 3+ semantic turns with distinct responses; reference baseline only. |
+
 ---
 
-### 3. Files Sandbox
+### 4. Files Sandbox
 
 **Semantic**: Client can browse and read files in isolated workspace directories created by daemon.
 
 | Platform | Evidence |
 |---|---|
-| **Web** | Real browser: open Files modal, navigate folder tree, read file content; verify content matches expected workspace state; evidence recorded per run. |
+| **Web** | Real browser: open Files modal; navigate folder tree; read file content; verify content matches expected workspace state; evidence recorded per run. |
 | **Android** | Real app: file browser access within isolated workspace directories; verify content readable; evidence recorded per run. |
-| **Backend Oracle** | Workspace directories mounted to session; read operations completed. Reference baseline only. |
+| **Backend Oracle** | Workspace directories mounted to session; read operations completed; reference baseline only. |
+
 ---
 
-### 4. Session Termination & Cleanup
+### 5. Session Termination & Cleanup
 
 **Semantic**: Client terminates agent; daemon releases resources; no orphaned processes.
 
@@ -85,10 +97,11 @@ The following 8 semantic requirements must have executable proof. Each maps to W
 |---|---|
 | **Web** | Real browser: terminate agent via UI; verify no hanging processes; evidence recorded per run. |
 | **Android** | Real app: terminate agent session; verify cleanup; evidence recorded per run. |
-| **Backend Oracle** | Termination endpoint called; OMP process exits cleanly. Reference baseline only. |
+| **Backend Oracle** | Termination endpoint called; OMP process exits cleanly; reference baseline only. |
+
 ---
 
-### 5. Responsive & Mobile UI
+### 6. Responsive & Mobile UI
 
 **Semantic**: Client renders correctly across viewport sizes (mobile, tablet, desktop).
 
@@ -97,43 +110,50 @@ The following 8 semantic requirements must have executable proof. Each maps to W
 | **Web** | Real browser renders correctly across viewport sizes (mobile 390×844, tablet 768×1024, desktop 1920×1080); no horizontal scroll on mobile; evidence recorded per run. |
 | **Android** | Native app layout verified on actual device/emulator; responsive rendering tested per run. |
 | **Backend Oracle** | N/A (backend does not render UI). |
+
 ---
 
-### 6. Desktop noVNC WSS/RFB Framebuffer
+### 7. Desktop noVNC WSS/RFB Framebuffer
 
 **Semantic**: Client acquires desktop session ticket; daemon returns WSS URL; noVNC client renders remote framebuffer over RFB.
 
 | Platform | Evidence |
 |---|---|
-| **Web (Desktop)** | Real browser: acquire desktop session ticket from daemon; receive WSS URL; noVNC client renders RFB framebuffer over WebSocket; evidence recorded per run. Real WebSocket connection and frame rendering required; unit tests insufficient. |
+| **Web (Desktop)** | Real browser: acquire desktop session ticket from daemon; receive WSS URL; noVNC client renders RFB framebuffer over WebSocket; real frame rendering verified; evidence recorded per run. Real WebSocket connection and frame rendering required; unit tests insufficient. |
 | **Android** | Native WebView controls RFB session; platform-specific testing required; evidence recorded per run. |
-| **Backend Oracle** | Backend routes RFB passthrough; does not mock framebuffer. Reference baseline only. |
+| **Backend Oracle** | Backend routes RFB passthrough; does not mock framebuffer; reference baseline only. |
+
 ---
 
-### 7. Terminal Session & Deterministic I/O Marker
+### 8. Security
 
-**Semantic**: Client opens terminal session; daemon assigns unique session ID; deterministic input marker (e.g., `echo TEST_MARKER_<uuid>`) sent through real terminal; marker observed in output stream.
+**Semantic**: Client surfaces do not leak credentials; artifact inspection detects no credential storage; no plaintext secrets in logs; transport uses TLS.
 
-| Platform | Evidence | 
+| Platform | Evidence |
 |---|---|
-| **Web** | Real browser sends deterministic terminal input (e.g., `echo TEST_MARKER_<uuid>`); real daemon processes through tmux/pty; client-side terminal captures marker in output; evidence recorded per run. |
-| **Android** | Real app sends terminal input; output stream captured; marker verified; evidence recorded per run. |
-| **Backend Oracle** | Terminal I/O routed through real tmux/pty; deterministic input/output flow established. Reference baseline only. |
+| **Web** | Real browser session: observe no cleartext tokens in DOM/localStorage/cookies; network requests use TLS; evidence recorded per run. |
+| **Android** | Real app: observe no plaintext tokens in app memory/logs/storage; network requests use TLS; evidence recorded per run. |
+| **Backend Oracle** | leak-scanner artifact inspection (logs, binaries, config files): no embedded credentials, no plaintext secrets, TLS configuration verified; reference baseline only. |
 
-### 8. Pinned OMP Conditional Capabilities
+---
 
-**Requirement**: Inspect runtime OMP binary to determine supported capabilities. **Record absence as `NOT_SUPPORTED` only if OMP binary does not export the capability. Do not claim support without observing client-visible rendering.**
+## Pinned OMP Conditional Capabilities
+
+**Context**: Runtime OMP binary exports capability flags. Client may or may not render controls for these capabilities. Capability absence describes runtime limitation only.
 
 **Procedure**:
-1. Query pinned OMP binary to observe exported capability fields.
-2. Observe real client (Web/Android) rendering controls for those capabilities.
-3. If client does not render control: `NOT_SUPPORTED` in report (not failure).
-4. If capability absent from OMP export: `NOT_SUPPORTED` in report.
-5. No assumed field names or protocol shapes; record only what is actually observed.
+1. Query pinned OMP binary; observe exported capability fields.
+2. Record field names and values (capability support matrix).
+3. Observe real client (Web/Android) rendering controls matching those capability fields.
+4. If OMP export lacks field: record as `NOT_SUPPORTED` in runtime matrix (not a failure).
+5. If OMP export includes field but client does not render control: record as **missing proof** (gap in client implementation or test coverage—product behavior, not NOT_SUPPORTED).
+6. No assumed field names or protocol shapes; record only what is actually observed.
 
-**Evidence Standard** (per run):
-- **Supported**: Real client renders capability controls; daemon backend reflects capability flags.
-- **Not Supported**: OMP export lacks field OR client UI does not render control; explicitly documented.
+**Evidence Standard**:
+- **Runtime Supports / Client Renders**: Capability operational end-to-end; evidence recorded per run.
+- **Runtime Supports / Client Does Not Render**: Missing proof; platform behavior gap or test gap (not NOT_SUPPORTED).
+- **Runtime Does Not Support**: Record as `NOT_SUPPORTED` in capability matrix (expected if OMP version is constrained).
+
 ---
 
 ## Evidence Hygiene
@@ -171,5 +191,5 @@ No "partial PASS", "expected failure", "skip", or other classification permitted
 - Source-only PASS invalid: code without execution does not prove requirement.
 - Unit-test PASS invalid for E2E gates (except where specified e.g. legacy mocking for oracle reference).
 - Mock-client PASS invalid: client-side mocking of daemon does not prove requirement.
----
 
+---
