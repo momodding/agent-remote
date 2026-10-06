@@ -1,5 +1,19 @@
 # Manual Remediation Ledger
 
+## Workstreams
+### Agent Chat Parity (ENH-002 Runtime)
+- **CHAT-001**: Runtime state + mode panel
+  - Paired with **MANUAL-001**
+  - Status: OPEN
+- **CHAT-002**: Commands + mentions  
+  - Paired with **MANUAL-002**
+  - Status: OPEN
+- **CHAT-003**: Attachments
+  - Paired with **MANUAL-003**
+  - Status: OPEN
+- **CHAT-004**: Final composer UX/selection
+  - Status: OPEN
+
 **Baseline Capture Date**: 2026-10-06
 **Git HEAD**: c64e451663c96388c9827f935cf2ef9d6c462b26
 **Git Status**: Clean (no staged/unstaged changes)
@@ -61,7 +75,37 @@
 **Evidence Source**: Operator manual  
 **Notes**: noVNC (1.5.0) production failure investigation and remediation.
 
-### Enhancement Items
+
+
+### Agent Chat Parity Items (ENH-002 Workstream)
+
+#### CHAT-001
+**Title**: Runtime state + mode panel
+**Status**: OPEN
+**Paired With**: MANUAL-001
+**Evidence Source**: Protocol audit
+**Notes**: Agent Chat composer runtime state display and mode panel. Part of ENH-002 workstream.
+
+#### CHAT-002
+**Title**: Commands + mentions
+**Status**: OPEN
+**Paired With**: MANUAL-002
+**Evidence Source**: Protocol audit
+**Notes**: Slash/@ command resolution and mention completion. Part of ENH-002 workstream.
+
+#### CHAT-003
+**Title**: Attachments
+**Status**: OPEN
+**Paired With**: MANUAL-003
+**Evidence Source**: Protocol audit
+**Notes**: Image/file attachment handling in composer. Part of ENH-002 workstream.
+
+#### CHAT-004
+**Title**: Final composer UX/selection
+**Status**: OPEN
+**Evidence Source**: Protocol audit
+**Notes**: Composer selection flow and message finalization. Part of ENH-002 workstream.
+
 
 #### ENH-001
 **Title**: Ghostty terminal engine  

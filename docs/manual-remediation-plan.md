@@ -808,68 +808,94 @@ func (s *Server) handleDesktopSessionCreate(w http.ResponseWriter, r *http.Reque
 
 ## ENH-001: Ghostty Terminal Engine
 
-**Title**: Replace xterm.js with Ghostty terminal engine  
-**Status**: BLOCKED  
-**Gate**: All MANUAL-001 through MANUAL-007 must reach acceptable status (OPEN or PASS, no FAIL)
+**Title**: Replace xterm.js with Ghostty terminal engine
+**Status**: BLOCKED
+**Gate**: Blocked until MANUAL-001.007 PASS
 
 ### Prerequisite Verification
 
-✗ MANUAL-004: Agent lifecycle reconciliation (FAIL)  
-✗ MANUAL-005: Terminal pane layout (FAIL)  
-✗ MANUAL-006: Terminal close lifecycle (FAIL)  
-✗ MANUAL-007: noVNC diagnostics (FAIL)  
-⊘ MANUAL-001: Pending OMP audit (OPEN)  
-⊘ MANUAL-002: Pending OMP audit (OPEN)  
-⊘ MANUAL-003: Pending OMP audit (OPEN)
+⊘ MANUAL-001.001–.006: Source audit complete (OPEN)
+✗ MANUAL-001.007: Harness protocol edge cases (OPEN, blocking ENH-001)
+✗ MANUAL-004: Agent lifecycle reconciliation (FAIL)
+✗ MANUAL-005: Terminal pane layout (FAIL)
+✗ MANUAL-006: Terminal close lifecycle (FAIL)
+✗ MANUAL-007: noVNC diagnostics (FAIL)
 
-**Current Gate Status**: BLOCKED (4 items FAIL, 3 items OPEN awaiting discovery)
+**Current Gate Status**: BLOCKED (MANUAL-001.007 must reach PASS before Ghostty engine implementation)
 
 ### Unblocking Condition
 
 ENH-001 may only proceed after:
-1. MANUAL-004, MANUAL-005, MANUAL-006, MANUAL-007 reach PASS or acceptable OPEN (subject to audit progress)
-2. MANUAL-001, MANUAL-002, MANUAL-003 complete OMP source discovery and provide unblocking signoff
+1. MANUAL-001.007 reaches PASS status
+2. MANUAL-004, MANUAL-005, MANUAL-006, MANUAL-007 reach PASS or acceptable OPEN
 
 ---
 
-## ENH-002: Advanced Agent Chat Composer + Mode Panel
+## ENH-002: Agent Chat Parity (Active Workstream)
 
-**Title**: Advanced Agent Chat composer features and mode panel  
-**Status**: BLOCKED  
-**Gate**: ENH-001 must complete; all MANUAL items must be acceptable
+**Title**: Advanced Agent Chat composer features and mode panel
+**Status**: IN PROGRESS (active workstream with CHAT-001/002/003/004)
+**Collective Pass Condition**: CHAT-001 PASS + CHAT-002 PASS + CHAT-003 PASS + CHAT-004 PASS = ENH-002 PASS
+**Gate (External)**: ENH-001 must complete; all MANUAL items must be acceptable
+
+### Work Items (Paired with MANUAL Discovery)
+
+**CHAT-001**: Runtime state + mode panel (paired with MANUAL-001)
+- Scope: Harness mode/state parity UI display
+- Status: OPEN
+- Acceptance: Runtime state persists and reflects protocol changes
+
+**CHAT-002**: Commands + mentions (paired with MANUAL-002)
+- Scope: Slash/@ command composer parity
+- Status: OPEN
+- Acceptance: Command prompt and mention resolution work end-to-end
+
+**CHAT-003**: Attachments (paired with MANUAL-003)
+- Scope: Image/file attachment handling
+- Status: OPEN
+- Acceptance: Attachments upload, preview, and reference correctly
+
+**CHAT-004**: Final composer UX/selection
+- Scope: Composer selection flow and finalization
+- Status: OPEN
+- Acceptance: Message composition workflow complete
 
 ### Prerequisite Verification
 
-✗ ENH-001: Ghostty engine (BLOCKED)
+⊘ MANUAL-001: Harness parity (OPEN, source audit complete)
+⊘ MANUAL-002: Commands/mentions (OPEN, source audit in progress)
+⊘ MANUAL-003: Attachments (OPEN, source audit in progress)
 
-**Current Gate Status**: BLOCKED (ENH-001 not started)
+**Current Gate Status**: ACTIVE (prerequisites discovered; work items ready for concurrent execution)
 
 ### Unblocking Condition
 
-ENH-002 may only proceed after:
-1. ENH-001 completes and passes acceptance
-2. All MANUAL items are at acceptable status
-
+ENH-002 PASS requires:
+1. CHAT-001 through CHAT-004 all reach PASS status
+2. External gate: ENH-001 completes and passes acceptance
+3. All MANUAL items (001–007) at acceptable status
 ---
 
 ## ENH-003: Claude + Codex Harness Adapters
 
-**Title**: Multi-harness adapter implementation (Claude, Codex)  
-**Status**: BLOCKED (MANDATORY)  
-**Gate**: ENH-001 and ENH-002 must complete; all MANUAL items must be at acceptable status
+**Title**: Multi-harness adapter implementation (Claude, Codex)
+**Status**: HARD BLOCKED
+**Gate**: Hard blocked until all MANUAL-001–007 PASS + ENH-001 PASS + ENH-002 PASS
 
 ### Prerequisite Verification
 
-✗ ENH-002: Advanced composer (BLOCKED)
+✗ MANUAL-001–007: Various states (OPEN/FAIL, audit in progress)
+✗ ENH-001: Ghostty engine (BLOCKED on MANUAL-001.007)
+✗ ENH-002: Agent Chat parity (IN PROGRESS, CHAT-001/002/003/004)
 
-**Current Gate Status**: BLOCKED (mandatory; ENH-001 and ENH-002 not started)
+**Current Gate Status**: HARD BLOCKED (mandatory; sequential gate on all predecessors)
 
 ### Unblocking Condition
 
 ENH-003 may only proceed after:
-1. ENH-001 completes and passes
-2. ENH-002 completes and passes
-3. All MANUAL items reach acceptable status
+1. ALL MANUAL-001 through MANUAL-007 reach acceptable status (OPEN or PASS, no FAIL)
+2. ENH-001 completes and passes
+3. ENH-002 completes and passes (CHAT-001 PASS + CHAT-002 PASS + CHAT-003 PASS + CHAT-004 PASS)
 
 ---
 
