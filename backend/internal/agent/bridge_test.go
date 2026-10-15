@@ -406,18 +406,22 @@ func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {
 	if req.Command != "omp" {
 		t.Fatalf("req.Command = %q, want 'omp'", req.Command)
 	}
-	if len(req.Args) < 5 {
-		t.Fatalf("req.Args length = %d, want at least 5", len(req.Args))
+	if len(req.Args) < 7 {
+		t.Fatalf("req.Args length = %d, want at least 7", len(req.Args))
 	}
-	if req.Args[0] != "--no-extensions" {
-		t.Fatalf("req.Args[0] = %q, want '--no-extensions'", req.Args[0])
+	wantSessionDir := filepath.Join(stateDir, "sessions", agent.ID)
+	if req.Args[0] != "--session-dir" || req.Args[1] != wantSessionDir {
+		t.Fatalf("req.Args[:2] = %q, want [--session-dir %q]", req.Args[:2], wantSessionDir)
 	}
-	if req.Args[1] != "-e" {
-		t.Fatalf("req.Args[1] = %q, want '-e'", req.Args[1])
+	if req.Args[2] != "--no-extensions" {
+		t.Fatalf("req.Args[2] = %q, want '--no-extensions'", req.Args[2])
 	}
-	bridgePath := req.Args[2]
+	if req.Args[3] != "-e" {
+		t.Fatalf("req.Args[3] = %q, want '-e'", req.Args[3])
+	}
+	bridgePath := req.Args[4]
 	if !strings.HasSuffix(bridgePath, "bridge.ts") {
-		t.Fatalf("req.Args[2] = %q, want path ending with 'bridge.ts'", bridgePath)
+		t.Fatalf("req.Args[4] = %q, want path ending with 'bridge.ts'", bridgePath)
 	}
 	info, err := os.Stat(bridgePath)
 	if err != nil {
@@ -426,8 +430,8 @@ func TestManagedLaunchArgsAndInternalEnv(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("bridge file perm = %o, want 0600", info.Mode().Perm())
 	}
-	if req.Args[3] != "--model" || req.Args[4] != "anthropic/claude-3-5-sonnet" {
-		t.Fatalf("req.Args suffix = %v, want [--model anthropic/claude-3-5-sonnet]", req.Args[3:])
+	if req.Args[5] != "--model" || req.Args[6] != "anthropic/claude-3-5-sonnet" {
+		t.Fatalf("req.Args suffix = %v, want [--model anthropic/claude-3-5-sonnet]", req.Args[5:])
 	}
 
 	if req.Env == nil {

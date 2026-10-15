@@ -65,6 +65,8 @@ jest.mock('./lib/tabs/tab-store', () => ({
     getChannel: () => mockChannel,
     dispatch: mockDispatch,
   }),
+  removeExitedAgentTabs: jest.fn((state: TabDeckState) => state),
+  removeExitedTerminalTabs: jest.fn((state: TabDeckState) => state),
 }));
 
 jest.mock('./lib/daemon-channel', () => ({
@@ -87,6 +89,8 @@ jest.mock('./lib/connection', () => ({
   normalizeHostId: (s: string) => s,
   getConnection: (s: ConnectionStore, h: string) => s.connections.find((c) => c.hostId === h) ?? null,
 }));
+const mockTerminateAgent = jest.fn<Promise<void>, [string]>(async () => undefined);
+const mockCloseSession = jest.fn<Promise<void>, [string]>(async () => undefined);
 jest.mock('./lib/api', () => {
   class APIError extends Error {
     status: number;
@@ -97,7 +101,7 @@ jest.mock('./lib/api', () => {
   }
   return {
     AgenticRemoteAPI: jest.fn(function AgenticRemoteAPI(_connection: Connection) {
-      return { createAgent: mockCreateAgent };
+      return { createAgent: mockCreateAgent, terminateAgent: mockTerminateAgent, closeSession: mockCloseSession };
     }),
     APIError,
     authenticatePairing: (...args: unknown[]) => mockAuthenticatePairing(...args),
@@ -125,12 +129,13 @@ async function renderDashboard() {
 }
 
 function actionFor(tree: ReactTestRenderer, label: string) {
-  return tree.root.findByProps({ accessibilityLabel: label }).props.onPress as () => void;
+  return tree.root.findByProps({ accessibilityLabel: label }).props.onPress as (event?: { stopPropagation: () => void }) => void;
 }
-
 function confirmation() {
   return (jest.mocked(Alert.alert).mock.calls.at(-1)?.[2] ?? []) as AlertButton[];
 }
+
+
 
 beforeEach(() => {
   mockTabStoreState = { tabs: [], activeId: null, layout: {} };
@@ -142,6 +147,10 @@ beforeEach(() => {
   mockUpdateConnection.mockResolvedValue(storeA);
   mockDeleteConnection.mockResolvedValue(storeA);
   mockCreateAgent.mockReset();
+  mockTerminateAgent.mockReset();
+  mockTerminateAgent.mockResolvedValue(undefined);
+  mockCloseSession.mockReset();
+  mockCloseSession.mockResolvedValue(undefined);
   mockCreateAgent.mockResolvedValue({
     id: 'agent-1',
     terminalSessionId: 'term-1',
@@ -330,6 +339,104 @@ describe('dashboard tab deck actions', () => {
     expect(router.push).toHaveBeenCalledWith({ pathname: '/agent/[id]', params: { id: 'mock-uuid' } });
   });
 
+
+  it('closes an agent view locally without terminating the remote agent', async () => {
+    mockTabStoreState.tabs = [{ tabId: 'agent-tab', daemonId: first.hostId, kind: 'agent', title: 'Agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-1', terminalSessionId: 'term-1', state: 'idle', view: 'chat' }];
+    const tree = await renderDashboard();
+
+    act(() => actionFor(tree, 'Close view agent-tab')({ stopPropagation: jest.fn() }));
+    await act(async () => {
+      actionFor(tree, 'Close session view')();
+      await flush();
+    });
+
+    expect(mockCloseTab).toHaveBeenCalledWith('agent-tab');
+    expect(mockTerminateAgent).not.toHaveBeenCalled();
+    expect(mockCloseSession).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('terminates an agent remotely before removing its local tab', async () => {
+    mockTabStoreState.tabs = [{ tabId: 'agent-tab', daemonId: first.hostId, kind: 'agent', title: 'Agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-1', terminalSessionId: 'term-1', state: 'idle', view: 'chat' }];
+    let resolveTermination!: () => void;
+    mockTerminateAgent.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveTermination = resolve; }));
+    const tree = await renderDashboard();
+
+    act(() => actionFor(tree, 'Close view agent-tab')({ stopPropagation: jest.fn() }));
+    act(() => actionFor(tree, 'Terminate session')());
+    await act(async () => { await flush(); });
+
+    expect(mockTerminateAgent).toHaveBeenCalledWith('agent-1');
+    expect(mockCloseTab).not.toHaveBeenCalled();
+    act(() => resolveTermination());
+    await act(async () => { await flush(); });
+
+    expect(mockCloseSession).not.toHaveBeenCalled();
+    expect(mockCloseTab).toHaveBeenCalledWith('agent-tab');
+    act(() => tree.unmount());
+  });
+
+  it('terminates a terminal remotely before removing its local tab', async () => {
+    mockTabStoreState.tabs = [{ tabId: 'terminal-tab', daemonId: first.hostId, kind: 'terminal', title: 'Shell', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'session-1', state: 'running' }];
+    const tree = await renderDashboard();
+
+    act(() => actionFor(tree, 'Close view terminal-tab')({ stopPropagation: jest.fn() }));
+    await act(async () => {
+      actionFor(tree, 'Terminate session')();
+      await flush();
+    });
+
+    expect(mockCloseSession).toHaveBeenCalledWith('session-1');
+    expect(mockTerminateAgent).not.toHaveBeenCalled();
+    expect(mockCloseTab).toHaveBeenCalledWith('terminal-tab');
+    act(() => tree.unmount());
+  });
+
+  it.each([
+    ['agent', { agents: [{ id: 'remote-agent', adapter: 'OMP Agent', terminalSessionId: 'agent-terminal', cwd: '', state: 'idle', capabilities: [], createdAt: '', updatedAt: '' }], terminals: [{ id: 'agent-terminal', name: 'Agent PTY', cwd: '', seq: 0, exited: false }] }],
+    ['terminal', { agents: [], terminals: [{ id: 'remote-terminal', name: 'Remote shell', cwd: '', seq: 0, exited: false }] }],
+  ] as const)('terminates a remote-only %s without offering Close view', async (kind, runtime) => {
+    mockReconcileDaemon.mockImplementationOnce((_connection: Connection, update: (value: unknown) => void) => {
+      update({
+        snapshot: { cursor: 1, topology: [], desktops: [], ...runtime },
+        capabilities: [{ name: 'sessions', enabled: true }],
+        status: 'ready',
+      });
+      return Promise.resolve(() => {});
+    });
+    const tree = await renderDashboard();
+    expect(tree.root.findAll((node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Close view '))).toHaveLength(0);
+    act(() => actionFor(tree, `Terminate ${kind} ${kind}:remote-${kind}`)({ stopPropagation: jest.fn() }));
+    expect(tree.root.findByProps({ children: 'Terminate remote session?' })).toBeTruthy();
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Close session view' })).toHaveLength(0);
+    await act(async () => {
+      actionFor(tree, 'Terminate session')();
+      await flush();
+    });
+
+    if (kind === 'agent') expect(mockTerminateAgent).toHaveBeenCalledWith('remote-agent');
+    else expect(mockCloseSession).toHaveBeenCalledWith('remote-terminal');
+    expect(mockCloseTab).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('keeps an agent card present and reports an error when remote termination fails', async () => {
+    mockTabStoreState.tabs = [{ tabId: 'agent-tab', daemonId: first.hostId, kind: 'agent', title: 'Agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-1', terminalSessionId: 'term-1', state: 'idle', view: 'chat' }];
+    mockTerminateAgent.mockRejectedValueOnce(new Error('daemon unavailable'));
+    const tree = await renderDashboard();
+
+    act(() => actionFor(tree, 'Close view agent-tab')({ stopPropagation: jest.fn() }));
+    await act(async () => {
+      actionFor(tree, 'Terminate session')();
+      await flush();
+    });
+
+    expect(mockCloseTab).not.toHaveBeenCalled();
+    expect(mockTabStoreState.tabs).toHaveLength(1);
+    expect(tree.root.findByProps({ children: 'Could not terminate session' })).toBeTruthy();
+    expect(tree.root.findByProps({ children: 'daemon unavailable' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
 });
 
 describe('dashboard capability gating', () => {

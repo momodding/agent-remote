@@ -12,15 +12,28 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
       'BLOCKED: Real daemon pairing payload is required. Forged payloads or simulated auth are strictly prohibited.'
     );
   }
+  const network: string[] = [];
+  const consoleMessages: string[] = [];
+  const diagnosticPage = page as Page & {
+    evaluate<T>(fn: () => T): Promise<T>;
+    on(event: 'console', listener: (message: { type(): string; text(): string }) => void): void;
+    on(event: 'response', listener: (response: { status(): number; url(): string; request(): { method(): string } }) => void): void;
+  };
+  diagnosticPage.on('console', (message) => consoleMessages.push(`${message.type()}: ${message.text()}`));
+  diagnosticPage.on('response', (response) => {
+    const url = response.url();
+    if (url.includes('/healthz') || url.includes('/v1/')) network.push(`${response.request().method()} ${response.status()} ${new URL(url).pathname}`);
+  });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   const newAgentBtn = page.locator('[aria-label^="New Agent"]:visible').first();
+  const newTerminalBtn = page.locator('[aria-label^="New Terminal"]:visible').first();
   const connectBtn = page.locator('[aria-label="Connect daemon"]:visible').first();
-  // Wait for either the dashboard (already connected) or the Connect daemon button
+  // Wait for any ready dashboard capability or the Connect daemon button.
   await page
-    .locator('[aria-label^="New Agent"]:visible, [aria-label="Connect daemon"]:visible')
+    .locator('[aria-label^="New Agent"]:visible, [aria-label^="New Terminal"]:visible, [aria-label="Connect daemon"]:visible')
     .first()
     .waitFor({ timeout: 25000 });
-  if (await newAgentBtn.isVisible()) {
+  if (await newAgentBtn.isVisible() || await newTerminalBtn.isVisible()) {
     return;
   }
   await connectBtn.waitFor({ state: 'visible', timeout: 10000 });
@@ -45,9 +58,22 @@ export async function ensurePaired(page: Page, realPayload?: string): Promise<vo
   const submitBtn = page.locator('[aria-label="Connect"], [accessibilityLabel="Connect"]').first();
   await submitBtn.waitFor({ state: 'visible', timeout: 5000 });
   await submitBtn.click();
-  // After pairing, dashboard with "New Agent" button should appear
-  const newAgentBtn2 = page.locator('[aria-label^="New Agent"]:visible').first();
-  await newAgentBtn2.waitFor({ state: 'visible', timeout: 40000 });
+  try {
+    // Pairing is complete when any usable dashboard capability appears; agent capability may be unavailable independently.
+    await page
+      .locator('[aria-label^="New Agent"]:visible, [aria-label^="New Terminal"]:visible')
+      .first()
+      .waitFor({ state: 'visible', timeout: 40000 });
+  } catch (error) {
+    const dashboard = await diagnosticPage.evaluate(() => ({
+      body: document.body.innerText,
+      labels: Array.from(document.querySelectorAll('[aria-label]'), (element) => element.getAttribute('aria-label')),
+      localStorageKeys: Object.keys(localStorage),
+      sessionStorageKeys: Object.keys(sessionStorage),
+    }));
+    console.log(`pairing-diagnostic ${JSON.stringify({ dashboard, network, consoleMessages })}`);
+    throw error;
+  }
 }
 
 // Re-export for specs that use it directly

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	"log"
 	"net"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 )
 
 //go:embed bridge.ts
@@ -106,24 +106,26 @@ func validateUserArgs(args []string) error {
 }
 
 type BridgeHello struct {
-	Type              string                    `json:"type"`
-	AgentID           string                    `json:"agentId"`
-	Secret            string                    `json:"secret"`
-	SessionID         string                    `json:"sessionId"`
-	SessionFile       string                    `json:"sessionFile"`
-	Capabilities      []string                  `json:"capabilities"`
-	Model             *protocol.AgentModelInfo   `json:"model,omitempty"`
-	Thinking          string                    `json:"thinking,omitempty"`
-	AvailableModels   []protocol.AgentModelInfo `json:"availableModels,omitempty"`
-	AvailableThinking []string                  `json:"availableThinking,omitempty"`
+	Type              string                        `json:"type"`
+	AgentID           string                        `json:"agentId"`
+	Secret            string                        `json:"secret"`
+	SessionID         string                        `json:"sessionId"`
+	SessionFile       string                        `json:"sessionFile"`
+	Capabilities      []string                      `json:"capabilities"`
+	Model             *protocol.AgentModelInfo      `json:"model,omitempty"`
+	Thinking          string                        `json:"thinking,omitempty"`
+	AvailableModels   []protocol.AgentModelInfo     `json:"availableModels,omitempty"`
+	AvailableThinking []string                      `json:"availableThinking,omitempty"`
+	HarnessRuntime    *protocol.HarnessRuntimeState `json:"harnessRuntime,omitempty"`
 }
 
 type BridgeMetadataFrame struct {
-	Type              string                    `json:"type"`
-	Model             *protocol.AgentModelInfo   `json:"model,omitempty"`
-	Thinking          string                    `json:"thinking,omitempty"`
-	AvailableModels   []protocol.AgentModelInfo `json:"availableModels,omitempty"`
-	AvailableThinking []string                  `json:"availableThinking,omitempty"`
+	Type              string                        `json:"type"`
+	Model             *protocol.AgentModelInfo      `json:"model,omitempty"`
+	Thinking          string                        `json:"thinking,omitempty"`
+	AvailableModels   []protocol.AgentModelInfo     `json:"availableModels,omitempty"`
+	AvailableThinking []string                      `json:"availableThinking,omitempty"`
+	HarnessRuntime    *protocol.HarnessRuntimeState `json:"harnessRuntime,omitempty"`
 }
 
 type BridgeCommand struct {
@@ -144,6 +146,7 @@ type BridgeLifecycleFrame struct {
 	Event        string `json:"event"`
 	EventID      string `json:"eventId,omitempty"`
 	State        string `json:"state,omitempty"`
+	Mode         string `json:"mode,omitempty"`
 	SessionID    string `json:"sessionId,omitempty"`
 	SessionFile  string `json:"sessionFile,omitempty"`
 	ToolCallID   string `json:"toolCallId,omitempty"`
@@ -152,6 +155,12 @@ type BridgeLifecycleFrame struct {
 	ApprovalMode string `json:"approvalMode,omitempty"`
 	Approved     *bool  `json:"approved,omitempty"`
 	IsError      bool   `json:"isError,omitempty"`
+	GoalActive   bool   `json:"goalActive,omitempty"`
+	GoalTitle    string `json:"goalTitle,omitempty"`
+	GoalStatus   string `json:"goalStatus,omitempty"`
+	RetryAttempt int    `json:"retryAttempt,omitempty"`
+	RetryMax     int    `json:"retryMax,omitempty"`
+	TurnIndex    int    `json:"turnIndex,omitempty"`
 	StopReason   string `json:"stopReason,omitempty"`
 }
 type BridgeSemanticFrame struct {
@@ -642,4 +651,3 @@ func (b *BridgeServer) Close() error {
 	_ = os.Remove(b.socketPath)
 	return err
 }
-

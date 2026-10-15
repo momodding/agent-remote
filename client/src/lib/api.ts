@@ -1,5 +1,8 @@
 import type {
+  AgentAttachment,
+  AgentCommandDescriptor,
   AgentHistoryResponse,
+  AgentPromptImage,
   AgentSession,
   CopyFileRequest,
   CreateSessionRequest,
@@ -69,8 +72,33 @@ export class AgenticRemoteAPI {
     return this.request('/v1/agents', { method: 'POST', body: JSON.stringify(request) });
   }
 
-  async submitAgentPrompt(id: string, prompt: string): Promise<void> {
-    await this.request(`/v1/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', body: JSON.stringify({ prompt }) });
+  async submitAgentPrompt(id: string, prompt: string, images: AgentPromptImage[] = [], attachments: AgentAttachment[] = []): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', body: JSON.stringify({ prompt, images, attachments }) });
+  }
+
+  async agentCommands(id: string): Promise<AgentCommandDescriptor[]> {
+    return (await this.request<{ commands: AgentCommandDescriptor[] }>(`/v1/agents/${encodeURIComponent(id)}/commands`)).commands;
+  }
+
+  async executeAgentCommand(id: string, name: string): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/command`, { method: 'POST', body: JSON.stringify({ name }) });
+  }
+
+  async uploadAttachment(file: Blob, name: string, destination = ""): Promise<string> {
+    const form = new FormData();
+    form.append("file", file, name);
+    const response = await fetch(apiURL(this.connection.endpoint, `/v1/fs/upload?path=${encodeURIComponent(destination)}`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.connection.token}` },
+      body: form,
+    });
+    const body = (await response.json()) as { path?: string; message?: string };
+    if (!response.ok || !body.path) throw new APIError(response.status, body.message || response.statusText);
+    return body.path;
+  }
+
+  async removeUploadedAttachment(path: string): Promise<void> {
+    await this.request('/v1/fs/upload', { method: 'DELETE', body: JSON.stringify({ path }) });
   }
 
   async abortAgent(id: string): Promise<void> {
@@ -87,6 +115,11 @@ export class AgenticRemoteAPI {
   async setAgentThinking(id: string, level: string): Promise<void> {
     await this.request(`/v1/agents/${encodeURIComponent(id)}/thinking`, { method: 'POST', body: JSON.stringify({ level }) });
   }
+
+  async setAgentMode(id: string, action: 'goal_show' | 'plan_toggle'): Promise<void> {
+    await this.request(`/v1/agents/${encodeURIComponent(id)}/mode`, { method: 'POST', body: JSON.stringify({ action }) });
+  }
+
 
   async setModel(agentId: string, model: string): Promise<void> {
     return this.setAgentModel(agentId, model);

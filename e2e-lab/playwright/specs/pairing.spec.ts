@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { getRealPairingPayload } from '../helpers';
+import { ensurePaired, getRealPairingPayload } from '../helpers';
 test.describe('Web Client Pairing & Real Auth-v2 Verification', () => {
   test('should load web client landing page over HTTP/HTTPS', async ({ page }) => {
     await page.goto('/', { waitUntil: 'commit' });
@@ -29,30 +29,9 @@ test.describe('Web Client Pairing & Real Auth-v2 Verification', () => {
       );
     }
 
-    await page.goto('/', { waitUntil: 'commit' });
+    await ensurePaired(page, realPayload);
 
-    const connectBtn = page.locator('text=Connect daemon').first();
-    await expect(connectBtn).toBeVisible({ timeout: 15000 });
-    await connectBtn.click();
-
-    const modalTitle = page.locator('text="Connect a daemon"').first();
-    await expect(modalTitle).toBeVisible({ timeout: 5000 });
-
-    const deviceNameInput = page.locator('input[placeholder="Device name"]');
-    await expect(deviceNameInput).toBeVisible({ timeout: 5000 });
-    await deviceNameInput.fill('e2e-browser-client');
-
-    const payloadInput = page.locator('textarea[placeholder="Paste pairing JSON"], input[placeholder="Paste pairing JSON"]');
-    await expect(payloadInput).toBeVisible({ timeout: 5000 });
-    await payloadInput.fill(realPayload);
-
-    // Click real Connect button to execute Auth-v2 handshake
-    const submitBtn = page.locator('[aria-label="Connect"], [accessibilityLabel="Connect"]').first();
-    await expect(submitBtn).toBeVisible({ timeout: 5000 });
-    await submitBtn.click();
-
-    // Verify daemon dashboard appears with live connection
-    const daemonSection = page.locator('text=localhost:18765').first();
-    await expect(daemonSection).toBeVisible({ timeout: 15000 });
+    const daemonEndpoint = new URL(JSON.parse(realPayload).endpoint).host;
+    await expect(page.locator(`text=${daemonEndpoint}`).first()).toBeVisible({ timeout: 15000 });
   });
 });

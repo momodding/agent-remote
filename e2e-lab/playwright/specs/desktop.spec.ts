@@ -21,7 +21,7 @@ test.describe('Web Desktop noVNC live RFB flow', () => {
 
     await expect.poll(() => desktopSessionURL, { timeout: 20_000 }).toContain('/v1/desktop/sessions');
     await expect.poll(() => rfbSockets.length, { timeout: 20_000 }).toBe(1);
-    expect(rfbSockets[0].url()).toMatch(/^wss:\/\/localhost:18765\/v1\/ws\/rfb\?ticket=/);
+    expect(rfbSockets[0].url()).toMatch(/^wss:\/\/[^/]+\/v1\/ws\/rfb\?ticket=/);
 
     const desktop = page.frameLocator('iframe[title="Remote Desktop"]');
     const framebuffer = desktop.locator('canvas').first();

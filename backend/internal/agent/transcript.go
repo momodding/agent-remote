@@ -28,6 +28,7 @@ type TranscriptTailer struct {
 	lastSize    int64
 	lastMtime   int64
 	fingerprint string
+	lastMode    string
 }
 
 type tailerState struct {
@@ -38,6 +39,7 @@ type tailerState struct {
 	lastSize    int64
 	lastMtime   int64
 	fingerprint string
+	lastMode    string
 }
 
 func (t *TranscriptTailer) snapshot() tailerState {
@@ -47,13 +49,13 @@ func (t *TranscriptTailer) snapshot() tailerState {
 	for id := range t.seen {
 		seen[id] = struct{}{}
 	}
-	return tailerState{t.offset, append([]byte(nil), t.pending...), seen, t.lastInode, t.lastSize, t.lastMtime, t.fingerprint}
+	return tailerState{t.offset, append([]byte(nil), t.pending...), seen, t.lastInode, t.lastSize, t.lastMtime, t.fingerprint, t.lastMode}
 }
 
 func (t *TranscriptTailer) restore(state tailerState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.offset, t.pending, t.seen, t.lastInode, t.lastSize, t.lastMtime, t.fingerprint = state.offset, state.pending, state.seen, state.lastInode, state.lastSize, state.lastMtime, state.fingerprint
+	t.offset, t.pending, t.seen, t.lastInode, t.lastSize, t.lastMtime, t.fingerprint, t.lastMode = state.offset, state.pending, state.seen, state.lastInode, state.lastSize, state.lastMtime, state.fingerprint, state.lastMode
 }
 
 func NewTranscriptTailer(agentID, path string, store *runtimestore.Store) *TranscriptTailer {
@@ -63,6 +65,13 @@ func NewTranscriptTailer(agentID, path string, store *runtimestore.Store) *Trans
 		store:   store,
 		seen:    map[string]struct{}{},
 	}
+}
+
+// LastMode returns the last persisted mode_change observed by this stream.
+func (t *TranscriptTailer) LastMode() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastMode
 }
 
 // RestoreState loads prior tailer state from persistent store
@@ -156,6 +165,9 @@ func (t *TranscriptTailer) Read() ([]protocol.AgentEvent, error) {
 			continue
 		}
 		t.seen[entry.ID] = struct{}{}
+		if entry.Type == "mode_change" {
+			t.lastMode = entry.Mode
+		}
 		events = append(events, entry.events(t.agentID)...)
 	}
 
@@ -191,6 +203,7 @@ func (t *TranscriptTailer) SaveState() error {
 type transcriptEntry struct {
 	Type    string             `json:"type"`
 	ID      string             `json:"id"`
+	Mode    string             `json:"mode,omitempty"`
 	Message *transcriptMessage `json:"message,omitempty"`
 	Content json.RawMessage    `json:"content,omitempty"`
 	Display bool               `json:"display,omitempty"`
@@ -225,6 +238,9 @@ type transcriptContent struct {
 func (e transcriptEntry) events(agentID string) []protocol.AgentEvent {
 	if e.ID == "" {
 		return nil
+	}
+	if e.Type == "mode_change" {
+		return []protocol.AgentEvent{{Type: "mode_change", EventID: e.ID + ":mode_change", AgentID: agentID, Mode: e.Mode}}
 	}
 	// INTERNAL_ONLY: a top-level custom_message entry is always extension/hook
 	// provenance. It is never promoted to a chat-visible or activity-visible

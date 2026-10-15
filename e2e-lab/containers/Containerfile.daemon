@@ -2,7 +2,7 @@ FROM oven/bun:latest
 
 # Pinned Toolchain Versions (derived from env/versions.env and backend/go.mod)
 ARG GO_VERSION=1.26.4
-ARG OMP_VERSION=18.1.22
+ARG OMP_VERSION=18.6.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/local/go/bin:/root/.bun/bin:${PATH}"
@@ -34,8 +34,8 @@ RUN which omp && omp --version
 WORKDIR /app
 COPY backend/ ./backend/
 
-# Build backend daemon binary
-RUN cd backend && go build -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
+# Build E2E daemon with isolated desktop-target fault hooks.
+RUN cd backend && go build -tags e2e -o /usr/local/bin/agenticRemote ./cmd/agenticRemote
 
 # Create state, TLS, and workspace directories
 RUN mkdir -p /app/.agenticremote/state/tls /app/workspace /app/uploads

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,48 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agenticremote/agenticremote/backend/internal/harness"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
 
+func TestLoadPromptImagesValidatesWorkspaceRelativeImages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "image.png"), []byte{0x89, 0x50, 0x4e, 0x47}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	images, err := loadPromptImages(root, []protocol.AgentPromptImage{{Path: "image.png"}})
+	if err != nil {
+		t.Fatalf("load valid image: %v", err)
+	}
+	if len(images) != 1 || images[0]["type"] != "image" || images[0]["mimeType"] != "image/png" || images[0]["data"] == "" {
+		t.Fatalf("structured image = %#v", images)
+	}
+	if _, containsPath := images[0]["path"]; containsPath {
+		t.Fatalf("structured image leaked local path: %#v", images[0])
+	}
+	for _, path := range []string{"../image.png", "/tmp/image.png", "missing.png"} {
+		if _, err := loadPromptImages(root, []protocol.AgentPromptImage{{Path: path}}); err == nil {
+			t.Fatalf("expected rejected path %q", path)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "text.txt"), []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadPromptImages(root, []protocol.AgentPromptImage{{Path: "text.txt"}}); err == nil {
+		t.Fatal("expected non-image extension rejection")
+	}
+	if err := os.WriteFile(filepath.Join(root, "large.png"), make([]byte, 10*1024*1024+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadPromptImages(root, []protocol.AgentPromptImage{{Path: "large.png"}}); err == nil {
+		t.Fatal("expected oversized image rejection")
+	}
+}
+
 type mockTermMgr struct {
 	createdReq  protocol.CreateSessionRequest
+	inputErr    error
 	inputs      map[string][][]byte
 	closed      map[string]bool
 	terminated  map[string]bool
@@ -61,7 +98,7 @@ func (m *mockTermMgr) List(_ context.Context) []protocol.SessionSummary {
 
 func (m *mockTermMgr) Input(id string, b []byte) error {
 	m.inputs[id] = append(m.inputs[id], b)
-	return nil
+	return m.inputErr
 }
 func (m *mockTermMgr) Close(id string) error {
 	m.closed[id] = true
@@ -138,6 +175,35 @@ func TestAgentServiceLifecycleAndPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateAgentUsesAgentScopedSessionDirectory(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, store, stateDir)
+	defer svc.Close()
+
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSessionDir := filepath.Join(stateDir, "sessions", agent.ID)
+	if got := termMgr.createdReq.Args; len(got) < 2 || got[0] != "--session-dir" || got[1] != wantSessionDir {
+		t.Fatalf("OMP args = %#v, want --session-dir %q first", got, wantSessionDir)
+	}
+	info, err := os.Stat(wantSessionDir)
+	if err != nil {
+		t.Fatalf("stat agent session directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("agent session path is not a directory: %s", wantSessionDir)
+	}
+}
+
 func TestAgentCreateRequestForwardsBackend(t *testing.T) {
 	store, err := runtimestore.Open(t.TempDir())
 	if err != nil {
@@ -152,6 +218,72 @@ func TestAgentCreateRequestForwardsBackend(t *testing.T) {
 	}
 	if termMgr.createdReq.Backend != "tmux" {
 		t.Fatalf("backend = %q, want tmux", termMgr.createdReq.Backend)
+	}
+}
+
+func TestAgentTerminalObserverKeepsArbitraryPTYOutputUnknown(t *testing.T) {
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, nil, t.TempDir())
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	termMgr.subscribers[agent.TerminalSessionID](protocol.PTYOutputEnvelope{
+		Type: "pty.output", SessionID: agent.TerminalSessionID, Data: base64.StdEncoding.EncodeToString([]byte("ready")),
+	}, protocol.SessionStateEnvelope{})
+	inst := svc.agents[agent.ID]
+	inst.mu.RLock()
+	observation := *inst.lastObservation
+	inst.mu.RUnlock()
+	if observation.Provenance.Source != "tui" || observation.Provenance.SessionID != agent.ID || observation.Lifecycle != harness.LifecycleUnknown || string(observation.Bytes) != "ready" {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
+
+func TestAgentRoutesOMPControlsThroughSharedTerminalDriver(t *testing.T) {
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, nil, t.TempDir())
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := svc.agents[agent.ID]
+	inst.runtime.SetBridgeReady(true)
+	inst.runtime.SetMode(harness.OmpAgentModeNone)
+	if err := svc.RouteOMPGoalShow(context.Background(), agent.ID); !errors.Is(err, harness.ErrTUIConfirmationPending) {
+		t.Fatalf("RouteOMPGoalShow error = %v, want pending confirmation", err)
+	}
+	if err := svc.RouteOMPPlanToggle(context.Background(), agent.ID); !errors.Is(err, harness.ErrTUIConfirmationPending) {
+		t.Fatalf("RouteOMPPlanToggle error = %v, want pending confirmation", err)
+	}
+	inputs := termMgr.inputs[agent.TerminalSessionID]
+	if len(inputs) != 2 || string(inputs[0]) != "/goal show\r" || string(inputs[1]) != "/plan\r" {
+		t.Fatalf("terminal inputs = %q, want /goal show then /plan", inputs)
+	}
+}
+
+func TestExecuteCommandAcceptsPendingOMPConfirmation(t *testing.T) {
+	termMgr := newMockTermMgr()
+	svc := NewService(termMgr, nil, t.TempDir())
+	defer svc.Close()
+	agent, err := svc.CreateAgent(context.Background(), "/workspace", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := svc.agents[agent.ID]
+	inst.runtime.SetBridgeReady(true)
+	inst.runtime.SetMode(harness.OmpAgentModeNone)
+	if err := svc.ExecuteCommand(context.Background(), agent.ID, "goal_show"); err != nil {
+		t.Fatalf("ExecuteCommand pending confirmation = %v, want nil", err)
+	}
+	termMgr.inputErr = errors.New("terminal unavailable")
+	if err := svc.ExecuteCommand(context.Background(), agent.ID, "goal_show"); !errors.Is(err, termMgr.inputErr) {
+		t.Fatalf("ExecuteCommand route error = %v, want %v", err, termMgr.inputErr)
+	}
+	if err := svc.ExecuteCommand(context.Background(), agent.ID, "unknown"); err == nil {
+		t.Fatal("ExecuteCommand unknown command = nil, want error")
 	}
 }
 
@@ -1050,6 +1182,52 @@ func TestFallbackTailerOwnsTranscriptAfterBridgeReconnect(t *testing.T) {
 	}
 }
 
+func TestAgentModeReconstructionFromTranscriptTailer(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := runtimestore.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const agentID = "agent-mode-tailer"
+	now := time.Now().UTC()
+	if err := store.RecordAgent(runtimestore.AgentSummary{ID: agentID, Capabilities: []byte("[]"), State: "idle", CreatedAt: now, UpdatedAt: now}, "agent.created"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"mode_change","id":"mode-1","mode":"plan"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(newMockTermMgr(), store, stateDir)
+	defer svc.Close()
+	observer := harness.NewCompositeRuntimeObserver()
+	inst := &agentInstance{
+		meta:              protocol.AgentSession{ID: agentID, State: "idle"},
+		sessionFile:       path,
+		compositeObserver: observer,
+		subscribers:       make(map[int]*AgentSubscriber),
+		stopPoll:          make(chan struct{}),
+	}
+	received := make(chan protocol.AgentEvent, 1)
+	inst.subscribers[1] = &AgentSubscriber{fn: func(event protocol.AgentEvent) { received <- event }}
+	svc.mu.Lock()
+	svc.agents[agentID] = inst
+	svc.mu.Unlock()
+
+	svc.checkTranscript(inst)
+	if got := observer.CurrentMode(); got != harness.OmpModePlanActive {
+		t.Fatalf("mode = %q, want %q", got, harness.OmpModePlanActive)
+	}
+	select {
+	case event := <-received:
+		if event.Type != "mode_change" || event.Mode != "plan" {
+			t.Fatalf("event = %+v", event)
+		}
+	default:
+		t.Fatal("mode_change event was not emitted")
+	}
+}
+
 // Test RAR-037-B: handleBridgeLifecycle mutates state for lifecycle events only
 func TestHandleBridgeLifecycleStateChange(t *testing.T) {
 	svc := &Service{
@@ -1206,6 +1384,11 @@ func TestHandleBridgeHelloModelAndThinking(t *testing.T) {
 			{ID: "gpt-4o", Name: "GPT-4o", Provider: "openai"},
 		},
 		AvailableThinking: []string{"off", "low", "medium", "high", "max"},
+		HarnessRuntime: &protocol.HarnessRuntimeState{
+			SessionMode: "interactive",
+			Features:    []string{"bash", "read"},
+			Commands:    []string{"help", "model"},
+		},
 	}
 
 	svc.handleBridgeHello(agent.ID, hello)
@@ -1223,6 +1406,12 @@ func TestHandleBridgeHelloModelAndThinking(t *testing.T) {
 		}
 		if len(ev.AvailableThinking) != 5 {
 			t.Fatalf("expected 5 available thinking levels, got %d", len(ev.AvailableThinking))
+		}
+		if ev.HarnessRuntime == nil || ev.HarnessRuntime.SessionMode != "interactive" {
+			t.Fatalf("expected interactive harness runtime, got %+v", ev.HarnessRuntime)
+		}
+		if len(ev.HarnessRuntime.Features) != 2 || len(ev.HarnessRuntime.Commands) != 2 {
+			t.Fatalf("unexpected harness runtime = %+v", ev.HarnessRuntime)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for state event after hello")

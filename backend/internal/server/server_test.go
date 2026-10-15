@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,18 @@ func (replayOverflowAgents) History(agentID string) (*protocol.AgentHistoryRespo
 		},
 	}, nil
 }
+func (replayOverflowAgents) CommandDescriptors(agentID string) ([]protocol.AgentCommandDescriptor, error) {
+	if agentID == "missing" {
+		return nil, errors.New("agent not found")
+	}
+	return []protocol.AgentCommandDescriptor{
+		{Name: "goal_show", Enabled: true},
+		{Name: "plan_toggle", Enabled: true},
+	}, nil
+}
+
+func (replayOverflowAgents) ExecuteCommand(context.Context, string, string) error { return nil }
+
 
 type recordingAgents struct {
 	replayOverflowAgents
@@ -557,6 +570,67 @@ func TestFSCopyRequiresBearerAndCopiesFile(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("copied data = %q", data)
+	}
+}
+
+func TestFSUploadDeleteRequiresBearerAndRemovesStagedUpload(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	stagedPath := filepath.Join(srv.cfg.WorkspaceRoot, srv.cfg.UploadDir, "staged.txt")
+	if err := os.MkdirAll(filepath.Dir(stagedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stagedPath, []byte("staged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/fs/upload", strings.NewReader(`{"path":"uploads/staged.txt"}`))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v1/fs/upload", strings.NewReader(`{"path":"uploads/staged.txt"}`))
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if _, err := os.Stat(stagedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged upload still exists or cannot be checked: %v", err)
+	}
+}
+
+func TestFSUploadDeleteRejectsNonUploadPath(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	workspaceFile := filepath.Join(srv.cfg.WorkspaceRoot, "keep.txt")
+	if err := os.WriteFile(workspaceFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/v1/fs/upload", strings.NewReader(`{"path":"keep.txt"}`))
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if _, err := os.Stat(workspaceFile); err != nil {
+		t.Fatalf("non-upload file was removed or cannot be checked: %v", err)
+	}
+}
+
+func TestCORSPreflightAllowsDelete(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/fs/upload", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:8081")
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.Code)
+	}
+	if methods := resp.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(methods, http.MethodDelete) {
+		t.Fatalf("DELETE absent from CORS methods: %q", methods)
 	}
 }
 
@@ -1612,6 +1686,82 @@ func TestDesktopDiagnosticAttemptAcceptsOnlyCanonicalUUIDs(t *testing.T) {
 	}
 }
 
+func TestHandleRFBProxyLogsSafeRejectedTicketReasons(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	var diagnostics bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&diagnostics)
+	defer log.SetOutput(previousLogWriter)
+
+	testCases := []struct {
+		name      string
+		scope     string
+		ttl       time.Duration
+		attemptID string
+		reason    string
+	}{
+		{name: "scope mismatch", scope: "other:scope", ttl: time.Minute, attemptID: "550e8400-e29b-41d4-a716-446655440001", reason: "scope_mismatch"},
+		{name: "expired", scope: "desktop:connect", ttl: -time.Second, attemptID: "550e8400-e29b-41d4-a716-446655440002", reason: "expired"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ticket, _, err := srv.desktopTickets.IssueForAttempt(tc.scope, tc.attemptID, tc.ttl, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+url.QueryEscape(ticket), nil)
+			res := httptest.NewRecorder()
+			srv.handleRFBProxy(res, req)
+			if res.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", res.Code, http.StatusUnauthorized)
+			}
+			if strings.Contains(diagnostics.String(), ticket) {
+				t.Fatal("ticket leaked to diagnostics")
+			}
+			if !strings.Contains(diagnostics.String(), "attempt=\""+tc.attemptID+"\"") || !strings.Contains(diagnostics.String(), "reason "+tc.reason) {
+				t.Fatalf("missing safe rejection diagnostic: %s", diagnostics.String())
+			}
+		})
+	}
+}
+func TestHandleRFBProxyLogsTargetDialFailure(t *testing.T) {
+	srv, _ := newBootstrapServer(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.VNCPort = listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const attemptID = "550e8400-e29b-41d4-a716-446655440003"
+	ticket, _, err := srv.desktopTickets.IssueForAttempt("desktop:connect", attemptID, time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&diagnostics)
+	defer log.SetOutput(previousLogWriter)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws/rfb?ticket="+url.QueryEscape(ticket), nil)
+	res := httptest.NewRecorder()
+	srv.handleRFBProxy(res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+	logs := diagnostics.String()
+	if strings.Contains(logs, ticket) {
+		t.Fatal("ticket leaked to diagnostics")
+	}
+	for _, stage := range []string{"ticket_validated", "target_dial_started", "target_dial_failed"} {
+		if !strings.Contains(logs, "stage="+stage) {
+			t.Fatalf("missing %q diagnostic: %s", stage, logs)
+		}
+	}
+}
+
 func TestHandleRFBProxyBytesFlow(t *testing.T) {
 	srv, pairings := newBootstrapServer(t)
 	token := testBearerToken(t, srv, pairings)
@@ -1688,7 +1838,7 @@ func TestHandleRFBProxyBytesFlow(t *testing.T) {
 		t.Fatalf("expected PONG, got %s", reply)
 	}
 	output := diagnostics.String()
-	for _, stage := range []string{"ticket_issued", "ticket_validated", "vnc_dialed", "websocket_upgraded", "ticket_consumed"} {
+	for _, stage := range []string{"target_dial_started", "target_dial_succeeded", "ticket_issued", "ticket_validated", "websocket_upgrade_started", "websocket_upgraded", "ticket_consumed"} {
 		if !strings.Contains(output, "attempt=\"550e8400-e29b-41d4-a716-446655440000\" stage="+stage) {
 			t.Fatalf("missing diagnostic stage %q: %s", stage, output)
 		}
@@ -2084,6 +2234,39 @@ func TestAgentHistoryEndpoint(t *testing.T) {
 	}
 }
 
+func TestAgentCommandsEndpointRequiresBearerAndReturnsDescriptors(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	srv.agents = replayOverflowAgents{}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents/agent-123/commands", nil)
+	resp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/agents/agent-123/commands", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	var body protocol.AgentCommandsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode commands response: %v", err)
+	}
+	got := map[string]bool{}
+	for _, command := range body.Commands {
+		got[command.Name] = true
+	}
+	for _, name := range []string{"goal_show", "plan_toggle"} {
+		if !got[name] {
+			t.Fatalf("commands = %+v, missing %q", body.Commands, name)
+		}
+	}
+}
+
 var _ = tls.VersionTLS12
 
 func TestServerSessionCapacityExceeded429(t *testing.T) {
@@ -2242,6 +2425,18 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 		}
 		return false
 	}
+	runtimeExited := func(id string) bool {
+		snapshot, err := srv.runtime.RuntimeSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, terminal := range snapshot.Terminals {
+			if terminal.ID == id {
+				return terminal.Exited
+			}
+		}
+		return false
+	}
 
 	// 1. Create a tmux-backed raw terminal session to test REST POST /v1/sessions/:id/close
 	s1, err := mgr.Create(ctx, protocol.CreateSessionRequest{Name: "raw-tmux-rest", Command: "sh", Args: []string{"-c", "sleep 100"}, Backend: "tmux"})
@@ -2272,6 +2467,9 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 	}
 	if terminalWindowExists(s1.ID) {
 		t.Fatalf("terminal window %s still exists in tmux after REST /close", s1.ID)
+	}
+	if !runtimeExited(s1.ID) {
+		t.Fatalf("terminal %s was not marked exited in the authoritative runtime snapshot", s1.ID)
 	}
 
 	// 2. Create another tmux-backed raw terminal session to test WS terminal.close
@@ -2309,5 +2507,8 @@ func TestServerSessionCloseTerminatesTmuxVsDetach(t *testing.T) {
 	}
 	if terminalWindowExists(s2.ID) {
 		t.Fatalf("terminal window %s still exists in tmux after WS terminal.close", s2.ID)
+	}
+	if !runtimeExited(s2.ID) {
+		t.Fatalf("terminal %s was not marked exited in the authoritative runtime snapshot", s2.ID)
 	}
 }

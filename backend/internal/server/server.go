@@ -71,6 +71,8 @@ type AgentAPI interface {
 	Terminate(agentID string) error
 	Subscribe(agentID string, fn func(protocol.AgentEvent)) (func(), error)
 	History(agentID string) (*protocol.AgentHistoryResponse, error)
+	CommandDescriptors(agentID string) ([]protocol.AgentCommandDescriptor, error)
+	ExecuteCommand(ctx context.Context, agentID, name string) error
 }
 
 type NotifyAPI interface {
@@ -206,7 +208,7 @@ func cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-AgenticRemote-Desktop-Attempt")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -450,6 +452,15 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, history)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "commands" && r.Method == http.MethodGet {
+		descriptors, err := s.agents.CommandDescriptors(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, protocol.ErrorEnvelope{Type: "error", Code: "agent_not_found", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.AgentCommandsResponse{Commands: descriptors})
+		return
+	}
 	if len(parts) == 2 && r.Method == http.MethodPost {
 		switch parts[1] {
 		case "prompt":
@@ -504,6 +515,24 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 		case "terminate":
 			if err := s.agents.Terminate(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "terminate_failed", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		case "command":
+			var req struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: err.Error()})
+				return
+			}
+			if req.Name == "" {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "bad_request", Message: "name is required"})
+				return
+			}
+			if err := s.agents.ExecuteCommand(r.Context(), id, req.Name); err != nil {
+				writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "command_failed", Message: err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -644,23 +673,42 @@ func (s *Server) handleFSDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFSUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 50<<20)
-	if err := r.ParseMultipartForm(50 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
-		return
+	switch r.Method {
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 50<<20)
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
+			return
+		}
+		defer file.Close()
+		stored, err := s.fs.Upload(r.URL.Query().Get("path"), file, header)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"path": stored})
+	case http.MethodDelete:
+		var request struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_remove_failed", Message: err.Error()})
+			return
+		}
+		if err := s.fs.RemoveUpload(request.Path); err != nil {
+			writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_remove_failed", Message: err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "POST, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, protocol.ErrorEnvelope{Type: "error", Code: "method_not_allowed", Message: "method not allowed"})
 	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
-		return
-	}
-	defer file.Close()
-	stored, err := s.fs.Upload(r.URL.Query().Get("path"), file, header)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, protocol.ErrorEnvelope{Type: "error", Code: "fs_upload_failed", Message: err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"path": stored})
 }
 
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
@@ -1561,6 +1609,19 @@ func desktopDiagnostic(attemptID, stage string, details ...any) {
 	log.Printf("[desktop diagnostic] attempt=%q stage=%s %v", attemptID, stage, details)
 }
 
+func acceptRFBWebSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	_ = rc.SetWriteDeadline(time.Time{})
+	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
+	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
+		for _, p := range strings.Split(h, ",") {
+			acceptOpts.Subprotocols = append(acceptOpts.Subprotocols, strings.TrimSpace(p))
+		}
+	}
+	return websocket.Accept(w, r, acceptOpts)
+}
+
 func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	if !s.desktopOriginAllowed(r.Header.Get("Origin")) {
 		writeJSON(w, http.StatusForbidden, protocol.ErrorEnvelope{Type: "error", Code: "forbidden_origin", Message: "origin is not allowed"})
@@ -1568,8 +1629,11 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ticketPlain := r.URL.Query().Get("ticket")
-	attemptID, valid := s.desktopTickets.Attempt(ticketPlain, "desktop:connect", time.Now())
+	now := time.Now()
+	attemptID, valid := s.desktopTickets.Attempt(ticketPlain, "desktop:connect", now)
 	if !valid {
+		_, ticketState := s.desktopTickets.Status(ticketPlain, "desktop:connect", now)
+		desktopDiagnostic(attemptID, "ticket_rejected", "reason", ticketState)
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorEnvelope{Type: "error", Code: "unauthorized", Message: "authentication failed"})
 		return
 	}
@@ -1582,24 +1646,42 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	defer s.limits.ReleaseWS()
 	desktopDiagnostic(attemptID, "connection_slot_acquired")
 	vncAddr := fmt.Sprintf("127.0.0.1:%d", s.cfg.VNCPort)
+	faultUnavailableTarget := e2eRFBUnavailableTarget()
+	if faultUnavailableTarget {
+		vncAddr = e2eRFBTarget()
+	}
+	desktopDiagnostic(attemptID, "target_dial_started")
 	tcpConn, err := net.DialTimeout("tcp", vncAddr, 5*time.Second)
 	if err != nil {
+		desktopDiagnostic(attemptID, "target_dial_failed")
 		log.Printf("[ERROR] VNC proxy: cannot reach %s: %v", vncAddr, err)
-		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorEnvelope{Type: "error", Code: "vnc_unavailable", Message: "VNC server is not running"})
+		if !faultUnavailableTarget {
+			writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorEnvelope{Type: "error", Code: "vnc_unavailable", Message: "VNC server is not running"})
+			return
+		}
+		desktopDiagnostic(attemptID, "websocket_upgrade_started")
+		wsConn, acceptErr := acceptRFBWebSocket(w, r)
+		if acceptErr != nil {
+			log.Printf("[ERROR] VNC proxy: websocket accept: %v", acceptErr)
+			return
+		}
+		defer wsConn.CloseNow()
+		desktopDiagnostic(attemptID, "websocket_upgraded")
+		if !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
+			_, ticketState := s.desktopTickets.Status(ticketPlain, "desktop:connect", time.Now())
+			_ = wsConn.Close(websocket.StatusPolicyViolation, string(desktopTicketCloseCategory(ticketState)))
+			return
+		}
+		desktopDiagnostic(attemptID, "ticket_consumed")
+		desktopDiagnostic(attemptID, "target_dial_failed")
+		_ = wsConn.Close(websocket.StatusTryAgainLater, string(DesktopCloseTargetDialFailed))
 		return
 	}
 	defer tcpConn.Close()
+	desktopDiagnostic(attemptID, "target_dial_succeeded")
 	desktopDiagnostic(attemptID, "vnc_dialed")
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Time{})
-	_ = rc.SetWriteDeadline(time.Time{})
-	acceptOpts := &websocket.AcceptOptions{InsecureSkipVerify: true}
-	if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
-		for _, p := range strings.Split(h, ",") {
-			acceptOpts.Subprotocols = append(acceptOpts.Subprotocols, strings.TrimSpace(p))
-		}
-	}
-	wsConn, err := websocket.Accept(w, r, acceptOpts)
+	desktopDiagnostic(attemptID, "websocket_upgrade_started")
+	wsConn, err := acceptRFBWebSocket(w, r)
 	if err != nil {
 		log.Printf("[ERROR] VNC proxy: websocket accept: %v", err)
 		return
@@ -1607,7 +1689,8 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 	desktopDiagnostic(attemptID, "websocket_upgraded")
 	wsConn.SetReadLimit(32 * 1024 * 1024)
 	if !s.desktopTickets.Consume(ticketPlain, "desktop:connect", time.Now()) {
-		_ = wsConn.Close(websocket.StatusPolicyViolation, "ticket already consumed")
+		_, ticketState := s.desktopTickets.Status(ticketPlain, "desktop:connect", time.Now())
+		_ = wsConn.Close(websocket.StatusPolicyViolation, string(desktopTicketCloseCategory(ticketState)))
 		return
 	}
 	desktopDiagnostic(attemptID, "ticket_consumed")
@@ -1659,7 +1742,7 @@ func (s *Server) handleRFBProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		if msgType != websocket.MessageBinary {
 			wsMux.Lock()
-			_ = wsConn.Close(websocket.StatusUnsupportedData, "binary frames required")
+			_ = wsConn.Close(websocket.StatusUnsupportedData, string(DesktopCloseWebSocketClosed))
 			wsMux.Unlock()
 			return
 		}

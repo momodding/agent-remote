@@ -38,32 +38,32 @@
   - **`closeSession`**: Close view/session in client state (does NOT kill backend process; subject to reconciliation/reconnect)
   - **`abortAgent`**: Interrupt running prompt (distinct from both)
 
-**Suspected Defect Boundary** [INFERENCE]:
-- Client UI may invoke terminate without confirming remote process actually killed
-- Dashboard X button may trigger close-view (reconcile session store) without verifying agent process exit
-- No explicit event/confirmation loop from backend `TerminateAgent()` back to client that confirms process exit status
-- Terminal card may appear stale (showing running-but-dead process) if reconciliation race occurs
+### Lifecycle Reconciliation Fix
 
-### Test Coverage Gaps
-- No test for: agent terminate → dashboard card state reconciliation
-- No test for: dashboard X button semantics (close view vs terminate)
-- No test for: active dashboard cards after remote agent termination + reconnect
+**Implemented source evidence**:
+- `client/src/lib/tabs/tab-store.ts`: `removeExitedAgentTabs()` removes local agent tabs when the authoritative runtime snapshot marks the corresponding agent `exited`.
+- `client/app/index.tsx`: runtime snapshot changes dispatch that cleanup for every connected daemon, including reconnect/resync.
+- `client/src/lib/session-surface.ts`: defensive rendering filter excludes an exited agent even before cleanup commits, so a stale local tab cannot retain the card.
 
-### Existing Tests
-- `client/src/__tests__/agent-lifecycle.test.tsx`: Endpoint-only tests; no UI state reconciliation
-- `client/src/agent-route.test.tsx`: Dashboard route basics; no termination flow
+### Remaining Validation Gap
+- A real daemon/browser termination-and-reconnect exercise is still required to prove backend event delivery, browser subscription lifecycle, and visible card removal.
+- The focused tests do not establish those runtime boundaries.
 
-### Minimal Corrective Plan (Manual Verification)
-1. Terminate agent via API
-2. Verify dashboard card persists (expected: close-view only)
-3. Verify stale card disappears on next reconciliation/reload
-4. Verify remote process actually killed: `ps` or OMP status check
+### Test Coverage
+- `client/src/lib/tabs/tab-store.test.ts`: `agent.updated` → exited runtime snapshot removes the matching local agent tab and selects a valid remaining tab.
+- `client/src/lib/session-surface.test.ts`: stale local agent tabs do not produce an exited agent surface.
+- `client/src/__tests__/dashboard-agent-termination-removal.test.tsx`: event reconciliation and stale-tab surface filtering coverage.
 
-### Manual Regression Path
-- Start agent Chat, send prompt
-- Click dashboard X → confirm close-view or terminate semantics
-- Reconnect/reload → verify card state reconciliation
-- Kill agent remotely, verify UI catches stale card
+### Manual Validation Status: OPEN / BLOCKED_ENVIRONMENT
+- On 2026-10-07, the repository daemon was built and started with `examples/config.local.json`; `curl --insecure https://127.0.0.1:8765/healthz` returned `{"ok":true,"version":"dev"}`. The Expo web client also loaded in the managed browser and rendered the daemon pairing form.
+- The live pairing attempt used a fresh daemon payload with “Skip fingerprint verification” selected. Browser requests to `https://127.0.0.1:8765/healthz` failed with `net::ERR_CERT_AUTHORITY_INVALID`; client diagnostics then reported `health probe failed` and `attemptAuth failed: Connection failed`. The client requires HTTPS pairing endpoints, so the daemon's loopback HTTP listener is not a valid fallback.
+- No browser client paired, no dashboard card rendered, and no real termination/reconnect could be executed. This finding MUST NOT be marked PASS until the daemon certificate is trusted by the validation browser (or a browser-trusted HTTPS endpoint is supplied).
+
+### Required Manual Regression Path
+1. Pair a browser client with the daemon using a browser that trusts its development certificate.
+2. Start an agent, terminate it remotely, and observe the dashboard card disappear.
+3. Reload or reconnect the dashboard and confirm the card remains absent.
+4. Confirm the remote process exited with an OMP status check or `ps`.
 
 ---
 

@@ -122,6 +122,7 @@ jest.mock("@expo/vector-icons/Feather", () => ({
 }));
 
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { Text } from "react-native";
 import AgentScreen from "../app/agent/[id]";
 import type {
   AgentCapability,
@@ -155,10 +156,24 @@ const mockTab: AgentWorkspaceTab = {
   view: "chat",
 };
 let mockCapabilities: AgentCapability[] = [];
+let mockHarnessRuntime:
+  { sessionMode: string; features: string[]; commands: string[] } | undefined;
 const mockTerminateAgent = jest.fn(async () => undefined);
+const mockSubmitAgentPrompt = jest.fn(async () => undefined);
+const mockSetAgentMode = jest.fn(async () => undefined);
 const mockAgentHistory = jest.fn<Promise<AgentHistoryResponse>, [string]>(
   async () => ({ cursor: 0, events: [] }),
 );
+const mockUploadAttachment = jest.fn(async () => "uploads/pasted-image.png");
+const mockFiles = jest.fn(async () => [
+  {
+    path: "diagram.png",
+    name: "diagram.png",
+    isDir: false,
+    size: 10,
+    mode: "-rw-r--r--",
+  },
+]);
 jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   router: { replace: jest.fn(), push: jest.fn() },
@@ -173,13 +188,17 @@ jest.mock("./lib/api", () => ({
     agent: jest.fn(async () => ({
       state: "working",
       capabilities: mockCapabilities,
+      harnessRuntime: mockHarnessRuntime,
     })),
     agentHistory: mockAgentHistory,
     runtimeSnapshot: jest.fn(async () => ({ topology: [] })),
-    submitAgentPrompt: jest.fn(),
+    submitAgentPrompt: mockSubmitAgentPrompt,
+    uploadAttachment: mockUploadAttachment,
+    files: mockFiles,
     abortAgent: jest.fn(),
     closeSession: jest.fn(),
     terminateAgent: mockTerminateAgent,
+    setAgentMode: mockSetAgentMode,
   })),
   APIError: class APIError extends Error {},
 }));
@@ -253,6 +272,7 @@ async function renderScreen(): Promise<ReactTestRenderer> {
 
 beforeEach(() => {
   mockCapabilities = [];
+  mockHarnessRuntime = undefined;
   mockHandleEvent = undefined;
   mockHandleCursorExpired = undefined;
   mockAgentHistory.mockReset();
@@ -260,6 +280,8 @@ beforeEach(() => {
   mockDispatch.mockClear();
   mockCloseTab.mockClear();
   mockTerminateAgent.mockClear();
+  mockSetAgentMode.mockClear();
+  mockUploadAttachment.mockClear();
   mockKeyboardListeners.clear();
   mockPTYHandler = undefined;
   mockTab.state = "working";
@@ -385,6 +407,36 @@ describe("AgentScreen capability gates", () => {
     act(() => tree.unmount());
   });
 
+  it("renders read-only OMP runtime state received from the bridge", async () => {
+    mockCapabilities = [{ name: "chat", enabled: true }];
+    const tree = await renderScreen();
+
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "state",
+        agentId: "agent-1",
+        harnessRuntime: {
+          sessionMode: "interactive",
+          features: ["bash", "read"],
+          commands: ["help", "model"],
+        },
+      });
+    });
+
+    const panel = tree.root.findByProps({
+      accessibilityLabel: "OMP Runtime Status",
+    });
+    expect(panel).toBeTruthy();
+    const text = panel
+      .findAllByType(Text)
+      .map((node) => String(node.props.children))
+      .join(" ");
+    expect(text).toContain("OMP Runtime");
+    expect(text).toContain("Mode: ,interactive");
+    expect(text).toContain("Features: ,bash, read");
+    expect(text).toContain("Commands: ,help, model");
+    act(() => tree.unmount());
+  });
   it("recovers and resyncs visible screen after transient history failure on cursor expiry", async () => {
     mockCapabilities = [
       { name: "chat", enabled: true },
@@ -710,6 +762,186 @@ describe("A06 – Android chat composer IME avoidance", () => {
     } finally {
       Object.defineProperty(Platform, "OS", { value: originalOS });
     }
+  });
+});
+
+describe("Agent mode indicator", () => {
+  it("updates the header from a live mode_change event, never falling back Unknown to Normal", async () => {
+    const tree = await renderScreen();
+
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "plan",
+      });
+    });
+
+    expect(
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .findByType(Text).props.children,
+    ).toBe("Plan");
+
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "unknown",
+      });
+    });
+    expect(
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .findByType(Text).props.children,
+    ).toBe("Unknown");
+    act(() => tree.unmount());
+  });
+});
+
+describe("Agent mode selection", () => {
+  it("selecting a mode calls the real backend route without optimistic update, then confirms on mode_change", async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "goal_paused",
+      });
+    });
+
+    await act(async () => {
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .props.onPress();
+    });
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: "Mode Plan" }).props.onPress();
+    });
+    expect(mockSetAgentMode).toHaveBeenCalledWith("agent-1", "plan_toggle");
+
+    // No optimistic update: label still reflects the last confirmed mode.
+    expect(
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .findByType(Text).props.children,
+    ).toBe("Goal");
+
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "plan",
+      });
+    });
+    expect(
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .findByType(Text).props.children,
+    ).toBe("Plan");
+    act(() => tree.unmount());
+  });
+
+  it("shows the real ControlSafety rejection reason and leaves mode unchanged", async () => {
+    mockSetAgentMode.mockRejectedValueOnce(new Error("omp tui mode unknown"));
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "goal_paused",
+      });
+    });
+
+    await act(async () => {
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .props.onPress();
+    });
+    await act(async () => {
+      tree.root.findByProps({ accessibilityLabel: "Mode Plan" }).props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      tree.root.findAll(
+        (node) => node.props?.children === "omp tui mode unknown",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .findByType(Text).props.children,
+    ).toBe("Goal");
+    act(() => tree.unmount());
+  });
+
+  it("times out without confirmation and leaves mode unchanged", async () => {
+    jest.useFakeTimers();
+    try {
+      const tree = await renderScreen();
+      await act(async () => {
+        mockHandleEvent?.({
+          type: "mode_change",
+          agentId: "agent-1",
+          mode: "goal_paused",
+        });
+      });
+      await act(async () => {
+        tree.root
+          .findByProps({ accessibilityLabel: "Agent Mode" })
+          .props.onPress();
+      });
+      await act(async () => {
+        tree.root
+          .findByProps({ accessibilityLabel: "Mode Plan" })
+          .props.onPress();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(8000);
+        await Promise.resolve();
+      });
+      expect(
+        tree.root.findAll(
+          (node) =>
+            node.props?.children ===
+            "Mode change timed out — no confirmation received.",
+        ).length,
+      ).toBeGreaterThan(0);
+      expect(
+        tree.root
+          .findByProps({ accessibilityLabel: "Agent Mode" })
+          .findByType(Text).props.children,
+      ).toBe("Goal");
+      act(() => tree.unmount());
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("never offers Vibe or Normal as pressable since no backend route exists", async () => {
+    const tree = await renderScreen();
+    await act(async () => {
+      mockHandleEvent?.({
+        type: "mode_change",
+        agentId: "agent-1",
+        mode: "goal_paused",
+      });
+    });
+    await act(async () => {
+      tree.root
+        .findByProps({ accessibilityLabel: "Agent Mode" })
+        .props.onPress();
+    });
+    expect(
+      tree.root.findByProps({ accessibilityLabel: "Mode Vibe" }).props.onPress,
+    ).toBeUndefined();
+    expect(
+      tree.root.findByProps({ accessibilityLabel: "Mode Normal" }).props
+        .onPress,
+    ).toBeUndefined();
+    act(() => tree.unmount());
   });
 });
 
@@ -1112,4 +1344,67 @@ describe("A04 – five-turn chat history/live/resync replay", () => {
 
     act(() => tree.unmount());
   });
+});
+
+it("selects a workspace image for structured prompt delivery", async () => {
+  mockCapabilities = [{ name: "prompt", enabled: true }];
+  const tree = await renderScreen();
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Attach workspace image" })
+      .props.onPress();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Attach diagram.png" })
+      .props.onPress();
+  });
+  const input = tree.root.findByProps({
+    placeholder: "Send instruction to agent...",
+  });
+  await act(async () => {
+    input.props.onChangeText("inspect");
+  });
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Send Prompt" })
+      .props.onPress();
+  });
+  expect(mockSubmitAgentPrompt).toHaveBeenCalledWith("agent-1", "inspect", [
+    { path: "diagram.png" },
+  ]);
+  expect(mockFiles).toHaveBeenCalledWith();
+});
+
+it("uploads pasted web clipboard images through attachment transport", async () => {
+  const listeners = new Map<string, EventListenerOrEventListenerObject>();
+  const addEventListener = window.addEventListener;
+  const removeEventListener = window.removeEventListener;
+  window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject) => {
+    listeners.set(type, listener);
+  }) as typeof window.addEventListener;
+  window.removeEventListener = ((type: string) => {
+    listeners.delete(type);
+  }) as typeof window.removeEventListener;
+  try {
+    mockCapabilities = [{ name: "prompt", enabled: true }];
+    const tree = await renderScreen();
+    const image = new File(["png"], "pasted-image.png", { type: "image/png" });
+    const paste = new Event("paste") as ClipboardEvent;
+    Object.defineProperty(paste, "clipboardData", {
+      value: { files: { 0: image, length: 1, item: () => image } },
+    });
+    const listener = listeners.get("paste");
+    if (typeof listener !== "function") throw new Error("Paste listener was not registered");
+    await act(async () => {
+      listener(paste);
+      await Promise.resolve();
+    });
+    expect(mockUploadAttachment).toHaveBeenCalledWith(image, "pasted-image.png");
+    act(() => tree.unmount());
+  } finally {
+    window.addEventListener = addEventListener;
+    window.removeEventListener = removeEventListener;
+  }
 });

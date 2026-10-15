@@ -56,42 +56,97 @@ type AgentCapability struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// HarnessRuntimeState is the read-only OMP runtime surface reported by the
+// extension bridge. SessionMode is the authoritative ExtensionContext mode;
+// Features and Commands are snapshots of OMP's active tools and commands.
+type HarnessRuntimeState struct {
+	SessionMode string   `json:"sessionMode,omitempty"`
+	Features    []string `json:"features,omitempty"`
+	Commands    []string `json:"commands,omitempty"`
+}
+
+// AgentAttachment describes a staged workspace attachment. Images are delivered as
+// OMP image content; non-images are passed to OMP by its native @ file mention
+// expansion, using StorageRef as the workspace-relative path.
+type AgentAttachment struct {
+	MIMEType   string `json:"mimeType"`
+	Name       string `json:"name"`
+	SizeBytes  int64  `json:"sizeBytes"`
+	StorageRef string `json:"storageRef"`
+}
+
+// AgentPromptImage is retained for clients predating AgentAttachment.
+type AgentPromptImage struct {
+	Path string `json:"path"`
+}
+
+type AgentPromptRequest struct {
+	Prompt      string             `json:"prompt"`
+	Images      []AgentPromptImage `json:"images,omitempty"`
+	Attachments []AgentAttachment  `json:"attachments,omitempty"`
+}
+
+// AgentCommandDescriptor is a server-authored, source-backed structured command.
+type AgentCommandDescriptor struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	Route          string `json:"route"`
+	Enabled        bool   `json:"enabled"`
+	DisabledReason string `json:"disabledReason,omitempty"`
+	PostCondition  string `json:"postCondition"`
+}
+
+type AgentCommandsResponse struct {
+	Commands []AgentCommandDescriptor `json:"commands"`
+}
+
+type AgentAttachmentCapabilities struct {
+	Images              bool   `json:"images"`
+	Files               bool   `json:"files"`
+	FilesDisabledReason string `json:"filesDisabledReason,omitempty"`
+}
+
 type AgentSession struct {
-	ID                string            `json:"id"`
-	Adapter           string            `json:"adapter"`
-	TerminalSessionID string            `json:"terminalSessionId"`
-	OMPSessionID      string            `json:"-"`
-	OMPSessionFile    string            `json:"-"`
-	CWD               string            `json:"cwd"`
-	State             string            `json:"state"`
-	Capabilities      []AgentCapability `json:"capabilities"`
-	Model             *AgentModelInfo   `json:"model,omitempty"`
-	Thinking          string            `json:"thinking,omitempty"`
-	AvailableModels   []AgentModelInfo  `json:"availableModels,omitempty"`
-	AvailableThinking []string          `json:"availableThinking,omitempty"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	ID                string               `json:"id"`
+	Adapter           string               `json:"adapter"`
+	TerminalSessionID string               `json:"terminalSessionId"`
+	OMPSessionID      string               `json:"-"`
+	OMPSessionFile    string               `json:"-"`
+	CWD               string               `json:"cwd"`
+	State             string               `json:"state"`
+	Capabilities      []AgentCapability    `json:"capabilities"`
+	Model             *AgentModelInfo      `json:"model,omitempty"`
+	Thinking          string               `json:"thinking,omitempty"`
+	AvailableModels   []AgentModelInfo     `json:"availableModels,omitempty"`
+	AvailableThinking []string             `json:"availableThinking,omitempty"`
+	HarnessRuntime    *HarnessRuntimeState `json:"harnessRuntime,omitempty"`
+	CreatedAt         time.Time            `json:"createdAt"`
+	UpdatedAt         time.Time            `json:"updatedAt"`
 }
 
 type AgentEvent struct {
-	Type              string            `json:"type"`
-	Cursor            int64             `json:"cursor,omitempty"`
-	EventID           string            `json:"eventId"`
-	AgentID           string            `json:"agentId"`
-	MessageID         string            `json:"messageId,omitempty"`
-	ToolCallID        string            `json:"toolCallId,omitempty"`
-	Text              string            `json:"text,omitempty"`
-	ToolName          string            `json:"toolName,omitempty"`
-	ToolInput         any               `json:"toolInput,omitempty"`
-	ToolOutput        any               `json:"toolOutput,omitempty"`
-	State             string            `json:"state,omitempty"`
-	Capabilities      []AgentCapability `json:"capabilities,omitempty"`
-	Model             *AgentModelInfo   `json:"model,omitempty"`
-	Thinking          string            `json:"thinking,omitempty"`
-	AvailableModels   []AgentModelInfo  `json:"availableModels,omitempty"`
-	AvailableThinking []string          `json:"availableThinking,omitempty"`
-	IsError           bool              `json:"isError,omitempty"`
-	Aborted           bool              `json:"aborted,omitempty"`
+	Type       string `json:"type"`
+	Cursor     int64  `json:"cursor,omitempty"`
+	EventID    string `json:"eventId"`
+	AgentID    string `json:"agentId"`
+	MessageID  string `json:"messageId,omitempty"`
+	ToolCallID string `json:"toolCallId,omitempty"`
+	Text       string `json:"text,omitempty"`
+	ToolName   string `json:"toolName,omitempty"`
+	ToolInput  any    `json:"toolInput,omitempty"`
+	ToolOutput any    `json:"toolOutput,omitempty"`
+	State      string `json:"state,omitempty"`
+	// Mode is set only on mode_change events. Values are none, plan,
+	// plan_paused, goal, goal_paused, vibe, or unknown.
+	Mode              string               `json:"mode,omitempty"`
+	Capabilities      []AgentCapability    `json:"capabilities,omitempty"`
+	Model             *AgentModelInfo      `json:"model,omitempty"`
+	Thinking          string               `json:"thinking,omitempty"`
+	AvailableModels   []AgentModelInfo     `json:"availableModels,omitempty"`
+	AvailableThinking []string             `json:"availableThinking,omitempty"`
+	HarnessRuntime    *HarnessRuntimeState `json:"harnessRuntime,omitempty"`
+	IsError           bool                 `json:"isError,omitempty"`
+	Aborted           bool                 `json:"aborted,omitempty"`
 }
 
 type AgentHistoryResponse struct {
@@ -178,7 +233,6 @@ type CreateSessionRequest struct {
 	Backend string            `json:"backend,omitempty"`
 	Env     map[string]string `json:"-"`
 }
-
 
 type WriteFileRequest struct {
 	Path           string `json:"path"`

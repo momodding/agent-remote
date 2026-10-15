@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -347,25 +348,60 @@ func (s *Service) Upload(relDir string, file multipart.File, header *multipart.F
 	if err != nil {
 		return "", err
 	}
-	target, display, err := s.Resolve(filepath.Join(uploadRel, relDir, filepath.Base(header.Filename)))
-	if err != nil {
-		return "", err
+	extension := filepath.Ext(filepath.Base(header.Filename))
+	var target, display string
+	for range 8 {
+		var nonce [16]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return "", err
+		}
+		name := hex.EncodeToString(nonce[:]) + extension
+		target, display, err = s.Resolve(filepath.Join(uploadRel, relDir, name))
+		if err != nil {
+			return "", err
+		}
+		if target != uploadRoot && !strings.HasPrefix(target, uploadRoot+string(filepath.Separator)) {
+			return "", errors.New("upload path escapes uploadRoot")
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return "", err
+		}
+		out, openErr := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(openErr, os.ErrExist) {
+			continue
+		}
+		if openErr != nil {
+			return "", openErr
+		}
+		if _, err := io.Copy(out, io.LimitReader(file, 50<<20)); err != nil {
+			_ = out.Close()
+			_ = os.Remove(target)
+			return "", err
+		}
+		if err := out.Close(); err != nil {
+			_ = os.Remove(target)
+			return "", err
+		}
+		return display, nil
 	}
-	if target != uploadRoot && !strings.HasPrefix(target, uploadRoot+string(filepath.Separator)) {
-		return "", errors.New("upload path escapes uploadRoot")
+	return "", errors.New("could not allocate upload target")
+}
+
+// RemoveUpload deletes only an opaque file directly beneath the configured upload root.
+func (s *Service) RemoveUpload(rel string) error {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	uploadRel, err := filepath.Rel(s.WorkspaceRoot, s.UploadRoot)
+	if err != nil || filepath.Dir(clean) != uploadRel || filepath.Ext(filepath.Base(clean)) == "" {
+		return errors.New("invalid upload reference")
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
+	target, display, err := s.Resolve(filepath.ToSlash(clean))
+	if err != nil || display != filepath.ToSlash(clean) {
+		return errors.New("invalid upload reference")
 	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return "", err
+	if filepath.Dir(target) != s.UploadRoot {
+		return errors.New("invalid upload reference")
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, io.LimitReader(file, 50<<20)); err != nil {
-		return "", err
-	}
-	return display, nil
+	return os.Remove(target)
 }
 
 func (s *Service) GitStatus(rel string) protocol.GitStatusResponse {

@@ -1,4 +1,6 @@
-import { addTab, closeTab, updateTab } from './tab-store';
+import { addTab, closeTab, removeExitedAgentTabs, updateTab } from './tab-store';
+import { applyRuntimeEvent } from '../runtime-reconcile';
+import type { RuntimeSnapshot } from '../../protocol';
 import type { TabDeckState, TerminalWorkspaceTab } from './types';
 
 const baseState: TabDeckState = { tabs: [], activeId: null, layout: {} };
@@ -39,5 +41,34 @@ describe('tab-store reducers', () => {
     const s2 = updateTab(s1, 't1', { title: 'patched' });
     expect(s2.tabs.find((t) => t.tabId === 't1')?.title).toBe('patched');
     expect(s2.tabs.find((t) => t.tabId === 't2')?.title).toBe('term');
+  });
+
+  it('removes a local agent tab after a reconnect snapshot reports it exited', () => {
+    const state: TabDeckState = {
+      tabs: [
+        { tabId: 'agent-tab', daemonId: 'host-1', kind: 'agent', title: 'Agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-1', terminalSessionId: 'term-agent', state: 'working', view: 'chat' },
+        terminalTab('terminal-tab'),
+      ],
+      activeId: 'agent-tab',
+      layout: {},
+    };
+    const snapshot: RuntimeSnapshot = {
+      cursor: 4,
+      agents: [{ id: 'agent-1', adapter: 'omp', terminalSessionId: 'term-agent', cwd: '', state: 'working', capabilities: [], createdAt: '', updatedAt: '' }],
+      terminals: [],
+      topology: [],
+      desktops: [],
+    };
+    const exitedSnapshot = applyRuntimeEvent(snapshot, {
+      type: 'agent.updated',
+      surfaceId: 'agent-1',
+      cursor: 5,
+      payload: { ...snapshot.agents[0], state: 'exited' },
+    }, 5);
+
+    const reconciled = removeExitedAgentTabs(state, 'host-1', exitedSnapshot.agents);
+
+    expect(reconciled.tabs.map((tab) => tab.tabId)).toEqual(['terminal-tab']);
+    expect(reconciled.activeId).toBe('terminal-tab');
   });
 });

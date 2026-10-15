@@ -189,7 +189,7 @@ test.describe("Web Agent Chat live OMP flow", () => {
         response.status() === 200,
     );
     await page.getByLabel("More actions").click();
-    await page.getByLabel("Terminate Agent").click();
+    await page.getByLabel("Terminate Agent", { exact: true }).click();
     await expect(page.getByLabel("Terminate Agent Confirmation")).toBeVisible();
     await page.getByLabel("Confirm Terminate Agent").click();
     await terminateRequest;

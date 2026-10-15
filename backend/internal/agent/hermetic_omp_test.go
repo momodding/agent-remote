@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agenticremote/agenticremote/backend/internal/harness"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 	"github.com/agenticremote/agenticremote/backend/internal/session"
@@ -280,6 +283,23 @@ func (m *MockOpenAIServer) QueueResponses(resps ...MockOpenAIResponse) {
 	m.responseSeq = append(m.responseSeq, resps...)
 }
 
+// responseForPrompt reserves a scripted response for its submitted user prompt.
+// OMP may issue startup completion requests before an interactive turn.
+func responseForPrompt(prompt string, response MockOpenAIResponse) func(OpenAIChatRequest) (*MockOpenAIResponse, error) {
+	return func(req OpenAIChatRequest) (*MockOpenAIResponse, error) {
+		for _, message := range req.Messages {
+			if strings.Contains(fmt.Sprint(message.Content), prompt) {
+				matched := response
+				return &matched, nil
+			}
+		}
+		return &MockOpenAIResponse{
+			StatusCode: http.StatusOK,
+			TextChunks: []string{"Hermetic PONG"},
+		}, nil
+	}
+}
+
 // SetCustomHandler sets a dynamic request handler.
 func (m *MockOpenAIServer) SetCustomHandler(fn func(req OpenAIChatRequest) (*MockOpenAIResponse, error)) {
 	m.mu.Lock()
@@ -334,6 +354,52 @@ modelRoles:
 
 	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
 	t.Setenv("OMP_AGENT_MODELS_FILE", filepath.Join(agentDir, "models.yml"))
+	// OMP's first-run provider onboarding is interactive and cannot use the
+	// hermetic local provider. The fixture supplies a complete local model and
+	// API key, so skip only that onboarding flow.
+	t.Setenv("OMP_SKIP_SETUP", "1")
+}
+
+func waitForHermeticOMPFixture(t *testing.T, svc *Service, agentID, agentDir string, deadline time.Time) {
+	t.Helper()
+	wantEnv := map[string]string{
+		"PI_CODING_AGENT_DIR":   agentDir,
+		"OMP_AGENT_MODELS_FILE": filepath.Join(agentDir, "models.yml"),
+		"OMP_SKIP_SETUP":        "1",
+	}
+	for time.Now().Before(deadline) {
+		if !svc.bridgeServer.IsConnected(agentID) {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		inst := svc.agents[agentID]
+		if inst == nil || inst.meta.OMPSessionFile == "" || inst.tailer == nil || inst.tailer.path != inst.meta.OMPSessionFile {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		pids := findHermeticOMPPIDs(agentID)
+		if len(pids) != 1 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		env, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(pids[0]), "environ"))
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ready := true
+		for key, value := range wantEnv {
+			if !strings.Contains(string(env), key+"="+value+"\x00") {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("hermetic OMP fixture did not become operational: agent=%s bridge=%t", agentID, svc.bridgeServer.IsConnected(agentID))
 }
 
 // requireBinary checks for a required executable binary in PATH.
@@ -388,11 +454,10 @@ func TestHermeticOMP_CannedText(t *testing.T) {
 	mock := NewMockOpenAIServer()
 	defer mock.Close()
 
-	mock.QueueResponses(MockOpenAIResponse{
+	mock.SetCustomHandler(responseForPrompt("Say hello to hermetic test", MockOpenAIResponse{
 		StatusCode: http.StatusOK,
 		TextChunks: []string{"Hermetic ", "PONG ", "Response"},
-	})
-
+	}))
 	workDir := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatalf("mkdir workDir: %v", err)
@@ -486,6 +551,248 @@ func TestHermeticOMP_CannedText(t *testing.T) {
 		t.Fatalf("mock server received 0 completion requests from real omp")
 	}
 	t.Logf("Hermetic canned text verified! Assistant response: %q across %d mock requests", assistantText, len(reqs))
+}
+func TestHermeticOMPFixtureOperationalReadiness(t *testing.T) {
+	requireBinary(t, "omp")
+	mock := NewMockOpenAIServer()
+	defer mock.Close()
+	workDir := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	termMgr, err := session.NewManager(workDir, filepath.Join(t.TempDir(), "terminals"), workDir, 1<<20, 64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentDir := filepath.Join(t.TempDir(), "agent-state")
+	WriteHermeticOMPConfig(t, agentDir, mock.URL())
+	store, err := runtimestore.Open(agentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	svc := NewService(termMgr, store, agentDir)
+	defer svc.Close()
+	created, err := svc.CreateAgentRequest(context.Background(), protocol.CreateSessionRequest{CWD: workDir, Name: "Fixture readiness", Backend: "pty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = termMgr.Close(created.TerminalSessionID) }()
+	waitForHermeticOMPFixture(t, svc, created.ID, agentDir, time.Now().Add(45*time.Second))
+}
+
+// TestHermeticOMPPlanTerminalAndControl proves /plan through the real PTY and
+// the daemon control route. It intentionally relies only on bridge/tailer data.
+func TestHermeticOMPPlanTerminalAndControl(t *testing.T) {
+	requireBinary(t, "omp")
+	mock := NewMockOpenAIServer()
+	defer mock.Close()
+	workDir := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	termMgr, err := session.NewManager(workDir, filepath.Join(t.TempDir(), "terminals"), workDir, 1<<20, 64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentDir := filepath.Join(t.TempDir(), "agent-state")
+	WriteHermeticOMPConfig(t, agentDir, mock.URL())
+	store, err := runtimestore.Open(agentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	svc := NewService(termMgr, store, agentDir)
+	defer svc.Close()
+	created, err := svc.CreateAgentRequest(context.Background(), protocol.CreateSessionRequest{CWD: workDir, Name: "Plan proof", Backend: "pty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = termMgr.Close(created.TerminalSessionID) }()
+	deadline := time.Now().Add(18 * time.Second)
+	waitForHermeticOMPFixture(t, svc, created.ID, agentDir, deadline)
+	inst := svc.agents[created.ID]
+	modeEvents := make(chan protocol.AgentEvent, 16)
+	assistantEvents := make(chan protocol.AgentEvent, 8)
+	unsubscribe, err := svc.Subscribe(created.ID, func(event protocol.AgentEvent) {
+		switch event.Type {
+		case "mode_change":
+			select {
+			case modeEvents <- event:
+			default:
+			}
+		case "message.assistant":
+			select {
+			case assistantEvents <- event:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	pty := make(chan []byte, 64)
+	stopPTY, err := termMgr.Subscribe(created.TerminalSessionID, func(output protocol.PTYOutputEnvelope, _ protocol.SessionStateEnvelope) {
+		if data, err := base64.StdEncoding.DecodeString(output.Data); err == nil {
+			select {
+			case pty <- data:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopPTY()
+
+	// OMP 18.6.1 keeps a fresh session in memory until an assistant message is
+	// appended. Materialize the exact bridge-bound journal through the existing
+	// canonical OMP process before testing persisted mode transitions.
+	if err := svc.SubmitPrompt(created.ID, "Reply exactly: hermetic session materialized"); err != nil {
+		t.Fatalf("materializing prompt: %v", err)
+	}
+	materialized := false
+	materializeDeadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(materializeDeadline) {
+		select {
+		case <-assistantEvents:
+			if info, err := os.Stat(inst.meta.OMPSessionFile); err == nil && info.Size() > 0 {
+				materialized = true
+			}
+		default:
+		}
+		if materialized {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !materialized {
+		if info, err := os.Stat(inst.meta.OMPSessionFile); err != nil {
+			t.Fatalf("canonical prompt did not materialize bridge-bound JSONL %q: %v", inst.meta.OMPSessionFile, err)
+		} else {
+			t.Fatalf("canonical prompt did not yield assistant semantic result with materialized JSONL %q (size=%d)", inst.meta.OMPSessionFile, info.Size())
+		}
+	}
+
+	waitMode := func(want string, timeout time.Duration) protocol.AgentEvent {
+		deadline := time.Now().Add(timeout)
+		var observed protocol.AgentEvent
+		for time.Now().Before(deadline) {
+			select {
+			case event := <-modeEvents:
+				if event.Mode == want {
+					observed = event
+				}
+			default:
+			}
+			if observed.Mode == want && inst.tailer.LastMode() == want {
+				return observed
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return observed
+	}
+	if err := svc.RouteTUIInput(context.Background(), created.ID, []byte("/plan\r")); err != nil {
+		t.Fatalf("terminal /plan: %v", err)
+	}
+	terminalMode := waitMode("plan", 12*time.Second)
+	if terminalMode.Mode != "plan" || inst.tailer.LastMode() != "plan" {
+		jsonl, readErr := os.ReadFile(inst.meta.OMPSessionFile)
+		t.Fatalf("real terminal /plan did not yield bound JSONL/live plan mode: event=%q tailer=%q; jsonl=%q; read=%v", terminalMode.Mode, inst.tailer.LastMode(), string(jsonl), readErr)
+	}
+	boundSessionFile := inst.meta.OMPSessionFile
+	// Discard the prior client subscription, then reconnect the actual bridge
+	// channel. The new subscriber has no cached runtime state and must receive
+	// plan from the exact persisted journal.
+	unsubscribe()
+	modeEvents = make(chan protocol.AgentEvent, 8)
+	unsubscribe, err = svc.Subscribe(created.ID, func(event protocol.AgentEvent) {
+		if event.Type != "mode_change" {
+			return
+		}
+		select {
+		case modeEvents <- event:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe after reconnect: %v", err)
+	}
+	defer unsubscribe()
+	// Wait for the restored service's first bridge connection, then close that
+	// actual channel after this fresh subscriber is attached.
+	initialReconnectDeadline := time.Now().Add(15 * time.Second)
+	for !svc.bridgeServer.IsConnected(created.ID) && time.Now().Before(initialReconnectDeadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !svc.bridgeServer.IsConnected(created.ID) {
+		t.Fatal("bridge did not connect to restored service")
+	}
+	for {
+		select {
+		case <-modeEvents:
+		default:
+			goto drainedReconnectModes
+		}
+	}
+drainedReconnectModes:
+	svc.bridgeServer.mu.RLock()
+	bridgeState := svc.bridgeServer.agents[created.ID]
+	svc.bridgeServer.mu.RUnlock()
+	if bridgeState == nil {
+		t.Fatal("missing bridge state before reconnect")
+	}
+	bridgeState.mu.Lock()
+	bridgeConn := bridgeState.conn
+	bridgeState.mu.Unlock()
+	if bridgeConn == nil {
+		t.Fatal("missing live bridge connection before reconnect")
+	}
+	if err := bridgeConn.Close(); err != nil {
+		t.Fatalf("close bridge connection: %v", err)
+	}
+	reconnectDeadline := time.Now().Add(15 * time.Second)
+	disconnected := false
+	for time.Now().Before(reconnectDeadline) {
+		connected := svc.bridgeServer.IsConnected(created.ID)
+		if !connected {
+			disconnected = true
+		}
+		if disconnected && connected {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !disconnected || !svc.bridgeServer.IsConnected(created.ID) {
+		t.Fatal("bridge did not disconnect and reconnect to restored service")
+	}
+	inst = svc.agents[created.ID]
+	if inst == nil || inst.meta.OMPSessionFile != boundSessionFile || inst.tailer == nil || inst.tailer.path != boundSessionFile {
+		t.Fatalf("reconnect did not bind exact persisted session file: got=%q want=%q", inst.meta.OMPSessionFile, boundSessionFile)
+	}
+	if restoredMode := waitMode("plan", 12*time.Second); restoredMode.Mode != "plan" || inst.tailer.LastMode() != "plan" {
+		t.Fatalf("reconnect did not restore source-backed plan mode: event=%q tailer=%q", restoredMode.Mode, inst.tailer.LastMode())
+	}
+
+	// In OMP 18.6.1, /plan toggles active plan mode to plan_paused rather
+	// than none. From that source-backed, automation-safe state, the daemon
+	// route must resume plan mode through the same canonical process.
+	if err := svc.RouteTUIInput(context.Background(), created.ID, []byte("/plan\r")); err != nil {
+		t.Fatalf("terminal /plan pause: %v", err)
+	}
+	if pausedPlan := waitMode("plan_paused", 12*time.Second); pausedPlan.Mode != "plan_paused" || inst.tailer.LastMode() != "plan_paused" {
+		t.Fatalf("terminal /plan pause did not yield bound JSONL/live plan_paused mode: event=%q tailer=%q", pausedPlan.Mode, inst.tailer.LastMode())
+	}
+	if err := svc.RouteOMPPlanToggle(context.Background(), created.ID); !errors.Is(err, harness.ErrTUIConfirmationPending) {
+		t.Fatalf("daemon plan route = %v, want confirmation pending", err)
+	}
+	if daemonMode := waitMode("none", 12*time.Second); daemonMode.Mode != "none" || inst.tailer.LastMode() != "none" {
+		t.Fatalf("daemon plan route did not yield bound JSONL/live none mode: event=%q tailer=%q", daemonMode.Mode, inst.tailer.LastMode())
+	}
+	if countHermeticOMPPIDsForAgent(created.ID) != 1 {
+		t.Fatalf("OMP process count = %d, want 1", countHermeticOMPPIDsForAgent(created.ID))
+	}
 }
 
 // TestHermeticOMP_ToolCallsAndContinuation verifies that real omp handles tool calls,
@@ -610,7 +917,7 @@ func TestHermeticOMP_Unicode(t *testing.T) {
 	defer mock.Close()
 
 	unicodeContent := "🚀 日本語 테스트 中文 💡 Überprüfung: café & résumé 🎯"
-	mock.QueueResponses(MockOpenAIResponse{
+	mock.SetCustomHandler(responseForPrompt("Send unicode", MockOpenAIResponse{
 		StatusCode: http.StatusOK,
 		TextChunks: []string{
 			"🚀 日本語 ",
@@ -619,7 +926,7 @@ func TestHermeticOMP_Unicode(t *testing.T) {
 			"Überprüfung: ",
 			"café & résumé 🎯",
 		},
-	})
+	}))
 
 	workDir := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
@@ -697,13 +1004,11 @@ func TestHermeticOMP_ErrorAndLatency(t *testing.T) {
 	defer mock.Close()
 
 	// Queue a response with latency delay followed by valid completion
-	mock.QueueResponses(
-		MockOpenAIResponse{
-			StatusCode: http.StatusOK,
-			Delay:      300 * time.Millisecond,
-			TextChunks: []string{"Delayed ", "Hermetic ", "Response"},
-		},
-	)
+	mock.SetCustomHandler(responseForPrompt("Test latency", MockOpenAIResponse{
+		StatusCode: http.StatusOK,
+		Delay:      300 * time.Millisecond,
+		TextChunks: []string{"Delayed ", "Hermetic ", "Response"},
+	}))
 
 	workDir := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {

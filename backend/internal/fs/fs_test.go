@@ -5,6 +5,7 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,8 +155,11 @@ func TestUploadUsesWorkspaceResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := svc.Upload("nested", input, &multipart.FileHeader{Filename: "note.txt"})
-	if err != nil || stored != "uploads/nested/note.txt" {
-		t.Fatalf("Upload = %q, %v", stored, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(stored, "uploads/nested/") || strings.HasSuffix(stored, "note.txt") || filepath.Ext(stored) != ".txt" {
+		t.Fatalf("Upload = %q: expected opaque name under uploads/nested/ with .txt extension", stored)
 	}
 	if data, err := os.ReadFile(filepath.Join(workspace, stored)); err != nil || string(data) != "hello" {
 		t.Fatalf("stored file = %q, %v", data, err)

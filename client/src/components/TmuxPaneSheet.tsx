@@ -24,7 +24,7 @@ export const TmuxPaneSheet = forwardRef<TmuxPaneSheetHandle, Props>(function Tmu
   useImperativeHandle(ref, () => ({ present: () => sheet.current?.present(), dismiss: () => sheet.current?.dismiss() }), []);
 
   return <GlassBottomSheet ref={sheet} title="Panes">
-    <BottomSheetScrollView contentContainerStyle={styles.list}>
+    <BottomSheetScrollView style={styles.scrollView} contentContainerStyle={styles.list}>
       {panes.length === 0 ? <Text style={[styles.empty, { color: palette.muted }]}>No persistent panes in this daemon.</Text> : panes.map((pane) => {
         const selected = pane.paneId === currentPaneId;
         return <Pressable
@@ -34,12 +34,12 @@ export const TmuxPaneSheet = forwardRef<TmuxPaneSheetHandle, Props>(function Tmu
           onPress={() => { onSelect(pane); sheet.current?.dismiss(); }}
           style={({ pressed }) => [styles.row, selected && { backgroundColor: palette.selected }, pressed && styles.pressed]}
         >
-          <Feather name="terminal" size={17} color={selected ? palette.accent : palette.muted} />
+          <Feather name="terminal" size={17} color={selected ? palette.accent : palette.muted} style={styles.icon} />
           <View style={styles.copy}>
-            <Text style={[styles.title, { color: palette.text }]} numberOfLines={1}>{pane.sessionName} · {pane.windowName}</Text>
-            <Text style={[styles.detail, { color: palette.muted }]} numberOfLines={1}>Pane {pane.paneIndex + 1} · {pane.cwd || 'workspace'}</Text>
+            <Text style={[styles.title, { color: palette.text }]} numberOfLines={2}>{pane.sessionName} · {pane.windowName}</Text>
+            <Text style={[styles.detail, { color: palette.muted }]} numberOfLines={2}>Pane {pane.paneIndex + 1} · {pane.cwd || 'workspace'}</Text>
           </View>
-          {selected && <Feather name="check" size={18} color={palette.accent} />}
+          {selected && <Feather name="check" size={18} color={palette.accent} style={styles.icon} />}
         </Pressable>;
       })}
     </BottomSheetScrollView>
@@ -47,10 +47,12 @@ export const TmuxPaneSheet = forwardRef<TmuxPaneSheetHandle, Props>(function Tmu
 });
 
 const styles = StyleSheet.create({
-  list: { paddingHorizontal: 12, paddingBottom: 28 },
-  row: { minHeight: 58, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 10 },
+  scrollView: { flex: 1, minHeight: 0 },
+  list: { paddingHorizontal: 12, paddingBottom: 28, flexGrow: 1 },
+  row: { minHeight: 58, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderRadius: 10, minWidth: 0, overflow: 'hidden' },
   pressed: { opacity: 0.68 },
-  copy: { flex: 1, gap: 2 },
+  icon: { marginTop: 3 },
+  copy: { flex: 1, gap: 2, minWidth: 0 },
   title: { fontSize: 14, fontWeight: '600' },
   detail: { fontSize: 12 },
   empty: { padding: 16, textAlign: 'center' },

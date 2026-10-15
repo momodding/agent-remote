@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { CSSProperties } from 'react';
+import type { TerminalHandle } from './Terminal';
 import { Terminal as XTerm } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
@@ -10,13 +11,20 @@ type Props = {
   output: string;
 };
 
-export function Terminal({ onInput, onResize, output }: Props) {
+export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ onInput, onResize, output }, ref) {
   const container = useRef<HTMLDivElement>(null);
   const terminal = useRef<XTerm>(null);
   const lastOutput = useRef('');
   const inputHandler = useRef(onInput);
   const resizeHandler = useRef(onResize);
   inputHandler.current = onInput;
+  useImperativeHandle(ref, () => ({
+    copy: () => void navigator.clipboard?.writeText(terminal.current?.getSelection() ?? ''),
+    paste: () => void navigator.clipboard?.readText().then((text) => terminal.current?.paste(text)),
+    selectAll: () => terminal.current?.selectAll(),
+    blur: () => terminal.current?.blur(),
+    focus: () => terminal.current?.focus(),
+  }), []);
   resizeHandler.current = onResize;
 
   useEffect(() => {
@@ -79,7 +87,7 @@ export function Terminal({ onInput, onResize, output }: Props) {
   }, [output]);
 
   return <div style={wrapperStyle}><div ref={container} style={terminalStyle} /></div>;
-}
+});
 
 const wrapperStyle: CSSProperties = {
   flex: 1,

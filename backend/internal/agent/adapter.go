@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,9 +11,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/agenticremote/agenticremote/backend/internal/harness"
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
 	runtimestore "github.com/agenticremote/agenticremote/backend/internal/runtime"
 )
@@ -74,6 +77,10 @@ type agentInstance struct {
 	agentDir                string
 	resolvedCWD             string
 	termID                  string
+	harness                 *harness.OMPAdapter
+	runtime                 *harness.OmpRuntimeState
+	compositeObserver       *harness.CompositeRuntimeObserver
+	lastObservation         *harness.Observation
 	subscribers             map[int]*AgentSubscriber
 	nextSubID               int
 	stopPoll                chan struct{}
@@ -83,17 +90,19 @@ type agentInstance struct {
 	pollInterval            time.Duration
 	transcriptFallbackAfter time.Time
 	semanticOwner           string
+	stagedAttachments       []string
 }
 
 type Service struct {
-	mu           sync.RWMutex
-	termMgr      TerminalManager
-	store        *runtimestore.Store
-	agentDir     string
-	agents       map[string]*agentInstance
-	byTerminal   map[string]string // terminalID -> agentID
-	bridgeServer *BridgeServer
-	closing      bool
+	mu            sync.RWMutex
+	termMgr       TerminalManager
+	store         *runtimestore.Store
+	agentDir      string
+	workspaceRoot string
+	agents        map[string]*agentInstance
+	byTerminal    map[string]string // terminalID -> agentID
+	bridgeServer  *BridgeServer
+	closing       bool
 }
 
 func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir string) *Service {
@@ -101,13 +110,18 @@ func NewService(termMgr TerminalManager, store *runtimestore.Store, agentDir str
 		agentDir = DefaultAgentDir()
 	}
 	_ = os.MkdirAll(agentDir, 0o700)
+	workspaceRoot := ""
+	if provider, ok := termMgr.(interface{ WorkspaceRoot() string }); ok {
+		workspaceRoot = provider.WorkspaceRoot()
+	}
 
 	s := &Service{
-		termMgr:    termMgr,
-		store:      store,
-		agentDir:   agentDir,
-		agents:     make(map[string]*agentInstance),
-		byTerminal: make(map[string]string),
+		termMgr:       termMgr,
+		store:         store,
+		agentDir:      agentDir,
+		workspaceRoot: workspaceRoot,
+		agents:        make(map[string]*agentInstance),
+		byTerminal:    make(map[string]string),
 	}
 
 	socketPath := filepath.Join(agentDir, "bridge.sock")
@@ -126,6 +140,40 @@ func (s *Service) toWorkspaceRelative(p string) string {
 		return relProvider.ToWorkspaceRelative(p)
 	}
 	return p
+}
+
+func cloneHarnessRuntime(runtime *protocol.HarnessRuntimeState) *protocol.HarnessRuntimeState {
+	if runtime == nil {
+		return nil
+	}
+	return &protocol.HarnessRuntimeState{
+		SessionMode: runtime.SessionMode,
+		Features:    append([]string(nil), runtime.Features...),
+		Commands:    append([]string(nil), runtime.Commands...),
+	}
+}
+
+func loadPromptImages(baseDir string, images []protocol.AgentPromptImage) ([]map[string]string, error) {
+	encoded := make([]map[string]string, 0, len(images))
+	for _, image := range images {
+		if image.Path == "" || filepath.IsAbs(image.Path) || strings.Contains(image.Path, "..") {
+			return nil, errors.New("invalid image path")
+		}
+		path := filepath.Join(baseDir, filepath.FromSlash(image.Path))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 || len(data) > 10*1024*1024 {
+			return nil, errors.New("image size must be between 1 byte and 10 MiB")
+		}
+		mime := map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}[strings.ToLower(filepath.Ext(path))]
+		if mime == "" {
+			return nil, errors.New("unsupported image type")
+		}
+		encoded = append(encoded, map[string]string{"type": "image", "data": base64.StdEncoding.EncodeToString(data), "mimeType": mime})
+	}
+	return encoded, nil
 }
 
 func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
@@ -180,15 +228,56 @@ func (s *Service) handleBridgeHello(agentID string, hello BridgeHello) bool {
 	if len(hello.AvailableThinking) > 0 {
 		inst.meta.AvailableThinking = append([]string(nil), hello.AvailableThinking...)
 	}
-	inst.meta.UpdatedAt = time.Now().UTC()
-	if inst.tailer == nil || inst.tailer.path != hello.SessionFile {
-		inst.tailer = NewTranscriptTailer(inst.meta.ID, hello.SessionFile, s.store)
-		_ = inst.tailer.RestoreState()
+	if hello.HarnessRuntime != nil {
+		inst.meta.HarnessRuntime = cloneHarnessRuntime(hello.HarnessRuntime)
 	}
+	inst.meta.UpdatedAt = time.Now().UTC()
+	// A bridge reconnect is a new live-observer boundary. Replay the exact
+	// bound JSONL through a fresh tailer so mode events are source-backed for
+	// newly attached clients, while bridge remains the sole message owner.
+	inst.tailer = NewTranscriptTailer(inst.meta.ID, hello.SessionFile, s.store)
+	tailer := inst.tailer
+	observer := inst.compositeObserver
+	runtime := inst.runtime
+	terminalID := inst.meta.TerminalSessionID
 	inst.mu.Unlock()
+	if runtime != nil {
+		runtime.SetBridgeReady(true)
+	}
+	if observer != nil {
+		observer.ApplyBridgeHello(agentID, terminalID, hello.SessionID, hello.SessionFile, "")
+	}
+	s.reconstructTailerMode(inst, tailer)
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 	return true
+}
+
+// reconstructTailerMode advances the existing JSONL tailer stream and accepts
+// only source-backed mode_change entries; bridge semantic events stay owned by
+// the bridge.
+func (s *Service) reconstructTailerMode(inst *agentInstance, tailer *TranscriptTailer) {
+	inst.tailerMu.Lock()
+	defer inst.tailerMu.Unlock()
+	events, err := tailer.Read()
+	if err != nil {
+		return
+	}
+	if err := tailer.SaveState(); err != nil {
+		return
+	}
+	for _, event := range events {
+		if event.Type != "mode_change" {
+			continue
+		}
+		if inst.compositeObserver != nil {
+			inst.compositeObserver.SetModeFromJSONL(event.Mode)
+		}
+		if inst.runtime != nil {
+			inst.runtime.SetModeFromJSONL(event.Mode)
+		}
+		s.emitModeChange(inst, event.EventID, event.Mode)
+	}
 }
 
 func (s *Service) handleBridgeDisconnect(agentID string) {
@@ -208,6 +297,10 @@ func (s *Service) handleBridgeDisconnect(agentID string) {
 		{Name: "thinking", Enabled: false},
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
+	// The bridge no longer owns semantics once disconnected; hand authority
+	// back to the file tailer so transcript polling resumes updating state
+	// (see the ownership contract documented at checkTranscript above).
+	inst.semanticOwner = semanticOwnerTailer
 	inst.mu.Unlock()
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
@@ -232,6 +325,9 @@ func (s *Service) handleBridgeMetadata(agentID string, frame BridgeMetadataFrame
 	}
 	if len(frame.AvailableThinking) > 0 {
 		inst.meta.AvailableThinking = append([]string(nil), frame.AvailableThinking...)
+	}
+	if frame.HarnessRuntime != nil {
+		inst.meta.HarnessRuntime = cloneHarnessRuntime(frame.HarnessRuntime)
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
 	inst.mu.Unlock()
@@ -279,6 +375,35 @@ func (s *Service) emitBridgeActivity(inst *agentInstance, frame BridgeLifecycleF
 	}
 }
 
+func (s *Service) emitModeChange(inst *agentInstance, eventID, mode string) {
+	if eventID == "" {
+		eventID = fmt.Sprintf("%s:mode_change:%d", inst.meta.ID, time.Now().UnixNano())
+	}
+	event := protocol.AgentEvent{Type: "mode_change", EventID: eventID, AgentID: inst.meta.ID, Mode: mode}
+	inst.mu.RLock()
+	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
+	for _, sub := range inst.subscribers {
+		subscribers = append(subscribers, sub.fn)
+	}
+	inst.mu.RUnlock()
+	if s.store != nil {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		committed, err := s.store.RecordAgentTranscript(inst.meta.ID, []runtimestore.AgentTranscriptEvent{{EventID: event.EventID, Kind: event.Type, Payload: payload}}, runtimestore.TranscriptState{})
+		if err != nil {
+			return
+		}
+		if len(committed) > 0 {
+			event.Cursor = committed[0].Event.Cursor
+		}
+	}
+	for _, subscriber := range subscribers {
+		subscriber(event)
+	}
+}
+
 func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFrame) {
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
@@ -302,6 +427,50 @@ func (s *Service) handleBridgeLifecycle(agentID string, frame BridgeLifecycleFra
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.terminateAgentRuntime(ctx, inst, "session identity changed")
+		return
+	}
+	if inst.compositeObserver != nil {
+		inst.compositeObserver.ApplyBridgeLifecycle(frame.Event, "")
+	}
+	if runtime := inst.runtime; runtime != nil {
+		switch frame.Event {
+		case "agent_start":
+			runtime.SetAgentActive(true)
+		case "agent_end":
+			runtime.SetAgentActive(false)
+		case "turn_start":
+			runtime.SetTurnActive(true)
+		case "turn_end":
+			runtime.SetTurnActive(false)
+		case "tool_start":
+			runtime.SetToolCount(1)
+		case "tool_end":
+			runtime.SetToolCount(0)
+		case "approval_requested":
+			runtime.SetApprovalPending(true)
+		case "approval_resolved":
+			runtime.SetApprovalPending(false)
+		case "compaction_start":
+			runtime.SetCompacting(true)
+		case "compaction_end":
+			runtime.SetCompacting(false)
+		case "retry_start":
+			runtime.SetRetrying(true)
+		case "retry_end":
+			runtime.SetRetrying(false)
+		case "goal_updated":
+			runtime.SetGoalActive(frame.GoalActive, frame.GoalTitle, frame.GoalStatus)
+		}
+	}
+	if frame.Event == "goal_updated" {
+		if inst.compositeObserver != nil {
+			inst.compositeObserver.SetGoalActive(frame.GoalActive)
+		}
+		mode := string(harness.OmpAgentModeNone)
+		if frame.GoalActive {
+			mode = string(harness.OmpAgentModeGoal)
+		}
+		s.emitModeChange(inst, frame.EventID, mode)
 		return
 	}
 	s.emitBridgeActivity(inst, frame)
@@ -433,6 +602,10 @@ func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance
 		return fmt.Errorf("terminate backend: %w", err)
 	}
 
+	if inst.harness != nil {
+		inst.harness.Close()
+	}
+
 	inst.mu.Lock()
 	agentID := inst.meta.ID
 	stop := inst.stopTerminal
@@ -446,6 +619,8 @@ func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance
 		{Name: "thinking", Enabled: false},
 	}
 	inst.meta.UpdatedAt = time.Now().UTC()
+	stagedAttachments := inst.stagedAttachments
+	inst.stagedAttachments = nil
 	inst.mu.Unlock()
 	if inst.stopPoll != nil {
 		inst.stopPollOnce.Do(func() {
@@ -462,6 +637,9 @@ func (s *Service) terminateAgentRuntime(ctx context.Context, inst *agentInstance
 		s.bridgeServer.UnregisterAgent(agentID)
 	}
 	removeBridgeSecret(s.agentDir, agentID)
+	for _, path := range stagedAttachments {
+		_ = os.Remove(path)
+	}
 	s.recordAgentSummary(inst, "agent.updated")
 	s.emitState(inst)
 	return nil
@@ -495,33 +673,21 @@ func (s *Service) restorePersisted() {
 				break
 			}
 		}
+		compositeObserver := harness.NewCompositeRuntimeObserver()
+		compositeObserver.SetMode(harness.OmpModeUnknown, harness.ModeAuthorityUnknown)
+		runtime := harness.NewOmpRuntimeState()
+		runtime.SetProcessAlive(s.isTerminalRunning(a.TerminalSessionID, snap))
 		inst := &agentInstance{
 			meta: protocol.AgentSession{
-				ID:                a.ID,
-				Adapter:           a.Adapter,
-				TerminalSessionID: a.TerminalSessionID,
-				OMPSessionID:      a.OMPSessionID,
-				OMPSessionFile:    a.OMPSessionFile,
-				CWD:               s.toWorkspaceRelative(a.CWD),
-				State:             a.State,
-				Capabilities: []protocol.AgentCapability{
-					{Name: "chat", Enabled: true},
-					{Name: "prompt", Enabled: false},
-					{Name: "abort", Enabled: false},
-					{Name: "model", Enabled: false},
-					{Name: "thinking", Enabled: false},
-				},
-				CreatedAt: a.CreatedAt,
-				UpdatedAt: a.UpdatedAt,
+				ID: a.ID, Adapter: a.Adapter, TerminalSessionID: a.TerminalSessionID,
+				OMPSessionID: a.OMPSessionID, OMPSessionFile: a.OMPSessionFile,
+				CWD: s.toWorkspaceRelative(a.CWD), State: a.State,
+				Capabilities: []protocol.AgentCapability{{Name: "chat", Enabled: true}, {Name: "prompt", Enabled: false}, {Name: "abort", Enabled: false}, {Name: "model", Enabled: false}, {Name: "thinking", Enabled: false}},
+				CreatedAt:    a.CreatedAt, UpdatedAt: a.UpdatedAt,
 			},
-			resolvedCWD:             resolved,
-			sessionFile:             a.OMPSessionFile,
-			agentDir:                s.agentDir,
-			subscribers:             make(map[int]*AgentSubscriber),
-			stopPoll:                make(chan struct{}),
-			pollDone:                make(chan struct{}),
-			pollInterval:            250 * time.Millisecond,
-			transcriptFallbackAfter: transcriptFallbackDeadline(s.termMgr),
+			resolvedCWD: resolved, sessionFile: a.OMPSessionFile, agentDir: s.agentDir,
+			runtime: runtime, compositeObserver: compositeObserver,
+			subscribers: make(map[int]*AgentSubscriber), stopPoll: make(chan struct{}), pollDone: make(chan struct{}), pollInterval: 250 * time.Millisecond, transcriptFallbackAfter: transcriptFallbackDeadline(s.termMgr),
 		}
 		if a.ID == a.TerminalSessionID {
 			newID, err := newAgentID()
@@ -611,12 +777,18 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize bridge: %w", err)
 	}
+	sessionDir := filepath.Join(s.agentDir, "sessions", agentID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		removeBridgeSecret(s.agentDir, agentID)
+		return nil, fmt.Errorf("create agent session directory: %w", err)
+	}
+
 
 	if s.bridgeServer != nil {
 		s.bridgeServer.RegisterAgent(agentID, secret)
 	}
 
-	cmdArgs := append([]string{"--no-extensions", "-e", bridgePath}, args...)
+	cmdArgs := append([]string{"--session-dir", sessionDir, "--no-extensions", "-e", bridgePath}, args...)
 	var env map[string]string
 	if s.bridgeServer != nil {
 		env = map[string]string{
@@ -667,16 +839,40 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 
 	fallbackAfter := transcriptFallbackDeadline(s.termMgr)
 
+	compositeObserver := harness.NewCompositeRuntimeObserver()
+	runtime := harness.NewOmpRuntimeState()
+	runtime.SetProcessAlive(true)
 	inst := &agentInstance{
-		meta:                    agentSession,
-		resolvedCWD:             termSummary.CWD,
-		agentDir:                s.agentDir,
+		meta:        agentSession,
+		resolvedCWD: termSummary.CWD,
+		agentDir:    s.agentDir,
+		harness: harness.NewOMPAdapterWithVersion(harness.OMPVersion1861, harness.DriverFunc(func(_ context.Context, input harness.Input) error {
+			return s.termMgr.Input(termSummary.ID, input.Bytes)
+		}), runtime),
+		runtime: runtime, compositeObserver: compositeObserver,
 		subscribers:             make(map[int]*AgentSubscriber),
 		stopPoll:                make(chan struct{}),
 		pollDone:                make(chan struct{}),
 		pollInterval:            200 * time.Millisecond,
 		transcriptFallbackAfter: fallbackAfter,
 	}
+	// Forward composite observer updates into the harness observer chain.
+	compositeObserver.AddObserver(harness.ObserverFunc(func(observation harness.Observation) {
+		inst.harness.Observe(observation)
+	}))
+	// Record the most recent raw observation for state inspection (e.g. tests
+	// and diagnostics); the harness observer chain is the only place that sees
+	// every observation regardless of its originating source.
+	inst.harness.AddObserver(harness.ObserverFunc(func(observation harness.Observation) {
+		inst.mu.Lock()
+		captured := observation
+		inst.lastObservation = &captured
+		inst.mu.Unlock()
+	}))
+	inst.harness.Observe(harness.Observation{
+		Provenance: harness.Provenance{Source: "tui", Timestamp: time.Now().UTC(), SessionID: agentSession.ID, ProcessID: termSummary.ID},
+		Lifecycle:  harness.LifecycleUnknown,
+	})
 
 	s.mu.Lock()
 	if s.closing {
@@ -699,7 +895,17 @@ func (s *Service) CreateAgentRequest(ctx context.Context, req protocol.CreateSes
 }
 
 func (s *Service) watchTerminal(inst *agentInstance) {
-	stop, err := s.termMgr.Subscribe(inst.meta.TerminalSessionID, func(_ protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
+	stop, err := s.termMgr.Subscribe(inst.meta.TerminalSessionID, func(output protocol.PTYOutputEnvelope, st protocol.SessionStateEnvelope) {
+		if output.Type != "" && inst.harness != nil {
+			data, err := base64.StdEncoding.DecodeString(output.Data)
+			if err == nil {
+				inst.harness.Observe(harness.Observation{
+					Provenance: harness.Provenance{Source: "tui", Timestamp: time.Now().UTC(), SessionID: inst.meta.ID, ProcessID: inst.meta.TerminalSessionID},
+					Lifecycle:  harness.LifecycleUnknown,
+					Bytes:      data,
+				})
+			}
+		}
 		if st.State != "exited" {
 			return
 		}
@@ -753,6 +959,7 @@ func (s *Service) emitState(inst *agentInstance) {
 		Thinking:          inst.meta.Thinking,
 		AvailableModels:   append([]protocol.AgentModelInfo(nil), inst.meta.AvailableModels...),
 		AvailableThinking: append([]string(nil), inst.meta.AvailableThinking...),
+		HarnessRuntime:    cloneHarnessRuntime(inst.meta.HarnessRuntime),
 	}
 	subscribers := make([]func(protocol.AgentEvent), 0, len(inst.subscribers))
 	for _, sub := range inst.subscribers {
@@ -809,7 +1016,15 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	inst.mu.Lock()
 	if inst.semanticOwner == semanticOwnerBridge || (inst.semanticOwner == "" && bridgeConnected) {
 		inst.semanticOwner = semanticOwnerBridge
+		tailer := inst.tailer
 		inst.mu.Unlock()
+		// Bridge semantic events remain authoritative for messages and activity,
+		// while OMP mode changes are only source-backed by the session JSONL.
+		// Continue advancing that same bound stream without promoting its other
+		// entries into a competing semantic owner.
+		if tailer != nil {
+			s.reconstructTailerMode(inst, tailer)
+		}
 		return
 	}
 	if inst.semanticOwner == "" {
@@ -858,6 +1073,7 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 
 	inst.mu.Lock()
 	stateChanged := false
+	modeChanges := make([]string, 0, len(events))
 	for _, event := range events {
 		switch event.Type {
 		case "message.user", "tool.call":
@@ -875,6 +1091,8 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 				inst.meta.State = event.State
 				stateChanged = true
 			}
+		case "mode_change":
+			modeChanges = append(modeChanges, event.Mode)
 		}
 	}
 	if stateChanged {
@@ -884,7 +1102,21 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	for _, sub := range inst.subscribers {
 		subscribers = append(subscribers, sub.fn)
 	}
+	compositeObserver := inst.compositeObserver
+	runtimeState := inst.runtime
 	inst.mu.Unlock()
+
+	// Observer notification synchronously re-enters inst.harness.Observe, which
+	// locks inst.mu from its own observer chain (adapter.go AddObserver closure
+	// above); it must run after inst.mu is released or it deadlocks the poller.
+	for _, mode := range modeChanges {
+		if compositeObserver != nil {
+			compositeObserver.SetModeFromJSONL(mode)
+		}
+		if runtimeState != nil {
+			runtimeState.SetModeFromJSONL(mode)
+		}
+	}
 
 	if s.store != nil {
 		inputs := make([]runtimestore.AgentTranscriptEvent, 0, len(events))
@@ -929,13 +1161,90 @@ func (s *Service) checkTranscript(inst *agentInstance) {
 	}
 }
 
-// SubmitPrompt sends a user prompt through the verified OMP bridge.
-func (s *Service) SubmitPrompt(agentID, prompt string) error {
+// RouteTUIInput writes bytes to the agent's sole OMP process through its capability router.
+func (s *Service) RouteTUIInput(ctx context.Context, agentID string, input []byte) error {
 	s.mu.RLock()
 	inst, ok := s.agents[agentID]
 	s.mu.RUnlock()
 	if !ok {
 		return ErrAgentNotFound
+	}
+	inst.mu.RLock()
+	adapter := inst.harness
+	exited := inst.meta.State == "exited"
+	inst.mu.RUnlock()
+	if exited || adapter == nil {
+		return ErrAgentExited
+	}
+	return adapter.Router.Route(ctx, harness.Input{
+		Capability: harness.CapabilityTUIInput,
+		Action:     harness.ActionTUIInput,
+		Source:     harness.SourceTerminalUser,
+		Bytes:      input,
+	})
+}
+
+// RouteOMPGoalShow sends the source-backed OMP /goal show control through the
+// same serialized terminal path as user input.
+func (s *Service) RouteOMPGoalShow(ctx context.Context, agentID string) error {
+	return s.routeOMPControl(ctx, agentID, harness.CapabilityOMPGoal, harness.ActionOMPGoalShow, []byte("/goal show\r"))
+}
+
+// RouteOMPPlanToggle sends the source-backed OMP /plan control through the
+// same serialized terminal path as user input.
+func (s *Service) RouteOMPPlanToggle(ctx context.Context, agentID string) error {
+	return s.routeOMPControl(ctx, agentID, harness.CapabilityOMPPlan, harness.ActionOMPPlanToggle, []byte("/plan\r"))
+}
+
+func (s *Service) routeOMPControl(ctx context.Context, agentID string, capability harness.HarnessCapability, action harness.HarnessAction, bytes []byte) error {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotFound
+	}
+	inst.mu.RLock()
+	adapter := inst.harness
+	exited := inst.meta.State == "exited"
+	inst.mu.RUnlock()
+	if exited || adapter == nil {
+		return ErrAgentExited
+	}
+	return adapter.RouteControl(ctx, harness.Input{
+		Capability: capability,
+		Action:     action,
+		Source:     harness.SourceModeControl,
+		Bytes:      bytes,
+	})
+}
+
+// SubmitPrompt sends a text-only user prompt through the verified OMP bridge.
+func (s *Service) SubmitPrompt(agentID, prompt string) error {
+	return s.submitPrompt(agentID, prompt, nil)
+}
+
+// SubmitPromptWithImages sends text plus workspace-relative images as OMP structured content.
+func (s *Service) SubmitPromptWithImages(agentID, prompt string, images []protocol.AgentPromptImage) error {
+	return s.submitPrompt(agentID, prompt, images)
+}
+
+func (s *Service) submitPrompt(agentID, prompt string, images []protocol.AgentPromptImage) error {
+	return s.submitPromptFrom(agentID, prompt, images, "")
+}
+
+func (s *Service) submitPromptFrom(agentID, prompt string, images []protocol.AgentPromptImage, imageBaseDir string) error {
+	s.mu.RLock()
+	inst, ok := s.agents[agentID]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotFound
+	}
+	if imageBaseDir == "" {
+		imageBaseDir = inst.resolvedCWD
+	}
+	encodedImages, err := loadPromptImages(imageBaseDir, images)
+	if err != nil {
+		return err
 	}
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -980,7 +1289,7 @@ func (s *Service) SubmitPrompt(agentID, prompt string) error {
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer sendCancel()
-	if err := s.bridgeServer.SendCommand(sendCtx, agentID, "prompt", map[string]any{"prompt": prompt}); err != nil {
+	if err := s.bridgeServer.SendCommand(sendCtx, agentID, "prompt", map[string]any{"prompt": prompt, "images": encodedImages}); err != nil {
 		// Sending failed after the state was already claimed; revert so a
 		// failed submission does not strand the agent as falsely working.
 		inst.mu.Lock()
@@ -1117,6 +1426,7 @@ func (s *Service) GetAgent(agentID string) (*protocol.AgentSession, error) {
 	inst.mu.RLock()
 	defer inst.mu.RUnlock()
 	meta := inst.meta
+	meta.HarnessRuntime = cloneHarnessRuntime(inst.meta.HarnessRuntime)
 	return &meta, nil
 }
 
@@ -1127,7 +1437,9 @@ func (s *Service) ListAgents() []protocol.AgentSession {
 	list := make([]protocol.AgentSession, 0, len(s.agents))
 	for _, inst := range s.agents {
 		inst.mu.RLock()
-		list = append(list, inst.meta)
+		meta := inst.meta
+		meta.HarnessRuntime = cloneHarnessRuntime(inst.meta.HarnessRuntime)
+		list = append(list, meta)
 		inst.mu.RUnlock()
 	}
 	return list
@@ -1226,12 +1538,17 @@ func (s *Service) Close() error {
 		inst.mu.Lock()
 		stop := inst.stopTerminal
 		inst.stopTerminal = nil
+		stagedAttachments := inst.stagedAttachments
+		inst.stagedAttachments = nil
 		inst.mu.Unlock()
 		if stop != nil {
 			stop()
 		}
 		if inst.pollDone != nil {
 			<-inst.pollDone
+		}
+		for _, path := range stagedAttachments {
+			_ = os.Remove(path)
 		}
 	}
 

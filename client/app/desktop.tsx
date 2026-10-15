@@ -10,6 +10,7 @@ import { useTabStore } from '../src/lib/tabs/tab-store';
 import { AgenticRemoteAPI } from '../src/lib/api';
 import type { DesktopWorkspaceTab } from '../src/lib/tabs/types';
 import noVNCScript from '../src/generated/novnc_script';
+import { desktopCloseMessages, desktopStageDetail } from '../src/desktop-diagnostics';
 
 function buildDesktopHTML(wsUrl: string, attemptID: string): string {
   return `<!DOCTYPE html>
@@ -26,7 +27,7 @@ const screen = document.getElementById('screen');
 const status = document.getElementById('status');
 const report = (message, stage) => {
   status.textContent = message;
-  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message }));
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'status', message, attemptID: ${JSON.stringify(attemptID)}, stage }));
   window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage }));
 };
 window.addEventListener('error', () => report('Desktop view failed', 'window_error'));
@@ -34,12 +35,24 @@ window.addEventListener('unhandledrejection', () => report('Desktop view failed'
 
 try {
   report('Creating RFB…', 'rfb_creating');
+  let connected = false;
+  let closeReason = '';
+  let securityFailed = false;
   const rfb = window.rfb = new window.RFB(screen, ${JSON.stringify(wsUrl)});
+  const rawWebSocket = rfb._sock?._websocket;
+  if (rawWebSocket) {
+    const onclose = rawWebSocket.onclose;
+    rawWebSocket.onclose = (event) => { closeReason = event.reason; onclose.call(rawWebSocket, event); };
+  }
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
-  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly', 'rfb_disconnected'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed', 'rfb_security_failure'));
+  rfb.addEventListener('connect', () => { connected = true; screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
+  rfb.addEventListener('disconnect', (event) => {
+    const clean = event.detail?.clean === true;
+    const category = !clean && securityFailed ? 'security_negotiation_failed' : !clean && Object.prototype.hasOwnProperty.call(${JSON.stringify(desktopCloseMessages)}, closeReason) ? closeReason : !clean && !connected ? 'framebuffer_never_initialized' : '';
+    report(clean ? 'Desktop disconnected' : category ? ${JSON.stringify(desktopCloseMessages)}[category] : 'Desktop disconnected unexpectedly', clean ? 'rfb_disconnected_clean' : category || 'rfb_disconnected_unexpected');
+  });
+  rfb.addEventListener('securityfailure', () => { securityFailed = true; report(${JSON.stringify(desktopCloseMessages.security_negotiation_failed)}, 'security_negotiation_failed'); });
   window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage: 'rfb_initialized' }));
 } catch {
   report('Could not load noVNC client', 'rfb_load_failed');
@@ -54,9 +67,10 @@ export default function DesktopScreen() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
-  const webRef = useRef<WebView>(null);
+	const [statusDetail, setStatusDetail] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const attemptIDRef = useRef(Crypto.randomUUID());
+  const webRef = useRef<WebView>(null);
 
   useEffect(() => {
     if (!tab) return;
@@ -64,7 +78,7 @@ export default function DesktopScreen() {
     attemptIDRef.current = Crypto.randomUUID();
     const attemptID = attemptIDRef.current;
     setWsUrl(null);
-    setStatus('Loading noVNC…');
+	    setStatusDetail(null);
     loadConnections().then(async (store) => {
       const conn = getConnection(store, tab.daemonId);
       if (!conn || !active) {
@@ -76,9 +90,12 @@ export default function DesktopScreen() {
         const api = new AgenticRemoteAPI(conn);
         const session = await api.createDesktopSession(attemptID);
         if (active) setWsUrl(session.wsUrl);
-      } catch {
-        if (active) setStatus('Could not create desktop session');
-      }
+	      } catch {
+	        if (active) {
+	          setStatus('Could not create desktop session');
+	          setStatusDetail(null);
+	        }
+	      }
     });
     return () => {
       active = false;
@@ -90,16 +107,20 @@ export default function DesktopScreen() {
   const onMessage = (event: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'status' && typeof data.message === 'string') {
-        setStatus(data.message);
+      if (data.type === 'status' && typeof data.message === 'string' && data.attemptID === attemptIDRef.current) {
+        const detail = desktopStageDetail(data.stage);
+        if (detail !== undefined) {
+          setStatus(data.message);
+          setStatusDetail(detail);
+        }
       }
     } catch {
       setStatus('Desktop view failed');
+      setStatusDetail('The remote-desktop view could not process a status update. Retry the connection.');
     }
   };
-
   const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
-  const needsRecovery = !wsUrl || status === 'Desktop disconnected' || status === 'Desktop disconnected unexpectedly' || status === 'Desktop security negotiation failed' || status === 'Desktop view failed' || status === 'Could not load noVNC client';
+  const needsRecovery = !wsUrl || status === 'Desktop disconnected' || status === 'Desktop disconnected unexpectedly' || status === 'Desktop security negotiation failed' || status === 'Desktop view failed' || status === 'Could not load noVNC client' || Object.values(desktopCloseMessages).includes(status);
 
   const sendKey = (keysym: number, name: string) => webRef.current?.injectJavaScript(`window.rfb?.sendKey(${keysym}, "${name}");true;`);
 
@@ -127,13 +148,16 @@ export default function DesktopScreen() {
       </View>
       <WebView ref={webRef} source={{ html, baseUrl: connection.endpoint }} originWhitelist={['*']} style={styles.webview}
         javaScriptEnabled domStorageEnabled mixedContentMode="always" onMessage={onMessage}
-        onError={() => setStatus('Desktop view failed')} />
+	        onError={() => {
+	          setStatus('Desktop view failed');
+	          setStatusDetail('The remote-desktop view could not load. Retry the connection.');
+	        }} />
       <View testID="vnc-shortcut-dock" style={styles.dock}>
         <Pressable accessibilityLabel="Escape" style={styles.key} onPress={() => sendKey(0xff1b, 'Escape')}><Text style={styles.keyText}>Esc</Text></Pressable>
         <Pressable accessibilityLabel="Tab" style={styles.key} onPress={() => sendKey(0xff09, 'Tab')}><Text style={styles.keyText}>Tab</Text></Pressable>
         <Pressable accessibilityLabel="Ctrl Alt Delete" style={styles.key} onPress={() => webRef.current?.injectJavaScript('window.rfb?.sendCtrlAltDel();true;')}><Text style={styles.keyText}>Ctrl+Alt+Del</Text></Pressable>
       </View>
-      {needsRecovery ? <View style={styles.statusRecovery}><Text style={styles.status}>{status}</Text><Pressable accessibilityLabel="Retry Desktop" style={styles.retry} onPress={retry}><Text style={styles.retryText}>Retry</Text></Pressable></View> : status !== 'Desktop connected' && <Text style={styles.status}>{status}</Text>}
+	      {needsRecovery ? <View style={styles.statusRecovery}><Text style={styles.status}>{status}</Text>{statusDetail ? <Text style={styles.detail}>{statusDetail}</Text> : null}<Pressable accessibilityLabel="Retry Desktop" style={styles.retry} onPress={retry}><Text style={styles.retryText}>Retry</Text></Pressable></View> : status !== 'Desktop connected' && <View style={styles.statusRecovery}><Text style={styles.status}>{status}</Text>{statusDetail ? <Text style={styles.detail}>{statusDetail}</Text> : null}</View>}
     </SafeAreaView>
   );
 }
@@ -148,6 +172,7 @@ const styles = StyleSheet.create({
   key: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, backgroundColor: '#222', borderRadius: 6 },
   keyText: { color: '#E0E0E0', fontSize: 13, fontWeight: '600' },
   status: { backgroundColor: 'rgba(0,0,0,0.8)', color: '#00D9A3', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, fontSize: 12 },
+  detail: { color: '#D0D0D0', fontSize: 12, textAlign: 'center', maxWidth: 300 },
   statusRecovery: { position: 'absolute', bottom: 60, alignSelf: 'center', alignItems: 'center', gap: 8 },
   recovery: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16 },
   recoveryActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },

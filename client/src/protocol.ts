@@ -20,7 +20,7 @@ export type SessionSummary = {
   name: string;
   command: string;
   cwd: string;
-  state: 'running' | 'exited' | 'waiting' | 'idle';
+  state: "running" | "exited" | "waiting" | "idle";
   createdAt: string;
   updatedAt: string;
   preview: string[];
@@ -35,17 +35,35 @@ export type AgentModelInfo = {
 
 export type AgentCapability = { name: string; enabled: boolean };
 
+export type HarnessRuntimeState = {
+  sessionMode?: string;
+  features: string[];
+  commands: string[];
+};
+
+export type AgentPromptImage = { path: string };
+export type AgentAttachment = { mimeType: string; name: string; sizeBytes: number; storageRef: string };
+export type AgentCommandDescriptor = {
+  name: string;
+  description: string;
+  route: string;
+  enabled: boolean;
+  disabledReason?: string;
+  postCondition: string;
+};
+
 export type AgentSession = {
   id: string;
   adapter: string;
   terminalSessionId: string;
   cwd: string;
-  state: 'working' | 'idle' | 'needsYou' | 'exited';
+  state: "working" | "idle" | "needsYou" | "exited";
   capabilities: AgentCapability[];
   model?: AgentModelInfo;
   thinking?: string;
   availableModels?: AgentModelInfo[];
   availableThinking?: string[];
+  harnessRuntime?: HarnessRuntimeState;
   createdAt: string;
   updatedAt: string;
 };
@@ -61,11 +79,13 @@ export type AgentEvent = {
   toolInput?: unknown;
   toolOutput?: unknown;
   state?: string;
+  mode?: string;
   capabilities?: AgentCapability[];
   model?: AgentModelInfo;
   thinking?: string;
   availableModels?: AgentModelInfo[];
   availableThinking?: string[];
+  harnessRuntime?: HarnessRuntimeState;
   isError?: boolean;
   aborted?: boolean;
 };
@@ -97,21 +117,58 @@ export type TmuxPane = {
 
 export type RuntimeSnapshot = {
   cursor: number;
-  terminals: Array<{ id: string; name: string; cwd: string; seq: number; exited: boolean }>;
+  terminals: Array<{
+    id: string;
+    name: string;
+    cwd: string;
+    seq: number;
+    exited: boolean;
+  }>;
   agents: AgentSession[];
   topology: TmuxPane[];
   desktops: unknown[];
 };
 
 export type ChannelOpenEnvelope = {
-  type: 'channel.open'; requestId: string; channelId: string; kind: string; targetId: string; after?: number;
+  type: "channel.open";
+  requestId: string;
+  channelId: string;
+  kind: string;
+  targetId: string;
+  after?: number;
 };
-export type ChannelCloseEnvelope = { type: 'channel.close'; channelId: string };
-export type CommandEnvelope = { type: 'command'; requestId: string; targetId: string; command: string; args?: unknown };
-export type ChannelOpenedEnvelope = { type: 'channel.opened'; requestId: string; channelId: string; cursor: number };
-export type RuntimeEventEnvelope = { type: 'event'; channelId: string; cursor: number; event: unknown };
-export type CommandResultEnvelope = { type: 'command.result'; requestId: string; ok: boolean; result?: unknown; error?: string };
-export type ChannelClosedEnvelope = { type: 'channel.closed'; channelId: string; reason: string };
+export type ChannelCloseEnvelope = { type: "channel.close"; channelId: string };
+export type CommandEnvelope = {
+  type: "command";
+  requestId: string;
+  targetId: string;
+  command: string;
+  args?: unknown;
+};
+export type ChannelOpenedEnvelope = {
+  type: "channel.opened";
+  requestId: string;
+  channelId: string;
+  cursor: number;
+};
+export type RuntimeEventEnvelope = {
+  type: "event";
+  channelId: string;
+  cursor: number;
+  event: unknown;
+};
+export type CommandResultEnvelope = {
+  type: "command.result";
+  requestId: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+};
+export type ChannelClosedEnvelope = {
+  type: "channel.closed";
+  channelId: string;
+  reason: string;
+};
 export type HostIdentity = {
   hostId: string;
   connectionId: string;
@@ -131,7 +188,6 @@ export type DaemonCapabilities = {
   identity: HostIdentity;
   capabilities: Capability[];
 };
-
 
 export type CreateSessionRequest = {
   name: string;
@@ -181,7 +237,7 @@ export type NotifyRegisterRequest = {
   token: string;
 };
 
-export type ErrorEnvelope = { type: 'error'; code: string; message: string };
+export type ErrorEnvelope = { type: "error"; code: string; message: string };
 
 export type DesktopSessionResponse = {
   ticket: string;
@@ -190,27 +246,27 @@ export type DesktopSessionResponse = {
 };
 
 export type PTYInputEnvelope = {
-  type: 'pty.input';
+  type: "pty.input";
   sessionId: string;
   data: string;
 };
 
 export type PTYOutputEnvelope = {
-  type: 'pty.output';
+  type: "pty.output";
   sessionId: string;
   data: string;
   seq: number;
 };
 
 export type PTYResizeEnvelope = {
-  type: 'pty.resize';
+  type: "pty.resize";
   sessionId: string;
   cols: number;
   rows: number;
 };
 
 export type SessionStateEnvelope = {
-  type: 'session.state';
+  type: "session.state";
   sessionId: string;
   state: string;
   waitState?: WaitState;

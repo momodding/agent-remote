@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
-import { Platform, StyleSheet, Text, useColorScheme } from 'react-native';
+import { Platform, StyleSheet, Text, useColorScheme, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   BottomSheetBackdrop,
@@ -59,9 +59,11 @@ export const GlassBottomSheet = forwardRef<GlassBottomSheetHandle, Props>(functi
       )}
     >
       <BottomSheetView style={styles.header}>
-        <Text style={{ color: colorScheme === 'dark' ? '#F0F0F0' : '#1A1A1A', fontSize: 20, fontWeight: '700' }}>{title}</Text>
+        <Text style={[styles.title, { color: colorScheme === 'dark' ? '#F0F0F0' : '#1A1A1A' }]} numberOfLines={1}>{title}</Text>
       </BottomSheetView>
-      {children}
+      <View style={styles.content}>
+        {children}
+      </View>
     </BottomSheetModal>
   );
 });
@@ -78,5 +80,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 12,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  content: {
+    flex: 1,
+    minHeight: 0,
   },
 });

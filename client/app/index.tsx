@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
@@ -14,7 +14,7 @@ import { buildSessionSurfaces, type SessionSurface } from '../src/lib/session-su
 import { PairingSheet } from '../src/components/PairingSheet';
 import { ConnectionSheet } from '../src/components/ConnectionSheet';
 import { NewAgentSheet } from '../src/components/NewAgentSheet';
-import { useTabStore } from '../src/lib/tabs/tab-store';
+import { removeExitedAgentTabs, removeExitedTerminalTabs, useTabStore } from '../src/lib/tabs/tab-store';
 import { createDaemonChannel, disposeDaemonChannel } from '../src/lib/daemon-channel';
 import type { DaemonId, TabKind, WorkspaceTab } from '../src/lib/tabs/types';
 
@@ -37,6 +37,9 @@ export default function TabDeckScreen() {
 	const [diagnostics, setDiagnostics] = useState<string[]>([]);
 	const [newAgentOpen, setNewAgentOpen] = useState(false);
 	const [agentSpawnHostId, setAgentSpawnHostId] = useState<string | null>(null);
+  const [closeConfirmation, setCloseConfirmation] = useState<{ daemonId: string; surface: SessionSurface } | null>(null);
+  const [terminationError, setTerminationError] = useState<string | null>(null);
+  const [terminating, setTerminating] = useState(false);
 	const { width } = useWindowDimensions();
 	const columns = width < 640 ? 1 : Math.max(1, Math.min(4, Math.floor(width / 280)));
   const storeRef = useRef(store);
@@ -82,6 +85,13 @@ export default function TabDeckScreen() {
 			for (const cleanup of cleanups) cleanup();
 		};
 	}, [store.connections]);
+
+  useEffect(() => {
+    dispatch((current) => Object.entries(runtimes).reduce(
+      (next, [daemonId, runtime]) => removeExitedTerminalTabs(removeExitedAgentTabs(next, daemonId, runtime.snapshot?.agents ?? []), daemonId, runtime.snapshot?.terminals ?? []),
+      current,
+    ));
+  }, [dispatch, runtimes]);
 
   const connect = async (payload: PairingPayload, clientName: string, onStage?: (message: string) => void) => {
     clearTimeout(diagnosticsTimer.current);
@@ -250,6 +260,53 @@ export default function TabDeckScreen() {
     else if (tab.kind === 'agent') router.push({ pathname: '/agent/[id]', params: { id: tab.tabId } });
   };
 
+  const terminateSurface = async () => {
+    const confirmation = closeConfirmation;
+    if (!confirmation) return;
+    const { surface } = confirmation;
+    const remoteId = surface.kind === 'agent'
+      ? (surface.agent?.id ?? (surface.tab?.kind === 'agent' ? surface.tab.agentSessionId : undefined))
+      : surface.kind === 'terminal'
+        ? (surface.terminal?.id ?? (surface.tab?.kind === 'terminal' ? surface.tab.remoteSessionId : undefined))
+        : undefined;
+    if (!remoteId) return;
+    const connection = getConnection(store, confirmation.daemonId);
+    if (!connection) {
+      setTerminationError('Daemon connection not found in store.');
+      return;
+    }
+    setTerminating(true);
+    setTerminationError(null);
+    const api = new AgenticRemoteAPI(connection);
+    try {
+      if (surface.kind === 'agent') await api.terminateAgent(remoteId);
+      else if (surface.kind === 'terminal') await api.closeSession(remoteId);
+      else return;
+      if (surface.tab) closeTab(surface.tab.tabId);
+      setCloseConfirmation(null);
+    } catch (error) {
+      setTerminationError(error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setTerminating(false);
+    }
+  };
+
+  const closeSurface = (daemonId: string, surface: SessionSurface) => {
+    const tab = surface.tab;
+    if (!tab) return;
+    if (tab.kind !== 'agent' && tab.kind !== 'terminal') {
+      closeTab(tab.tabId);
+      return;
+    }
+    setTerminationError(null);
+    setCloseConfirmation({ daemonId, surface });
+  };
+
+  const requestTermination = (daemonId: string, surface: SessionSurface) => {
+    setTerminationError(null);
+    setCloseConfirmation({ daemonId, surface });
+  };
+
   if (loading) return <SafeAreaView style={styles.loading}><ActivityIndicator color="#D19A2C" /></SafeAreaView>;
   // ponytail: render the normal shell, put the empty state in the content area instead of replacing the whole screen
 
@@ -322,11 +379,18 @@ export default function TabDeckScreen() {
                         <Text style={[styles.tabTitle, !surface.active && styles.tabTitleInactive]} numberOfLines={1}>{surface.title}</Text>
                         <Text style={styles.tabStatus} numberOfLines={1}>{surface.status}</Text>
                       </View>
-                      {surface.tab && (
-                        <Pressable accessibilityLabel={`Close tab ${surface.tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeTab(surface.tab!.tabId); }}>
-                          <Feather name="x" size={16} color="#888" />
-                        </Pressable>
-                      )}
+                      <View style={styles.tabActions}>
+                        {surface.active && (surface.kind === 'agent' || surface.kind === 'terminal') && (
+                          <Pressable accessibilityLabel={`Terminate ${surface.kind} ${surface.key}`} style={styles.tabTerminate} onPress={(e) => { e.stopPropagation(); requestTermination(connection.hostId, surface); }}>
+                            <Feather name="square" size={13} color="#F19999" />
+                          </Pressable>
+                        )}
+                        {surface.tab && (
+                          <Pressable accessibilityLabel={`Close view ${surface.tab.tabId}`} style={styles.tabClose} onPress={(e) => { e.stopPropagation(); closeSurface(connection.hostId, surface); }}>
+                            <Feather name="x" size={16} color="#888" />
+                          </Pressable>
+                        )}
+                      </View>
                     </Pressable>
                   ))}
                 </View>
@@ -337,6 +401,30 @@ export default function TabDeckScreen() {
       />
 
       {diagnostics.length > 0 && <View style={styles.diagnostics}>{diagnosticsInitial.map((step) => <Text key={step} style={[styles.diagnostic, diagnostics.includes(step) && styles.diagnosticDone]}>{diagnostics.includes(step) ? '✓ ' : '· '}{step}</Text>)}</View>}
+      <Modal visible={closeConfirmation !== null} transparent animationType="fade" onRequestClose={() => !terminating && setCloseConfirmation(null)}>
+        <Pressable accessibilityLabel="Dismiss session confirmation" style={styles.confirmationOverlay} disabled={terminating} onPress={() => setCloseConfirmation(null)}>
+          <View accessibilityViewIsModal accessibilityLabel="Session lifecycle confirmation" style={styles.confirmationDialog} onStartShouldSetResponder={() => true}>
+            <Text style={styles.confirmationTitle}>{terminationError ? 'Could not terminate session' : closeConfirmation?.surface.tab ? 'Close session?' : 'Terminate remote session?'}</Text>
+            <Text style={styles.confirmationText}>{terminationError ?? (closeConfirmation?.surface.tab ? 'Close view only hides this card and leaves the remote session running. Terminate stops the remote session for good.' : 'This session has no local view to close. Terminate stops the remote session for good.')}</Text>
+            <View style={styles.confirmationActions}>
+              <Pressable accessibilityLabel="Cancel session close" disabled={terminating} style={styles.confirmationCancel} onPress={() => setCloseConfirmation(null)}>
+                <Text style={styles.confirmationCancelText}>Cancel</Text>
+              </Pressable>
+              {!terminationError && closeConfirmation?.surface.tab && <Pressable accessibilityLabel="Close session view" disabled={terminating} style={styles.confirmationCloseView} onPress={() => {
+                const tab = closeConfirmation?.surface.tab;
+                if (!tab) return;
+                closeTab(tab.tabId);
+                setCloseConfirmation(null);
+              }}>
+                <Text style={styles.confirmationCloseViewText}>Close view</Text>
+              </Pressable>}
+              <Pressable accessibilityLabel="Terminate session" disabled={terminating} style={[styles.confirmationTerminate, terminating && styles.confirmationTerminateDisabled]} onPress={() => void terminateSurface()}>
+                <Text style={styles.confirmationTerminateText}>{terminating ? 'Terminating…' : 'Terminate'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
       <PairingSheet visible={pairingOpen} onDismiss={() => setPairingOpen(false)} onConnect={connect} />
       <ConnectionSheet visible={daemonsOpen} store={store} selectedHostId={selectedHostId} onDismiss={() => setDaemonsOpen(false)} onSelect={async (id) => { setSelectedHostId(id); setDaemonsOpen(false); }} onSave={saveEdit} onDelete={removeDaemon} onAdd={() => { setDaemonsOpen(false); setPairingOpen(true); }} />
       <NewAgentSheet
@@ -382,7 +470,21 @@ const styles = StyleSheet.create({
   tabTitle: { fontSize: 15, fontWeight: '600', color: '#E0E0E0' },
   tabTitleInactive: { color: '#888' },
   tabStatus: { fontSize: 13, color: '#888', marginTop: 2 },
+  tabActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  tabTerminate: { minWidth: 44, minHeight: 48, alignItems: 'center', justifyContent: 'center', padding: 8 },
   tabClose: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', padding: 8 },
+  confirmationOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 0, 0, 0.65)', padding: 24 },
+  confirmationDialog: { width: '100%', maxWidth: 420, gap: 16, padding: 20, borderRadius: 12, borderWidth: 1, borderColor: '#3A3A3A', backgroundColor: '#181818' },
+  confirmationTitle: { color: '#F0F0F0', fontSize: 20, fontWeight: '700' },
+  confirmationText: { color: '#D1D5DB', fontSize: 14, lineHeight: 20 },
+  confirmationActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' },
+  confirmationCancel: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#333' },
+  confirmationCancelText: { color: '#D1D5DB', fontSize: 14, fontWeight: '600' },
+  confirmationCloseView: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#265D66' },
+  confirmationCloseViewText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
+  confirmationTerminate: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#B83A3A' },
+  confirmationTerminateDisabled: { opacity: 0.6 },
+  confirmationTerminateText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
   diagnostics: { position: 'absolute', bottom: 32, alignSelf: 'center', backgroundColor: '#1A1A1A', padding: 16, borderRadius: 8, borderColor: '#3A3A3A', borderWidth: 1, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12 }, 
 	 runtimeList: { borderTopWidth: 1, borderColor: '#262626' },
 	 runtimeRow: { minHeight: 54, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderColor: '#202020' },

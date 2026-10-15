@@ -1,4 +1,5 @@
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import type { AgentSession, RuntimeSnapshot } from '../../protocol';
 import type { DaemonChannel } from '../daemon-channel';
 import { channelRegistry } from '../daemon-channel';
 import type { DaemonId, SplitLayout, TabDeckState, WorkspaceTab } from './types';
@@ -36,6 +37,35 @@ export function updateTab(state: TabDeckState, tabId: string, diff: Partial<Work
   return { ...state, tabs };
 }
 
+// Runtime snapshots are authoritative for remote agent lifetime. Remove local
+// presentation tabs for agents that have exited so they cannot keep a dead card
+// alive across a runtime resync.
+export function removeExitedAgentTabs(state: TabDeckState, daemonId: DaemonId, agents: readonly AgentSession[]): TabDeckState {
+  const exitedAgentIds = new Set(agents.filter((agent) => agent.state === 'exited').map((agent) => agent.id));
+  if (exitedAgentIds.size === 0) return state;
+
+  const tabs = state.tabs.filter((tab) => tab.daemonId !== daemonId || tab.kind !== 'agent' || !exitedAgentIds.has(tab.agentSessionId));
+  if (tabs.length === state.tabs.length) return state;
+
+  const activeId = tabs.some((tab) => tab.tabId === state.activeId) ? state.activeId : (tabs.length > 0 ? tabs[tabs.length - 1].tabId : null);
+  return { ...state, tabs, activeId, layout: state.layout };
+}
+
+// Runtime snapshots are authoritative for remote terminal lifetime. Remove local
+// presentation tabs for terminals that have exited so a stuck/orphaned tab (e.g.
+// one whose exited-session.state frame never reached this client) cannot keep a
+// dead card alive across a runtime resync or reload.
+export function removeExitedTerminalTabs(state: TabDeckState, daemonId: DaemonId, terminals: ReadonlyArray<RuntimeSnapshot['terminals'][number]>): TabDeckState {
+  const exitedTerminalIds = new Set(terminals.filter((terminal) => terminal.exited).map((terminal) => terminal.id));
+  if (exitedTerminalIds.size === 0) return state;
+
+  const tabs = state.tabs.filter((tab) => tab.daemonId !== daemonId || tab.kind !== 'terminal' || !exitedTerminalIds.has(tab.remoteSessionId));
+  if (tabs.length === state.tabs.length) return state;
+
+  const activeId = tabs.some((tab) => tab.tabId === state.activeId) ? state.activeId : (tabs.length > 0 ? tabs[tabs.length - 1].tabId : null);
+  return { ...state, tabs, activeId, layout: state.layout };
+}
+
 // ============================================================================
 // Store Implementation (Plain React Context + State)
 // ============================================================================
@@ -48,6 +78,7 @@ export type TabStore = {
   getChannel: (daemonId: string) => DaemonChannel | undefined;
 };
 const defaultState: TabDeckState = { tabs: [], activeId: null, layout: {} };
+const webDeckStorageKey = 'agenticremote.tab-deck';
 const DeckContext = createContext<TabStore | null>(null);
 
 export function useTabStore(): TabStore {
@@ -58,19 +89,40 @@ export function useTabStore(): TabStore {
 
 /** Root provider rendering wrapping the layout */
 export function useProvideTabStore(): TabStore {
-  const [state, setState] = useState<TabDeckState>(defaultState);
+  const [state, setState] = useState<TabDeckState>(() => {
+    if (typeof sessionStorage === 'undefined') return defaultState;
+    try {
+      const stored = sessionStorage.getItem(webDeckStorageKey);
+      if (!stored) return defaultState;
+      const parsed: unknown = JSON.parse(stored);
+      if (!parsed || typeof parsed !== 'object' || !('tabs' in parsed) || !Array.isArray(parsed.tabs)) return defaultState;
+      return parsed as TabDeckState;
+    } catch {
+      return defaultState;
+    }
+  });
 
-  const contextValue = useMemo<TabStore>(() => {
-    return {
-      state,
-      dispatch: setState,
-      closeTab: (tabId) => setState((prev) => closeTab(prev, tabId)),
-      activateTab: (tabId) => setState((prev) => ({ ...prev, activeId: tabId })),
-      getChannel: (daemonId) => channelRegistry.get(daemonId),
-    };
-  }, [state]);
+  const dispatch = useCallback((updater: (prev: TabDeckState) => TabDeckState) => setState((previous) => {
+    const next = updater(previous);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(webDeckStorageKey, JSON.stringify(next));
+    return next;
+  }), []);
+  const closeTabAction = useCallback((tabId: string) => setState((previous) => {
+    const next = closeTab(previous, tabId);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(webDeckStorageKey, JSON.stringify(next));
+    return next;
+  }), []);
+  const activateTab = useCallback((tabId: string) => setState((previous) => {
+    const next = { ...previous, activeId: tabId };
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(webDeckStorageKey, JSON.stringify(next));
+    return next;
+  }), []);
+  const getChannel = useCallback((daemonId: string) => channelRegistry.get(daemonId), []);
 
-  return contextValue;
+  return useMemo<TabStore>(
+    () => ({ state, dispatch, closeTab: closeTabAction, activateTab, getChannel }),
+    [state, dispatch, closeTabAction, activateTab, getChannel],
+  );
 }
 
 export const TabDeckProvider = DeckContext.Provider;

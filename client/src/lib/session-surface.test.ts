@@ -26,7 +26,7 @@ describe('buildSessionSurfaces', () => {
     expect(surfaces.some((s) => s.key.includes('files'))).toBe(false);
   });
 
-  it('excludes exited remote runtimes but retains an explicitly local exited tab', () => {
+  it('excludes exited runtimes even when a stale local tab exists', () => {
     const exitedAgent = { ...agent, id: 'agent-exited', state: 'exited' as const, terminalSessionId: 'term-exited' };
     const exitedTerminal = { id: 'term-exited', name: 'Exited shell', cwd: '', seq: 0, exited: true };
     const runtime: RuntimeSnapshot = { ...snapshot, agents: [agent, exitedAgent], terminals: [...snapshot.terminals, exitedTerminal] };
@@ -35,12 +35,13 @@ describe('buildSessionSurfaces', () => {
     expect(buildSessionSurfaces('host', runtime, []).map((surface) => surface.key)).not.toContain('terminal:term-exited');
 
     const tabs: WorkspaceTab[] = [{ tabId: 'tab-exited', daemonId: 'host', kind: 'agent', title: 'Past agent', createdAt: 0, lastActiveAt: 0, pinned: false, agentSessionId: 'agent-exited', terminalSessionId: 'term-exited', state: 'exited', view: 'chat' }];
-    expect(buildSessionSurfaces('host', runtime, tabs)).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'agent:agent-exited', status: 'exited', active: false, tab: tabs[0] })]));
+    expect(buildSessionSurfaces('host', runtime, tabs).map((surface) => surface.key)).not.toContain('agent:agent-exited');
 
     const liveRow = buildSessionSurfaces('host', runtime, []).find((surface) => surface.key === 'agent:agent-a');
     expect(liveRow).toMatchObject({ active: true });
+    expect(liveRow?.tab).toBeUndefined();
 
     const terminalTabs: WorkspaceTab[] = [{ tabId: 'tab-exited-term', daemonId: 'host', kind: 'terminal', title: 'Past shell', createdAt: 0, lastActiveAt: 0, pinned: false, remoteSessionId: 'term-exited', state: 'exited' }];
-    expect(buildSessionSurfaces('host', runtime, terminalTabs)).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'terminal:term-exited', status: 'exited', active: false, tab: terminalTabs[0] })]));
+    expect(buildSessionSurfaces('host', runtime, terminalTabs).map((surface) => surface.key)).not.toContain('terminal:term-exited');
   });
 });

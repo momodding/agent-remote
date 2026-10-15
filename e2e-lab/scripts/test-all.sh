@@ -8,13 +8,16 @@ LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # EXIT trap: collect Compose logs and teardown if E2E_KEEP!=1
 cleanup_e2e() {
   local exit_code=$?
-  if [[ "${E2E_KEEP:-0}" != "1" ]]; then
+  if [[ "${E2E_KEEP:-0}" != "1" && !( ${exit_code} -ne 0 && "${E2E_KEEP_FAILED_STACK:-0}" == "1" ) ]]; then
     echo "\n=== [EXIT trap: Collect Compose logs] ==="
     "${SCRIPT_DIR}/compose.sh" logs provider || true
     "${SCRIPT_DIR}/compose.sh" logs daemon || true
     "${SCRIPT_DIR}/compose.sh" logs android-emulator || true
     echo "\n=== [EXIT trap: Teardown] ==="
     "${SCRIPT_DIR}/down.sh" || true
+  elif (( exit_code != 0 )) && [[ "${E2E_KEEP_FAILED_STACK:-0}" == "1" ]]; then
+    echo "\n=== [EXIT trap: Failed stack retained] ==="
+    "${SCRIPT_DIR}/compose.sh" ps --all || true
   fi
   exit $exit_code
 }

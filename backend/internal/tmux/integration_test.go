@@ -5,10 +5,13 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -372,6 +375,43 @@ func TestSameSocketGenerationRegression(t *testing.T) {
 	}
 }
 
+func waitForRecordedPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(path)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(contents)))
+			if parseErr != nil || pid <= 0 {
+				t.Fatalf("invalid child PID in %s: %q (%v)", path, contents, parseErr)
+			}
+			return pid
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read child PID: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for tmux child PID at %s", path)
+	return 0
+}
+
+func waitForProcessExit(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("probe child PID %d: %v", pid, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("tmux child PID %d survived termination", pid)
+}
+
 func TestRealTmuxTerminateKillsWindowVsCloseDetaches(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
@@ -394,10 +434,12 @@ func TestRealTmuxTerminateKillsWindowVsCloseDetaches(t *testing.T) {
 		t.Fatalf("failed to create detach pane: %v", err)
 	}
 
-	backendTerm, err := svc.CreatePane(ctx, "session-term", "sh", []string{"-c", "sleep 100"}, stateDir, 80, 24)
+	pidFile := filepath.Join(tmpDir, "terminated-child.pid")
+	backendTerm, err := svc.CreatePane(ctx, "session-term", "sh", []string{"-c", "echo $$ > \"$1\"; exec sleep 100", "sh", pidFile}, stateDir, 80, 24)
 	if err != nil {
 		t.Fatalf("failed to create term pane: %v", err)
 	}
+	childPID := waitForRecordedPID(t, pidFile)
 
 	if err := svc.RefreshTopology(ctx); err != nil {
 		t.Fatalf("refresh topology failed: %v", err)
@@ -434,10 +476,11 @@ func TestRealTmuxTerminateKillsWindowVsCloseDetaches(t *testing.T) {
 		t.Fatalf("terminal window should still exist in tmux after Close()")
 	}
 
-	// Terminate backendTerm (explicit kill)
+	// Terminate backendTerm (explicit kill) and prove the pane's real child exits.
 	if err := backendTerm.Terminate(ctx); err != nil {
 		t.Fatalf("Terminate failed: %v", err)
 	}
+	waitForProcessExit(t, childPID)
 	if backendTerm.Alive() {
 		t.Fatalf("expected backendTerm.Alive() == false after Terminate()")
 	}

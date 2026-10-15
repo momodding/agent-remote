@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/agenticremote/agenticremote/backend/internal/protocol"
+	"github.com/agenticremote/agenticremote/backend/internal/security"
 	"github.com/coder/websocket"
 )
 
@@ -437,6 +439,104 @@ func TestGoldenFlowPhase5Desktop(t *testing.T) {
 	}
 	if reuseResp != nil && reuseResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected HTTP 401 Unauthorized for reused ticket, got %d", reuseResp.StatusCode)
+	}
+}
+
+func TestDesktopSessionCreateReportsTargetDialFailure(t *testing.T) {
+	srv, pairings := newBootstrapServer(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve closed VNC port: %v", err)
+	}
+	srv.cfg.VNCPort = listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	srv.cfg.PublicEndpoint = ts.URL
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/desktop/sessions", nil)
+	if err != nil {
+		t.Fatalf("build desktop session request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testBearerToken(t, srv, pairings))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request desktop session: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected target dial failure to return 503, got %d", resp.StatusCode)
+	}
+	var body protocol.ErrorEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode target dial failure: %v", err)
+	}
+	if body.Code != "vnc_unavailable" {
+		t.Fatalf("expected vnc_unavailable pre-upgrade code, got %q", body.Code)
+	}
+}
+
+func TestRFBProxyNonBinaryFrameClosesWithCategory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vncPort, vncCleanup := startXvfbAndVNC(t, ctx)
+	t.Cleanup(vncCleanup)
+
+	srv, _ := newBootstrapServer(t)
+	srv.cfg.VNCPort = vncPort
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	srv.cfg.PublicEndpoint = ts.URL
+	ticket, _, err := srv.desktopTickets.Issue("desktop:connect", time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("issue desktop ticket: %v", err)
+	}
+	wsURL := "wss://" + strings.TrimPrefix(ts.URL, "https://") + "/v1/ws/rfb?ticket=" + url.QueryEscape(ticket)
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("dial desktop websocket: %v", err)
+	}
+	defer conn.CloseNow()
+	if err := conn.Write(ctx, websocket.MessageText, []byte("not an RFB binary frame")); err != nil {
+		t.Fatalf("write non-binary frame: %v", err)
+	}
+	_, _, err = conn.Read(ctx)
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("expected close error after non-binary frame, got %v", err)
+	}
+	if closeErr.Reason != string(DesktopCloseWebSocketClosed) {
+		t.Fatalf("expected websocket close category %q, got %q", DesktopCloseWebSocketClosed, closeErr.Reason)
+	}
+}
+
+func TestDesktopCloseCategory(t *testing.T) {
+	for reason, want := range map[string]DesktopCloseCategory{
+		"target_dial_failed":     DesktopCloseTargetDialFailed,
+		"target_eof":             DesktopCloseTargetClosed,
+		"target_read_error":      DesktopCloseTargetClosed,
+		"target_write_error":     DesktopCloseTargetClosed,
+		"websocket_read_error":   DesktopCloseWebSocketClosed,
+		"websocket_write_error":  DesktopCloseWebSocketClosed,
+		"client_non_binary_frame": DesktopCloseWebSocketClosed,
+		"handler_returned":       DesktopCloseWebSocketClosed,
+		"client_normal_close":    DesktopCloseClientClosed,
+	} {
+		if got := desktopCloseCategory(reason); got != want {
+			t.Fatalf("reason %q: expected %q, got %q", reason, want, got)
+		}
+	}
+	if got := desktopCloseCategory("unknown"); got != DesktopCloseProtocolFailure {
+		t.Fatalf("expected unknown reason protocol failure category, got %q", got)
+	}
+}
+
+func TestDesktopTicketCloseCategory(t *testing.T) {
+	if got := desktopTicketCloseCategory(security.DesktopTicketExpired); got != DesktopCloseTicketExpired {
+		t.Fatalf("expected expired ticket category, got %q", got)
+	}
+	if got := desktopTicketCloseCategory(security.DesktopTicketConsumed); got != DesktopCloseTicketInvalid {
+		t.Fatalf("expected consumed ticket category, got %q", got)
 	}
 }
 

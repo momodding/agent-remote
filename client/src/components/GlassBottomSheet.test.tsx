@@ -1,6 +1,6 @@
 jest.mock('react-native', () => {
   const RN = jest.requireActual('react-native');
-  return { Platform: RN.Platform, StyleSheet: RN.StyleSheet, Text: RN.Text, useColorScheme: () => 'dark' };
+  return { Platform: RN.Platform, StyleSheet: RN.StyleSheet, Text: RN.Text, View: RN.View, useColorScheme: () => 'dark' };
 });
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) }));
 jest.mock('@gorhom/bottom-sheet', () => {
@@ -37,4 +37,25 @@ it('keeps web sheets below browser chrome', () => {
 it('keeps full-height expansion on native', () => {
   Object.defineProperty(Platform, 'OS', { value: 'android' });
   expect(renderSheet().props.snapPoints).toEqual(['55%', '100%']);
+});
+
+it('wraps content in a flex container with minHeight: 0 to prevent pane overlap', () => {
+  let tree!: ReactTestRenderer;
+  act(() => {
+    tree = create(
+      <GlassBottomSheet title="Test Sheet">
+        <></>
+      </GlassBottomSheet>,
+    );
+  });
+  const { View, Text } = require('react-native');
+  const titleNode = tree.root.findByType(Text);
+  expect(titleNode.props.numberOfLines).toBe(1);
+  expect(titleNode.props.children).toBe('Test Sheet');
+
+  const viewContainers = tree.root.findAllByType(View);
+  const flexContainer = viewContainers.find(
+    (v) => v.props.style && v.props.style.flex === 1 && v.props.style.minHeight === 0,
+  );
+  expect(flexContainer).toBeDefined();
 });

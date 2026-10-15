@@ -154,14 +154,12 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
     const cwd = path.join(__dirname, '..');
     const home = process.env.HOME || '/root';
     const extendedPath = `${home}/.bun/bin:${home}/go/bin:${home}/.local/bin:${process.env.PATH || ''}`;
-    const runtimeNodeModules = path.join(cwd, '.runtime/node_modules');
 
-    // Ensure local Playwright is installed in .runtime
-    const playwrightBin = path.join(cwd, '.runtime/node_modules/.bin/playwright');
+    const playwrightBin = path.join(cwd, 'node_modules/.bin/playwright');
     if (!fs.existsSync(playwrightBin)) {
-      console.log('Local Playwright not found; installing into .runtime...');
+      console.log('Local Playwright not found; installing into e2e-lab...');
       execFileSync('bun', ['install', '--production'], {
-        cwd: path.join(cwd, '.runtime'),
+        cwd,
         env: { ...process.env, PATH: extendedPath },
         stdio: 'inherit',
       });
@@ -169,17 +167,19 @@ export async function runPlaywrightTests(): Promise<WebRunnerReport> {
 
     const browserCache = path.join(cwd, '.runtime/browser');
     execFileSync(playwrightBin, ['install', 'chromium'], {
-      env: { ...process.env, PATH: extendedPath, PLAYWRIGHT_BROWSERS_PATH: browserCache, NODE_PATH: runtimeNodeModules },
+      env: { ...process.env, PATH: extendedPath, PLAYWRIGHT_BROWSERS_PATH: browserCache },
       encoding: 'utf-8',
       stdio: 'pipe',
       timeout: 180000,
     });
-    execFileSync(playwrightBin, ['test', '--config=playwright/playwright.config.ts'], {
+    const pairingEndpoint = `https://localhost:${process.env.E2E_DAEMON_FORWARD_PORT || '18766'}`;
+    execFileSync(playwrightBin, ['test', '--config=playwright.config.ts'], {
+      cwd,
       env: {
         ...process.env,
         PATH: extendedPath,
-        NODE_PATH: runtimeNodeModules,
         CLIENT_WEB_URL: targetUrl,
+        E2E_REAL_PAIRING_ENDPOINT: pairingEndpoint,
         PLAYWRIGHT_BROWSERS_PATH: browserCache,
       },
       encoding: 'utf-8',

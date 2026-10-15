@@ -167,3 +167,35 @@ func TestDesktopTicketStore_UnknownOrMalformedTicket(t *testing.T) {
 		t.Fatal("expected non-existent ticket to fail")
 	}
 }
+
+func TestDesktopTicketStore_StatusDistinguishesSafeRejectionReasons(t *testing.T) {
+	store := NewDesktopTicketStore()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	ticket, _, err := store.IssueForAttempt("desktop:connect", "attempt-42", time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt, state := store.Status(ticket, "other:scope", now)
+	if attempt != "attempt-42" || state != DesktopTicketScopeMismatch {
+		t.Fatalf("wrong scope status = (%q, %q)", attempt, state)
+	}
+	if state := store.ConsumeWithStatus(ticket, "desktop:connect", now); state != DesktopTicketValid {
+		t.Fatalf("consume state = %q", state)
+	}
+	if _, state := store.Status(ticket, "desktop:connect", now); state != DesktopTicketConsumed {
+		t.Fatalf("consumed status = %q", state)
+	}
+
+	expired, _, err := store.IssueForAttempt("desktop:connect", "attempt-43", time.Second, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, state = store.Status(expired, "desktop:connect", now.Add(2*time.Second))
+	if attempt != "attempt-43" || state != DesktopTicketExpired {
+		t.Fatalf("expired status = (%q, %q)", attempt, state)
+	}
+	if _, state := store.Status("not-a-ticket", "desktop:connect", now); state != DesktopTicketUnknown {
+		t.Fatalf("unknown status = %q", state)
+	}
+}

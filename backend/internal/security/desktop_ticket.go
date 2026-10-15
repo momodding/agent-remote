@@ -13,6 +13,17 @@ type desktopTicketRecord struct {
 	Consumed  bool
 }
 
+// DesktopTicketState describes a ticket check without exposing its plaintext.
+type DesktopTicketState string
+
+const (
+	DesktopTicketValid         DesktopTicketState = "valid"
+	DesktopTicketUnknown       DesktopTicketState = "unknown"
+	DesktopTicketExpired       DesktopTicketState = "expired"
+	DesktopTicketScopeMismatch DesktopTicketState = "scope_mismatch"
+	DesktopTicketConsumed      DesktopTicketState = "consumed"
+)
+
 // DesktopTicketStore manages ephemeral single-use tickets for desktop (RFB) sessions.
 // Plaintext tickets are never stored; only their SHA-256 hex hashes are kept in memory.
 type DesktopTicketStore struct {
@@ -61,63 +72,75 @@ func (s *DesktopTicketStore) IssueForAttempt(scope, attemptID string, ttl time.D
 // Valid checks whether the plaintext ticket is currently valid for the required scope at the given timestamp.
 // It does not mutate the ticket state or mark it consumed.
 func (s *DesktopTicketStore) Valid(plaintext, requiredScope string, now time.Time) bool {
+	_, state := s.Status(plaintext, requiredScope, now)
+	return state == DesktopTicketValid
+}
+
+// Status returns a safe diagnostic state for a ticket without exposing its plaintext.
+func (s *DesktopTicketStore) Status(plaintext, requiredScope string, now time.Time) (string, DesktopTicketState) {
 	if plaintext == "" {
-		return false
+		return "", DesktopTicketUnknown
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// ponytail: sweep expired or consumed entries on access; unbounded growth only if issued faster than expired/consumed
-	s.sweepLocked(now)
 
-	hash := hashToken(plaintext)
-	rec, ok := s.tickets[hash]
+	rec, ok := s.tickets[hashToken(plaintext)]
 	if !ok {
-		return false
+		return "", DesktopTicketUnknown
 	}
-	return !rec.Consumed && !now.After(rec.ExpiresAt) && rec.Scope == requiredScope
+	if rec.Consumed {
+		return rec.AttemptID, DesktopTicketConsumed
+	}
+	if now.After(rec.ExpiresAt) {
+		return rec.AttemptID, DesktopTicketExpired
+	}
+	if rec.Scope != requiredScope {
+		return rec.AttemptID, DesktopTicketScopeMismatch
+	}
+	return rec.AttemptID, DesktopTicketValid
 }
 
 // Consume validates the plaintext ticket for the required scope at the given timestamp.
 // If valid and unconsumed, it atomically marks the ticket as consumed and returns true.
 // Subsequent attempts to consume the same ticket will return false.
 func (s *DesktopTicketStore) Consume(plaintext string, requiredScope string, now time.Time) bool {
+	return s.ConsumeWithStatus(plaintext, requiredScope, now) == DesktopTicketValid
+}
+
+// ConsumeWithStatus atomically consumes a valid ticket and returns its safe diagnostic state.
+func (s *DesktopTicketStore) ConsumeWithStatus(plaintext string, requiredScope string, now time.Time) DesktopTicketState {
 	if plaintext == "" {
-		return false
+		return DesktopTicketUnknown
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// ponytail: sweep expired or consumed entries on access; unbounded growth only if issued faster than expired/consumed
-	s.sweepLocked(now)
 
 	hash := hashToken(plaintext)
 	rec, ok := s.tickets[hash]
 	if !ok {
-		return false
+		return DesktopTicketUnknown
 	}
-	if rec.Consumed || now.After(rec.ExpiresAt) || rec.Scope != requiredScope {
-		return false
+	if rec.Consumed {
+		return DesktopTicketConsumed
+	}
+	if now.After(rec.ExpiresAt) {
+		return DesktopTicketExpired
+	}
+	if rec.Scope != requiredScope {
+		return DesktopTicketScopeMismatch
 	}
 
 	rec.Consumed = true
 	s.tickets[hash] = rec
-	return true
+	return DesktopTicketValid
 }
 
 // Attempt returns a valid ticket's diagnostic correlation ID without consuming it.
 func (s *DesktopTicketStore) Attempt(plaintext, requiredScope string, now time.Time) (string, bool) {
-	if plaintext == "" {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sweepLocked(now)
-	rec, ok := s.tickets[hashToken(plaintext)]
-	if !ok || rec.Consumed || now.After(rec.ExpiresAt) || rec.Scope != requiredScope {
-		return "", false
-	}
-	return rec.AttemptID, true
+	attemptID, state := s.Status(plaintext, requiredScope, now)
+	return attemptID, state == DesktopTicketValid
 }
 
 func (s *DesktopTicketStore) sweepLocked(now time.Time) {

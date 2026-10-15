@@ -21,6 +21,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import Feather from "@expo/vector-icons/Feather";
+import * as DocumentPicker from "expo-document-picker";
 
 import { Terminal, type TerminalHandle } from "../../src/components/Terminal";
 import {
@@ -35,6 +36,9 @@ import {
   ShortcutKeyboard,
   type ShortcutKeyboardHandle,
 } from "../../src/components/ShortcutKeyboard";
+import { MentionSuggestions } from "../../src/components/MentionSuggestions";
+import { AttachmentComposer } from "../../src/components/AttachmentComposer";
+import { CommandPalette } from "../../src/components/CommandPalette";
 import { AgenticRemoteAPI, APIError } from "../../src/lib/api";
 import {
   getConnection,
@@ -57,9 +61,13 @@ import type {
   TerminalWorkspaceTab,
 } from "../../src/lib/tabs/types";
 import type {
+  AgentAttachment,
   AgentCapability,
+  AgentCommandDescriptor,
   AgentEvent,
   AgentModelInfo,
+  FileEntry,
+  HarnessRuntimeState,
   TmuxPane,
 } from "../../src/protocol";
 
@@ -127,13 +135,26 @@ export default function AgentScreen() {
     AgentModelInfo | undefined
   >();
   const [currentThinking, setCurrentThinking] = useState<string | undefined>();
+  const [currentMode, setCurrentMode] = useState<string | undefined>();
   const [availableModels, setAvailableModels] = useState<AgentModelInfo[]>([]);
   const [availableThinking, setAvailableThinking] = useState<string[]>([]);
+  const [harnessRuntime, setHarnessRuntime] = useState<
+    HarnessRuntimeState | undefined
+  >();
+  const [attachedImages, setAttachedImages] = useState<FileEntry[]>([]);
+  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [commands, setCommands] = useState<AgentCommandDescriptor[]>([]);
+  const [mentionResults, setMentionResults] = useState<FileEntry[]>([]);
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
+  const [workspaceImages, setWorkspaceImages] = useState<FileEntry[]>([]);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadingThinking, setLoadingThinking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [terminateConfirmationOpen, setTerminateConfirmationOpen] =
     useState(false);
+  const [modeSelectOpen, setModeSelectOpen] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const terminalRef = useRef<TerminalHandle>(null);
   const shortcutKeyboardRef = useRef<ShortcutKeyboardHandle>(null);
@@ -141,6 +162,7 @@ export default function AgentScreen() {
   const daemonChannelRef = useRef<DaemonChannel | null>(null);
   const runtimeChannelRef = useRef<RuntimeChannel | null>(null);
   const ptyUnsubRef = useRef<(() => void) | null>(null);
+  const modeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentAgentChannelIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const [panes, setPanes] = useState<TmuxPane[]>([]);
@@ -210,6 +232,7 @@ export default function AgentScreen() {
         if (agent.availableModels) setAvailableModels(agent.availableModels);
         if (agent.availableThinking)
           setAvailableThinking(agent.availableThinking);
+        if (agent.harnessRuntime) setHarnessRuntime(agent.harnessRuntime);
         if (agent.cwd !== undefined) {
           setAgentCwd(agent.cwd);
         }
@@ -237,6 +260,13 @@ export default function AgentScreen() {
           }
         }
 
+        for (let i = history.events.length - 1; i >= 0; i--) {
+          if (history.events[i].type === "mode_change" && history.events[i].mode !== undefined) {
+            setCurrentMode(history.events[i].mode);
+            break;
+          }
+        }
+
         const baseItems = eventsToMessageItems(history.events);
         const seen = new Set<string>(baseItems.map((item) => item.id));
 
@@ -259,6 +289,15 @@ export default function AgentScreen() {
 
     const handleEvent = (event: AgentEvent) => {
       if (!active) return;
+      if (event.type === "mode_change" && event.mode !== undefined) {
+        if (modeTimeoutRef.current) {
+          clearTimeout(modeTimeoutRef.current);
+          modeTimeoutRef.current = null;
+        }
+        setCurrentMode(event.mode);
+        setModeError(null);
+        setModeSelectOpen(false);
+      }
       if (event.capabilities) {
         setCapabilities(event.capabilities);
       }
@@ -267,6 +306,7 @@ export default function AgentScreen() {
       if (event.availableModels) setAvailableModels(event.availableModels);
       if (event.availableThinking)
         setAvailableThinking(event.availableThinking);
+      if (event.harnessRuntime) setHarnessRuntime(event.harnessRuntime);
       if (event.state) {
         dispatch((prev) =>
           updateTab(prev, tab.tabId, {
@@ -338,6 +378,10 @@ export default function AgentScreen() {
         runtime.closeChannel(currentAgentChannelIdRef.current);
         currentAgentChannelIdRef.current = null;
       }
+      if (modeTimeoutRef.current) {
+        clearTimeout(modeTimeoutRef.current);
+        modeTimeoutRef.current = null;
+      }
     };
   }, [tab?.agentSessionId, connection, api, dispatch, tab?.tabId]);
 
@@ -388,6 +432,12 @@ export default function AgentScreen() {
       ptyUnsubRef.current?.();
     };
   }, [tab?.terminalSessionId, tab?.tabId, connection, dispatch]);
+  useEffect(() => {
+    if (viewMode !== "terminal") return;
+    const frame = requestAnimationFrame(() => terminalRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [viewMode]);
+
 
   // Keyboard inset handling for mobile
   useEffect(() => {
@@ -429,6 +479,107 @@ export default function AgentScreen() {
     }
   }, [api]);
 
+  const openImagePicker = useCallback(async () => {
+    if (!api) return;
+    try {
+      const entries = await api.files();
+      setWorkspaceImages(
+        entries.filter(
+          (entry) =>
+            !entry.isDir && /\.(png|jpe?g|gif|webp)$/i.test(entry.name),
+        ),
+      );
+      setImagePickerOpen(true);
+    } catch (error) {
+      Alert.alert(
+        "Could not load workspace images",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, [api]);
+
+  const stageAttachment = useCallback(async (file: Blob, name: string, mimeType?: string, size?: number) => {
+	if (!api) return;
+	try {
+		const storageRef = await api.uploadAttachment(file, name);
+		setAttachments((previous) => previous.some((item) => item.storageRef === storageRef) ? previous : [...previous, {
+			mimeType: mimeType || file.type || "application/octet-stream", name, sizeBytes: size || file.size, storageRef,
+		}]);
+		setAttachmentError(null);
+	} catch (error) {
+		setAttachmentError(error instanceof Error ? error.message : String(error));
+	}
+  }, [api]);
+
+  const selectLocalAttachment = useCallback(async () => {
+	try {
+		const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: false, multiple: false, type: "*/*" });
+		if (result.canceled) return;
+		const asset = result.assets[0];
+		const blob = await (await fetch(asset.uri)).blob();
+		await stageAttachment(blob, asset.name, asset.mimeType, asset.size);
+	} catch (error) {
+		setAttachmentError(error instanceof Error ? error.message : String(error));
+	}
+  }, [stageAttachment]);
+
+  useEffect(() => {
+	if (Platform.OS !== "web" || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+	const stage = (files: FileList | null) => {
+		if (files) Array.from(files).forEach((file) => void stageAttachment(file, file.name, file.type, file.size));
+	};
+	const onPaste = (event: ClipboardEvent) => stage(event.clipboardData?.files || null);
+	const onDrop = (event: DragEvent) => { event.preventDefault(); stage(event.dataTransfer?.files || null); };
+	const onDragOver = (event: DragEvent) => event.preventDefault();
+	window.addEventListener("paste", onPaste);
+	window.addEventListener("dragover", onDragOver);
+	window.addEventListener("drop", onDrop);
+	return () => {
+		window.removeEventListener("paste", onPaste);
+		window.removeEventListener("dragover", onDragOver);
+		window.removeEventListener("drop", onDrop);
+	};
+  }, [stageAttachment]);
+
+  useEffect(() => {
+	if (!api || !tab || typeof api.agentCommands !== "function") return;
+	void api.agentCommands(tab.agentSessionId).then(setCommands).catch(() => setCommands([]));
+  }, [api, tab, currentMode]);
+
+  const executeCommand = useCallback(async (command: AgentCommandDescriptor) => {
+	if (!api || !tab || !command.enabled) return;
+	try {
+		await api.executeAgentCommand(tab.agentSessionId, command.name);
+		setPromptText("");
+	} catch (error) {
+		Alert.alert("Command Failed", error instanceof Error ? error.message : String(error));
+	}
+  }, [api, tab]);
+
+  const activeMentionQuery = useCallback((text: string): string | null => {
+	const atIndex = text.lastIndexOf("@");
+	if (atIndex === -1) return null;
+	const after = text.slice(atIndex + 1);
+	if (/\s/.test(after)) return null;
+	return after;
+  }, []);
+
+  useEffect(() => {
+	if (!api) { setMentionResults([]); return; }
+	const query = activeMentionQuery(promptText);
+	if (query === null) { setMentionResults([]); return; }
+	let cancelled = false;
+	void api.searchFiles("", query).then((entries) => { if (!cancelled) setMentionResults(entries.filter((entry) => !entry.isDir)); }).catch(() => { if (!cancelled) setMentionResults([]); });
+	return () => { cancelled = true; };
+  }, [api, promptText, activeMentionQuery]);
+
+  const selectMention = useCallback((entry: FileEntry) => {
+	const atIndex = promptText.lastIndexOf("@");
+	if (atIndex === -1) return;
+	setPromptText(promptText.slice(0, atIndex) + "@" + entry.path + " ");
+	setMentionResults([]);
+  }, [promptText]);
+
   const selectPane = useCallback(
     (pane: TmuxPane) => {
       if (!tab || pane.terminalSessionId === tab.terminalSessionId) return;
@@ -454,29 +605,22 @@ export default function AgentScreen() {
   );
 
   const sendPrompt = useCallback(async () => {
-    if (
-      !promptText.trim() ||
-      !api ||
-      !tab ||
-      sending ||
-      !capabilities.some(
-        (capability) => capability.name === "prompt" && capability.enabled,
-      )
-    )
-      return;
+    if (!promptText.trim() || !api || !tab || sending || !capabilities.some((capability) => capability.name === "prompt" && capability.enabled)) return;
     const text = promptText.trim();
     setSending(true);
     try {
-      await api.submitAgentPrompt(tab.agentSessionId, text);
+		if (attachments.length > 0) {
+			await api.submitAgentPrompt(tab.agentSessionId, text, attachedImages.map((image) => ({ path: image.path })), attachments);
+		} else {
+			await api.submitAgentPrompt(tab.agentSessionId, text, attachedImages.map((image) => ({ path: image.path })));
+		}
       setPromptText("");
+      setAttachedImages([]);
+      setAttachments([]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("needs_terminal")) {
-        Alert.alert(
-          "Terminal Interaction Required",
-          "OMP is currently running in TUI mode. Switched to terminal view so you can interact directly.",
-          [{ text: "OK", onPress: () => setViewMode("terminal") }],
-        );
+        Alert.alert("Terminal Interaction Required", "OMP is currently running in TUI mode. Switched to terminal view so you can interact directly.", [{ text: "OK", onPress: () => setViewMode("terminal") }]);
         setViewMode("terminal");
       } else {
         Alert.alert("Prompt Failed", msg);
@@ -484,7 +628,7 @@ export default function AgentScreen() {
     } finally {
       setSending(false);
     }
-  }, [promptText, api, tab, sending, capabilities]);
+  }, [promptText, api, tab, sending, capabilities, attachedImages, attachments]);
   const abortAgent = useCallback(async () => {
     if (
       !api ||
@@ -570,6 +714,37 @@ export default function AgentScreen() {
     [tab, api, currentThinking],
   );
 
+  const handleSelectMode = useCallback(
+    (action: 'goal_show' | 'plan_toggle') => {
+      if (!tab || !api) return;
+      setModeError(null);
+      if (modeTimeoutRef.current) clearTimeout(modeTimeoutRef.current);
+      modeTimeoutRef.current = setTimeout(() => {
+        modeTimeoutRef.current = null;
+        setModeError('Mode change timed out — no confirmation received.');
+      }, 8000);
+      api.setAgentMode(tab.agentSessionId, action)
+        .then(() => {
+          if (action === 'goal_show') {
+            if (modeTimeoutRef.current) {
+              clearTimeout(modeTimeoutRef.current);
+              modeTimeoutRef.current = null;
+            }
+            setModeSelectOpen(false);
+          }
+        })
+        .catch((error: unknown) => {
+          if (modeTimeoutRef.current) {
+            clearTimeout(modeTimeoutRef.current);
+            modeTimeoutRef.current = null;
+          }
+          const msg = error instanceof Error ? error.message : String(error);
+          setModeError(msg);
+        });
+    },
+    [tab, api],
+  );
+
   const close = useCallback(() => {
     if (!tab) return;
     ptyUnsubRef.current?.();
@@ -628,6 +803,25 @@ export default function AgentScreen() {
         return "#9CA3AF";
     }
   }, [tab?.state]);
+  const modeLabel = useMemo(() => {
+    switch (currentMode) {
+      case "goal":
+      case "goal_active":
+      case "goal_paused":
+        return "Goal";
+      case "vibe":
+      case "vibe_active":
+        return "Vibe";
+      case "plan":
+      case "plan_active":
+      case "plan_paused":
+        return "Plan";
+      case "unknown":
+        return "Unknown";
+      default:
+        return "Set Mode";
+    }
+  }, [currentMode]);
   const promptEnabled = capabilities.some(
     (capability) => capability.name === "prompt" && capability.enabled,
   );
@@ -806,6 +1000,18 @@ export default function AgentScreen() {
               <Text style={[styles.statusText, { color: stateColor }]}>
                 {tab?.state || "idle"}
               </Text>
+              {modeLabel && (
+                <Pressable
+                  accessibilityLabel="Agent Mode"
+                  style={styles.modeLabel}
+                  onPress={() => {
+                    setModeError(null);
+                    setModeSelectOpen(true);
+                  }}
+                >
+                  <Text style={styles.modeLabelText}>{modeLabel}</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         )}
@@ -870,6 +1076,18 @@ export default function AgentScreen() {
               <Text style={[styles.statusText, { color: stateColor }]}>
                 {tab?.state || "idle"}
               </Text>
+              {modeLabel && (
+                <Pressable
+                  accessibilityLabel="Agent Mode"
+                  style={styles.modeLabel}
+                  onPress={() => {
+                    setModeError(null);
+                    setModeSelectOpen(true);
+                  }}
+                >
+                  <Text style={styles.modeLabelText}>{modeLabel}</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         )}
@@ -1001,6 +1219,53 @@ export default function AgentScreen() {
           </View>
         </Pressable>
       </Modal>
+      <Modal
+        visible={modeSelectOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModeSelectOpen(false)}
+      >
+        <Pressable
+          style={styles.menuOverlay}
+          accessibilityLabel="Dismiss mode selector"
+          onPress={() => setModeSelectOpen(false)}
+        >
+          <View style={styles.menuSheet} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modeSelectorTitle}>Select Mode</Text>
+            {modeError && (
+              <Text style={styles.modeSelectorError}>{modeError}</Text>
+            )}
+            <Pressable
+              accessibilityLabel="Mode Plan"
+              style={styles.menuItem}
+              onPress={() => void handleSelectMode('plan_toggle')}
+            >
+              <Text style={styles.menuItemText}>Plan</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Mode Goal"
+              style={styles.menuItem}
+              onPress={() => void handleSelectMode('goal_show')}
+            >
+              <Text style={styles.menuItemText}>Goal</Text>
+            </Pressable>
+            <View
+              accessibilityLabel="Mode Vibe"
+              style={[styles.menuItem, styles.modeSelectorDisabled]}
+            >
+              <Text style={[styles.menuItemText, styles.modeSelectorDisabledText]}>Vibe</Text>
+              <Text style={styles.modeSelectorNote}>(display-only)</Text>
+            </View>
+            <View
+              accessibilityLabel="Mode Normal"
+              style={[styles.menuItem, styles.modeSelectorDisabled]}
+            >
+              <Text style={[styles.menuItemText, styles.modeSelectorDisabledText]}>Normal</Text>
+              <Text style={styles.modeSelectorNote}>(display-only)</Text>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Content Area */}
       {viewMode === "chat" ? (
@@ -1038,6 +1303,23 @@ export default function AgentScreen() {
               </Pressable>
             </View>
           )}
+          {harnessRuntime && (
+            <View
+              accessibilityLabel="OMP Runtime Status"
+              style={styles.harnessRuntimePanel}
+            >
+              <Text style={styles.harnessRuntimeTitle}>OMP Runtime</Text>
+              <Text style={styles.harnessRuntimeText}>
+                Mode: {harnessRuntime.sessionMode || "unknown"}
+              </Text>
+              <Text style={styles.harnessRuntimeText} numberOfLines={1}>
+                Features: {harnessRuntime.features.join(", ") || "none"}
+              </Text>
+              <Text style={styles.harnessRuntimeText} numberOfLines={1}>
+                Commands: {harnessRuntime.commands.join(", ") || "none"}
+              </Text>
+            </View>
+          )}
           <FlatList
             ref={flatListRef}
             data={messages}
@@ -1058,6 +1340,57 @@ export default function AgentScreen() {
             }
           />
 
+          {imagePickerOpen && (
+            <View style={styles.imagePicker}>
+              <Text style={styles.imagePickerTitle}>Workspace images</Text>
+              {workspaceImages.length === 0 ? (
+                <Text style={styles.imagePickerText}>
+                  No supported images in the workspace root.
+                </Text>
+              ) : (
+                workspaceImages.map((item) => (
+                  <Pressable
+                    key={item.path}
+                    accessibilityLabel={`Attach ${item.path}`}
+                    style={styles.imagePickerItem}
+                    onPress={() => {
+                      setAttachedImages((previous) =>
+                        previous.some((image) => image.path === item.path)
+                          ? previous
+                          : [...previous, item],
+                      );
+                      setImagePickerOpen(false);
+                    }}
+                  >
+                    <Text style={styles.imagePickerText}>{item.path}</Text>
+                  </Pressable>
+                ))
+              )}
+              <Pressable
+                accessibilityLabel="Close workspace images"
+                style={styles.imagePickerItem}
+                onPress={() => setImagePickerOpen(false)}
+              >
+                <Text style={styles.imagePickerText}>Cancel</Text>
+              </Pressable>
+            </View>
+          )}
+		  <AttachmentComposer
+			attachments={[
+			  ...attachedImages.map((image) => ({ mimeType: "image/*", name: image.name, sizeBytes: image.size ?? 0, storageRef: image.path })),
+			  ...attachments,
+			]}
+			error={attachmentError}
+			onRemove={(storageRef) => {
+			  setAttachedImages((previous) => previous.filter((image) => image.path !== storageRef));
+			  setAttachments((previous) => previous.filter((item) => item.storageRef !== storageRef));
+			  if (attachments.some((item) => item.storageRef === storageRef) && api) {
+				void api.removeUploadedAttachment(storageRef).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error)));
+			  }
+			}}
+		  />
+		  {activeMentionQuery(promptText) !== null && <MentionSuggestions entries={mentionResults} onSelect={selectMention} />}
+		  {promptText.startsWith("/") && <CommandPalette query={promptText} commands={commands} onSelect={(command) => void executeCommand(command)} />}
           {promptEnabled ? (
             <View style={styles.promptBar}>
               <TextInput
@@ -1069,6 +1402,20 @@ export default function AgentScreen() {
                 multiline
                 maxLength={4000}
               />
+              <Pressable
+                accessibilityLabel="Attach workspace image"
+                style={styles.attachButton}
+                onPress={() => void openImagePicker()}
+              >
+                <Feather name="image" size={18} color="#D19A2C" />
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Attach local file"
+                style={styles.attachButton}
+                onPress={() => void selectLocalAttachment()}
+              >
+                <Feather name="paperclip" size={18} color="#D19A2C" />
+              </Pressable>
               <Pressable
                 accessibilityLabel="Send Prompt"
                 style={[
@@ -1209,6 +1556,43 @@ const styles = StyleSheet.create({
   title: { flexShrink: 1, color: "#F0F0F0", fontSize: 16, fontWeight: "700" },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontSize: 12, fontWeight: "600", textTransform: "capitalize" },
+  modeLabel: {
+    borderWidth: 1,
+    borderColor: "#818CF8",
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  modeLabelText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#818CF8",
+  },
+  modeSelectorTitle: {
+    color: "#F0F0F0",
+    fontSize: 16,
+    fontWeight: "700",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  modeSelectorError: {
+    color: "#FCA5A5",
+    fontSize: 13,
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  modeSelectorDisabled: {
+    opacity: 0.4,
+    justifyContent: "space-between",
+  },
+  modeSelectorDisabledText: {
+    color: "#9CA3AF",
+  },
+  modeSelectorNote: {
+    color: "#6B7280",
+    fontSize: 11,
+  },
   viewSwitcher: {
     flexDirection: "row",
     backgroundColor: "#1E1E1E",
@@ -1390,6 +1774,41 @@ const styles = StyleSheet.create({
     borderLeftColor: "#D19A2C",
   },
   activityText: { color: "#D1D5DB", fontSize: 12 },
+  attachButton: {
+    width: 48,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachmentSummary: {
+    color: "#D1D5DB",
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingTop: 6,
+  },
+  imagePicker: {
+    marginHorizontal: 12,
+    padding: 12,
+    gap: 6,
+    backgroundColor: "#1E1E1E",
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  imagePickerTitle: { color: "#F0F0F0", fontSize: 16, fontWeight: "700" },
+  imagePickerItem: { minHeight: 36, justifyContent: "center" },
+  imagePickerText: { color: "#D1D5DB", fontSize: 14 },
+  harnessRuntimePanel: {
+    marginHorizontal: 12,
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#333333",
+    backgroundColor: "#161616",
+    gap: 3,
+  },
+  harnessRuntimeTitle: { color: "#A78BFA", fontSize: 12, fontWeight: "700" },
+  harnessRuntimeText: { color: "#D1D5DB", fontSize: 12 },
   promptBar: {
     flexDirection: "row",
     alignItems: "flex-end",

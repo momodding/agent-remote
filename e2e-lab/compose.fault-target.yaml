@@ -1,0 +1,4 @@
+services:
+  daemon:
+    environment:
+      AGENTICREMOTE_E2E_DESKTOP_TARGET: "127.0.0.1:1"

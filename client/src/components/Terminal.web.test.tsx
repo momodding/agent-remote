@@ -1,8 +1,9 @@
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+import type { MutableRefObject } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import type { TerminalHandle } from './Terminal';
 import { Terminal } from './Terminal.web';
-
 const mockInputSubscription = { dispose: jest.fn() };
 let mockOnData: ((data: string) => void) | undefined;
 const mockTerminal = {
@@ -10,6 +11,11 @@ const mockTerminal = {
   rows: 24,
   loadAddon: jest.fn(),
   open: jest.fn(),
+  focus: jest.fn(),
+  blur: jest.fn(),
+  getSelection: jest.fn(() => ''),
+  paste: jest.fn(),
+  selectAll: jest.fn(),
   onData: jest.fn((handler: (data: string) => void) => {
     mockOnData = handler;
     return mockInputSubscription;
@@ -55,11 +61,11 @@ describe('web terminal', () => {
   it('writes output deltas and connects terminal input, sizing, and cleanup', () => {
     const onInput = jest.fn();
     const onResize = jest.fn();
+    const ref = { current: null } as MutableRefObject<TerminalHandle | null>;
     const element = {} as HTMLDivElement;
     let tree: ReactTestRenderer;
-
     act(() => {
-      tree = create(<Terminal output="hello" onInput={onInput} onResize={onResize} />, {
+      tree = create(<Terminal ref={ref} output="hello" onInput={onInput} onResize={onResize} />, {
         createNodeMock: () => element,
       });
     });
@@ -74,6 +80,8 @@ describe('web terminal', () => {
 
     act(() => mockOnData?.('ls\r'));
     expect(onInput).toHaveBeenCalledWith('ls\r');
+    ref.current?.focus();
+    expect(mockTerminal.focus).toHaveBeenCalledTimes(1);
 
     act(() => tree!.update(<Terminal output="hello world" onInput={onInput} onResize={onResize} />));
     expect(mockTerminal.write).toHaveBeenLastCalledWith(' world');

@@ -296,4 +296,49 @@ describe('terminal route multi mode', () => {
     expect(router.replace).toHaveBeenCalledWith('/');
     act(() => tree.unmount());
   });
+
+  it('keeps failed close-all terminals active and reports the error', async () => {
+    mockCloseSession.mockRejectedValue(new Error('daemon unavailable'));
+    const tree = await renderScreen();
+
+    act(() => actionFor(tree, 'Close all')());
+    await act(async () => {
+      await (confirmation()[1].onPress?.() as unknown as Promise<void>);
+    });
+
+    expect(Alert.alert).toHaveBeenLastCalledWith('Could not close some sessions', 'daemon unavailable');
+    expect(mockChannel.closeChannel).not.toHaveBeenCalledWith('mock-channel-id');
+    expect(mockCloseTab).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalledWith('/');
+    expect(tree.root.findByProps({ accessibilityLabel: 'Close Shell' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
+
+  it('removes a multi-terminal only after its remote close succeeds', async () => {
+    mockCloseSession.mockResolvedValue(undefined);
+    const tree = await renderScreen();
+
+    await act(async () => {
+      await (actionFor(tree, 'Close Shell')() as unknown as Promise<void>);
+    });
+
+    expect(mockCloseSession).toHaveBeenCalledWith('session');
+    expect(mockChannel.closeChannel).toHaveBeenCalledWith('mock-channel-id');
+    expect(() => tree.root.findByProps({ accessibilityLabel: 'Close Shell' })).toThrow();
+    act(() => tree.unmount());
+  });
+
+  it('keeps a multi-terminal active when its remote close fails', async () => {
+    mockCloseSession.mockRejectedValue(new Error('daemon unavailable'));
+    const tree = await renderScreen();
+
+    await act(async () => {
+      await (actionFor(tree, 'Close Shell')() as unknown as Promise<void>);
+    });
+
+    expect(Alert.alert).toHaveBeenLastCalledWith('Could not close session', 'daemon unavailable');
+    expect(mockChannel.closeChannel).not.toHaveBeenCalledWith('mock-channel-id');
+    expect(tree.root.findByProps({ accessibilityLabel: 'Close Shell' })).toBeTruthy();
+    act(() => tree.unmount());
+  });
 });

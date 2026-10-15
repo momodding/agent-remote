@@ -23,6 +23,31 @@ interface FileMentionFile {
 	path?: string;
 }
 
+interface HarnessRuntimeState {
+	sessionMode: string;
+	features: string[];
+	commands: string[];
+}
+
+interface PromptImage {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
+
+function isPromptImage(value: unknown): value is PromptImage {
+	return (
+		Boolean(value) &&
+		typeof value === "object" &&
+		"type" in value &&
+		"data" in value &&
+		"mimeType" in value &&
+		value.type === "image" &&
+		typeof value.data === "string" &&
+		typeof value.mimeType === "string"
+	);
+}
+
 interface SessionEntryMessage {
 	role?: string;
 	content?: unknown;
@@ -100,12 +125,16 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (command === "prompt") {
 				let text = "";
+				let images: PromptImage[] = [];
 				if (typeof args === "string") {
 					text = args;
-				} else if (args && typeof args === "object" && "prompt" in args && typeof (args as { prompt: unknown }).prompt === "string") {
-					text = (args as { prompt: string }).prompt;
+				} else if (args && typeof args === "object" && "prompt" in args && typeof args.prompt === "string") {
+					text = args.prompt;
+					if ("images" in args && Array.isArray(args.images)) {
+						images = args.images.filter(isPromptImage);
+					}
 				}
-				pi.sendUserMessage(text);
+				pi.sendUserMessage(images.length > 0 ? [{ type: "text", text }, ...images] : text);
 				submittedUserMessages.push(text);
 				sendFrame({
 					type: "semantic",
@@ -160,11 +189,7 @@ export default function (pi: ExtensionAPI) {
 				const success = await pi.setModel(target);
 				if (success) {
 					sendResult(requestId, true);
-					const meta = getModelMetadata(latestCtx);
-					sendFrame({
-						type: "metadata",
-						...meta,
-					});
+					sendMetadata(latestCtx);
 				} else {
 					sendResult(requestId, false, "setModel returned false");
 				}
@@ -188,11 +213,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				pi.setThinkingLevel(levelStr as ThinkingLevelParam);
 				sendResult(requestId, true);
-				const meta = getModelMetadata(latestCtx);
-				sendFrame({
-					type: "metadata",
-					...meta,
-				});
+				sendMetadata(latestCtx);
 				return;
 			}
 			sendResult(requestId, false, `unknown command: ${command}`);
@@ -454,6 +475,28 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	function getHarnessRuntime(ctx?: ExtensionContext): HarnessRuntimeState {
+		const context = ctx || latestCtx;
+		const features = pi.getActiveTools().filter((tool): tool is string => typeof tool === "string");
+		const commands = pi
+			.getCommands()
+			.map((command) => command.name)
+			.filter((command): command is string => typeof command === "string");
+		return {
+			sessionMode: context?.mode || "",
+			features,
+			commands,
+		};
+	}
+
+	function sendMetadata(ctx?: ExtensionContext) {
+		sendFrame({
+			type: "metadata",
+			...getModelMetadata(ctx),
+			harnessRuntime: getHarnessRuntime(ctx),
+		});
+	}
+
 	function sendHello(ctx: ExtensionContext) {
 		if (!socket || !isConnected) return;
 		const sessionId = ctx.sessionManager?.getSessionId?.() || "";
@@ -473,6 +516,7 @@ export default function (pi: ExtensionAPI) {
 			sessionFile,
 			capabilities: ["prompt", "abort", "model", "thinking"],
 			...meta,
+			harnessRuntime: getHarnessRuntime(ctx),
 		});
 	}
 
@@ -540,6 +584,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			connect();
 		}
+		sendMetadata(ctx);
 	});
 
 	pi.on("session_before_switch", async () => {
@@ -567,6 +612,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			sendHello(ctx);
 		}
+		sendMetadata(ctx);
 	});
 
 	pi.on("session_branch", async (_event, ctx) => {
@@ -585,22 +631,26 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			sendHello(ctx);
 		}
+		sendMetadata(ctx);
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
 		sendLifecycle("agent_start", { state: "working" });
+		sendMetadata(ctx);
 	});
 	pi.on("turn_start", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
 		sendLifecycle("turn_start", { state: "working" });
+		sendMetadata(ctx);
 	});
 
 	pi.on("message_end", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
+		sendMetadata(ctx);
 	});
 	pi.on("tool_execution_start", async (event) => {
 		sendLifecycle("tool_start", {
@@ -631,18 +681,47 @@ export default function (pi: ExtensionAPI) {
 			approved: event.approved,
 		});
 	});
-	pi.on("turn_end", async (_event, ctx) => {
+	pi.on("turn_end", async (event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
+		sendLifecycle("turn_end", { state: "idle", stopReason: event.stopReason });
+		sendMetadata(ctx);
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
 		sendLifecycle("agent_end", { state: "idle" });
+		sendMetadata(ctx);
 	});
 	pi.on("session_compact", async (_event, ctx) => {
 		latestCtx = ctx;
 		emitNewEntries(ctx.sessionManager);
+		sendMetadata(ctx);
+	});
+	pi.on("auto_compaction_start", async (_event, ctx) => {
+		latestCtx = ctx;
+		sendLifecycle("compaction_start", { state: "working" });
+	});
+	pi.on("auto_compaction_end", async (_event, ctx) => {
+		latestCtx = ctx;
+		sendLifecycle("compaction_end", { state: "working" });
+	});
+	pi.on("auto_retry_start", async (event, ctx) => {
+		latestCtx = ctx;
+		sendLifecycle("retry_start", { state: "working", retryAttempt: event.attempt, retryMax: event.maxAttempts });
+	});
+	pi.on("auto_retry_end", async (event, ctx) => {
+		latestCtx = ctx;
+		sendLifecycle("retry_end", { state: "working", retryAttempt: event.attempt, retryMax: event.maxAttempts });
+	});
+	pi.on("goal_updated", async (event, ctx) => {
+		latestCtx = ctx;
+		sendLifecycle("goal_updated", {
+			goalActive: Boolean(event.goal),
+			goalTitle: event.goal?.title,
+			goalStatus: event.goal?.status,
+		});
+		sendMetadata(ctx);
 	});
 	pi.on("session_shutdown", async () => {
 		sendLifecycle("session_shutdown", { state: "exited" });

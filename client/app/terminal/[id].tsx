@@ -180,33 +180,6 @@ export default function TerminalScreen() {
     router.replace('/');
   }, []);
 
-  const closeAll = useCallback(async () => {
-    const channel = channelRef.current;
-    const restApi = connection && new AgenticRemoteAPI(connection);
-    for (const [sessionId, entry] of Object.entries(multiChannelsRef.current)) {
-      entry.unsubscribe();
-      channel?.closeChannel(entry.channelId);
-      if (restApi) {
-        try {
-          await restApi.closeSession(sessionId);
-        } catch (error) {
-          if (!(error instanceof APIError && error.status === 404)) console.warn(error);
-        }
-      }
-    }
-    multiChannelsRef.current = {};
-    setMultiSessions({});
-    if (tab) closeTab(tab.tabId);
-    router.replace('/');
-  }, [connection, tab, closeTab]);
-
-  const handleCloseAll = useCallback(() => {
-    Alert.alert('Close all sessions?', 'This will terminate every running session.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Close all', style: 'destructive', onPress: () => void closeAll() },
-    ]);
-  }, [closeAll]);
-
   // Local-only cleanup for a multi-pane session the daemon already ended
   // (exited state or session_not_found) — no redundant REST close call.
   const dropMultiSession = useCallback((sessionId: string) => {
@@ -219,7 +192,41 @@ export default function TerminalScreen() {
     setMultiSessions((prev) => closeSession(prev, sessionId));
   }, []);
 
-  // Multi-window handlers
+  const closeAll = useCallback(async () => {
+    const restApi = connection && new AgenticRemoteAPI(connection);
+    if (!restApi) {
+      Alert.alert('Could not close sessions', 'Daemon connection is unavailable');
+      return;
+    }
+
+    const failed: string[] = [];
+    for (const sessionId of Object.keys(multiChannelsRef.current)) {
+      try {
+        await restApi.closeSession(sessionId);
+        dropMultiSession(sessionId);
+      } catch (error) {
+        if (error instanceof APIError && error.status === 404) {
+          dropMultiSession(sessionId);
+          continue;
+        }
+        failed.push(error instanceof Error ? error.message : 'Unknown error');
+      }
+    }
+
+    if (failed.length > 0) {
+      Alert.alert('Could not close some sessions', failed.join('\n'));
+      return;
+    }
+    if (tab) closeTab(tab.tabId);
+    router.replace('/');
+  }, [connection, tab, closeTab, dropMultiSession]);
+
+  const handleCloseAll = useCallback(() => {
+    Alert.alert('Close all sessions?', 'This will terminate every running session.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Close all', style: 'destructive', onPress: () => void closeAll() },
+    ]);
+  }, [closeAll]);
   const handleAddSession = useCallback((sessionId: string, sessionName: string) => {
     const channel = channelRef.current;
     if (!tab || !channel || multiChannelsRef.current[sessionId]) return;
@@ -248,13 +255,15 @@ export default function TerminalScreen() {
 
   const handleCloseSession = useCallback(async (sessionId: string) => {
     if (!multiChannelsRef.current[sessionId] || !connection) return;
-    dropMultiSession(sessionId);
     try {
       await new AgenticRemoteAPI(connection).closeSession(sessionId);
+      dropMultiSession(sessionId);
     } catch (error) {
-      if (!(error instanceof APIError && error.status === 404)) {
-        Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
+      if (error instanceof APIError && error.status === 404) {
+        dropMultiSession(sessionId);
+        return;
       }
+      Alert.alert('Could not close session', error instanceof Error ? error.message : 'Unknown error');
     }
   }, [connection, dropMultiSession]);
 

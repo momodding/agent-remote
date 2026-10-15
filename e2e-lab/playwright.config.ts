@@ -1,14 +1,14 @@
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './specs',
-  timeout: 120000,
+  testDir: './playwright/specs',
+  timeout: 120_000,
   retries: 0,
   workers: 1,
   reporter: [
     ['list'],
-    ['html', { outputFolder: '../artifacts/playwright-report', open: 'never' }],
-    ['json', { outputFile: '../artifacts/playwright-results.json' }],
+    ['html', { outputFolder: './artifacts/playwright-report', open: 'never' }],
+    ['json', { outputFile: './artifacts/playwright-results.json' }],
   ],
   use: {
     baseURL: process.env.CLIENT_WEB_URL || 'http://127.0.0.1:8081',
@@ -28,10 +28,8 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-      },
+      use: { ...devices['Desktop Chrome'] },
     },
   ],
-  outputDir: '../artifacts/playwright',
+  outputDir: './artifacts/playwright',
 });

@@ -10,6 +10,7 @@ import { useTabStore } from '../src/lib/tabs/tab-store';
 import { AgenticRemoteAPI } from '../src/lib/api';
 import type { DesktopWorkspaceTab } from '../src/lib/tabs/types';
 import noVNCScript from '../src/generated/novnc_script';
+import { desktopCloseMessages, desktopStageDetail } from '../src/desktop-diagnostics';
 
 function buildDesktopHTML(wsUrl: string, attemptID: string): string {
   return `<!DOCTYPE html>
@@ -26,7 +27,7 @@ const screen = document.getElementById('screen');
 const status = document.getElementById('status');
 const report = (message, stage) => {
   status.textContent = message;
-  window.parent.postMessage({ type: 'status', message }, '*');
+  window.parent.postMessage({ type: 'status', message, attemptID: ${JSON.stringify(attemptID)}, stage }, '*');
   window.parent.postMessage({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage }, '*');
 };
 window.addEventListener('error', () => report('Desktop view failed', 'window_error'));
@@ -40,18 +41,45 @@ window.addEventListener('message', (event) => {
 
 try {
   report('Creating RFB…', 'rfb_creating');
+  let connected = false;
+  let closeReason = '';
+  let securityFailed = false;
   const rfb = window.rfb = new window.RFB(screen, ${JSON.stringify(wsUrl)});
+  const rawWebSocket = rfb._sock?._websocket;
+  if (rawWebSocket) {
+    const onclose = rawWebSocket.onclose;
+    rawWebSocket.onclose = (event) => { closeReason = event.reason; onclose.call(rawWebSocket, event); };
+  }
   rfb.scaleViewport = true;
   rfb.resizeSession = true;
-  rfb.addEventListener('connect', () => { screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
-  rfb.addEventListener('disconnect', (event) => report(event.detail?.clean ? 'Desktop disconnected' : 'Desktop disconnected unexpectedly', 'rfb_disconnected'));
-  rfb.addEventListener('securityfailure', () => report('Desktop security negotiation failed', 'rfb_security_failure'));
+  rfb.addEventListener('connect', () => { connected = true; screen.classList.add('connected'); report('Desktop connected', 'rfb_connected'); });
+  rfb.addEventListener('disconnect', (event) => {
+    const clean = event.detail?.clean === true;
+    const category = !clean && securityFailed ? 'security_negotiation_failed' : !clean && Object.prototype.hasOwnProperty.call(${JSON.stringify(desktopCloseMessages)}, closeReason) ? closeReason : !clean && !connected ? 'framebuffer_never_initialized' : '';
+    report(clean ? 'Desktop disconnected' : category ? ${JSON.stringify(desktopCloseMessages)}[category] : 'Desktop disconnected unexpectedly', clean ? 'rfb_disconnected_clean' : category || 'rfb_disconnected_unexpected');
+  });
+  rfb.addEventListener('securityfailure', () => { securityFailed = true; report(${JSON.stringify(desktopCloseMessages.security_negotiation_failed)}, 'security_negotiation_failed'); });
   window.parent.postMessage({ type: 'diagnostic', attemptID: ${JSON.stringify(attemptID)}, stage: 'rfb_initialized' }, '*');
 } catch {
   report('Could not load noVNC client', 'rfb_load_failed');
 }
 </script></body></html>`;
 }
+
+const terminalDesktopStages: Record<string, true> = {
+  target_dial_failed: true,
+  target_closed: true,
+  websocket_closed: true,
+  ticket_invalid: true,
+  ticket_expired: true,
+  protocol_failure: true,
+  security_negotiation_failed: true,
+  framebuffer_never_initialized: true,
+  rfb_disconnected_clean: true,
+  rfb_disconnected_unexpected: true,
+  rfb_load_failed: true,
+  client_closed: true,
+};
 
 export default function DesktopScreenWeb() {
   const { tabId } = useLocalSearchParams<{ tabId: string }>();
@@ -60,11 +88,18 @@ export default function DesktopScreenWeb() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading noVNC…');
+  const [statusDetail, setStatusDetail] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attemptID, setAttemptID] = useState(() => Crypto.randomUUID());
+  const [retryNonce, setRetryNonce] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const attemptID = useRef(Crypto.randomUUID()).current;
 
   useEffect(() => {
     if (!tab) return;
+    setFailed(false);
+    setWsUrl(null);
+    setStatus('Loading noVNC…');
+    setStatusDetail(null);
     let active = true;
     loadConnections().then(async (store) => {
       const conn = getConnection(store, tab.daemonId);
@@ -76,25 +111,53 @@ export default function DesktopScreenWeb() {
         if (active) {
           setWsUrl(session.wsUrl);
         }
-      } catch (err) {
+      } catch {
         if (active) {
-          setStatus(err instanceof Error ? err.message : 'Failed to create desktop session');
+          setStatus('Could not create desktop session');
+          setFailed(true);
         }
       }
     });
     return () => {
       active = false;
     };
-  }, [tab?.tabId]);
+  }, [attemptID, retryNonce, tab?.tabId]);
+  useEffect(() => {
+    if (typeof window.addEventListener !== 'function') return;
+    const handler = (event: MessageEvent) => {
+      const d = event.data;
+      if (d?.type !== 'status' || typeof d.message !== 'string' || d.attemptID !== attemptID) return;
+      setStatus(d.message);
+      const detail = desktopStageDetail(d.stage);
+      if (detail !== undefined) setStatusDetail(detail);
+      if (terminalDesktopStages[d.stage]) setFailed(true);
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [attemptID]);
 
   const html = useMemo(() => (wsUrl ? buildDesktopHTML(wsUrl, attemptID) : ''), [wsUrl, attemptID]);
 
   const send = (message: object) => iframeRef.current?.contentWindow?.postMessage(message, '*');
 
-  if (!connection || !tab || !wsUrl) {
+
+  if (!connection || !tab || !wsUrl || failed) {
     return (
       <SafeAreaView style={styles.screen}>
         <Text style={styles.text}>{status}</Text>
+        {statusDetail ? <Text style={styles.detail}>{statusDetail}</Text> : null}
+        {failed ? (
+          <Pressable
+            accessibilityLabel="Retry desktop connection"
+            style={styles.retry}
+            onPress={() => {
+              setAttemptID(Crypto.randomUUID());
+              setRetryNonce((nonce) => nonce + 1);
+            }}
+          >
+            <Text style={styles.retryText}>Retry</Text>
+          </Pressable>
+        ) : null}
       </SafeAreaView>
     );
   }
@@ -126,4 +189,7 @@ const styles = StyleSheet.create({
   key: { paddingVertical: 8, paddingHorizontal: 14, backgroundColor: '#222', borderRadius: 6 },
   keyText: { color: '#E0E0E0', fontSize: 13, fontWeight: '600' },
   text: { color: '#888', textAlign: 'center', marginTop: 40 },
+  detail: { color: '#666', textAlign: 'center', marginTop: 8, fontSize: 13, paddingHorizontal: 24 },
+  retry: { alignSelf: 'center', marginTop: 20, paddingVertical: 10, paddingHorizontal: 18, backgroundColor: '#2D6CDF', borderRadius: 6 },
+  retryText: { color: '#FFF', fontSize: 14, fontWeight: '600' },
 });
